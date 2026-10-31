@@ -1,0 +1,67 @@
+name: dataplane
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # 必过：patch 可复现、构建、改名黄金验收、行为等价与上游互通
+  build-and-verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build deps
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libssl-dev libsystemd-dev pkg-config
+      - name: Fetch upstream
+        run: |
+          source dataplane/UPSTREAM
+          git -c advice.detachedHead=false clone -q --depth 1 --branch "$UPSTREAM_TAG" "$UPSTREAM_GIT" upstream
+          test "$(git -C upstream rev-parse HEAD)" = "$UPSTREAM_COMMIT"
+      - name: Rename patch is up to date
+        run: scripts/gen-patch.sh -s upstream -c
+      - name: Build sycache
+        run: USE_SYSTEMD=yes dataplane/build-sycache.sh -s upstream -o dist
+      - name: Golden rename
+        run: scripts/golden-rename.sh dist/sycache-*-x86_64.tar.gz
+      - name: Build upstream valkey for interop
+        run: cp -a upstream upstream-build && make -C upstream-build -j"$(nproc)" BUILD_TLS=no >/dev/null
+      - name: Compatibility and interop
+        run: |
+          mkdir -p pkg && tar -C pkg -xzf dist/sycache-*-x86_64.tar.gz
+          SYCACHE_BIN="$PWD/pkg/opt/sycache/bin" VALKEY_BIN="$PWD/upstream-build/src" python3 test/compat/compat_test.py -v
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sycache-x86_64
+          path: dist/
+
+  # 上游 Tcl 测试集跑在改名后的源码上。部分用例断言了被改名的字串（日志文案、INFO 字段名），
+  # 失败清单经评审后写入 test/upstream/known-diff.txt；在清单收敛前本任务不阻断合并。
+  upstream-suite:
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq tcl tcl-tls libssl-dev pkg-config
+      - name: Fetch, patch and build
+        run: |
+          source dataplane/UPSTREAM
+          git -c advice.detachedHead=false clone -q --depth 1 --branch "$UPSTREAM_TAG" "$UPSTREAM_GIT" src-tree
+          cd src-tree
+          patch -p1 --forward --quiet < ../dataplane/patches/0001-sycache-rename.patch
+          make -j"$(nproc)" ENGINE_NAME=sycache USE_REDIS_SYMLINKS=no BUILD_TLS=yes >/dev/null
+      - name: Map upstream binary names used by the test harness
+        run: test/upstream/link-binaries.sh src-tree/src
+      - name: Run upstream suite
+        run: |
+          cd src-tree
+          ./runtest --clients 4 --timeout 1200 --dump-logs 2>&1 | tee ../upstream-test.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: upstream-test-log
+          path: upstream-test.log

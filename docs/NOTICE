@@ -1,0 +1,19 @@
+CacheOS
+Copyright (c) 2026 CacheOS authors. All rights reserved.
+
+The sycache data plane is based on Valkey (BSD-3-Clause).
+
+Valkey
+  https://github.com/valkey-io/valkey
+  Copyright (c) 2024-present, Valkey contributors
+  Copyright (c) 2006-2024, Redis Ltd. and contributors (code from Redis OSS 7.2.4 and earlier, BSD-3-Clause)
+  The full license text is shipped as /opt/sycache/licenses/VALKEY-COPYING.
+
+Bundled with Valkey and distributed under their own licenses:
+  jemalloc (BSD-2-Clause), Lua 5.1 (MIT), linenoise (BSD-2-Clause), hdr_histogram (BSD-2-Clause / CC0),
+  fpconv (BSL-1.0), libvalkey (BSD-3-Clause), fast_float (Apache-2.0 / MIT / BSL-1.0).
+These license texts are shipped under /opt/sycache/licenses/deps/.
+
+Changes made by CacheOS to the Valkey source: string literals and version macros only
+(dataplane/patches/0001-sycache-rename.patch, generated from dataplane/rename/rename.py),
+plus security fixes back-ported verbatim from upstream (dataplane/patches/1xxx-cve-*.patch).

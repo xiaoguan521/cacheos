@@ -1,0 +1,8 @@
+/dist/
+/bin/
+/upstream/
+/upstream-build/
+/src-tree/
+/pkg/
+__pycache__/
+*.pyc

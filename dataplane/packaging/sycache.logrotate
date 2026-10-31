@@ -1,0 +1,10 @@
+/var/log/sycache/*.log {
+    daily
+    rotate 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    # sycache 每次写日志都会重新打开文件，copytruncate 可避免发送信号
+    copytruncate
+}

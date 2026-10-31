@@ -1,0 +1,32 @@
+[Unit]
+Description=SyCache instance on port %i (CacheOS)
+Documentation=man:sycache-server(1)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=sycache
+Group=sycache
+ExecStart=/opt/sycache/bin/sycache-server /opt/sycache/instances/%i/sycache.conf --supervised systemd --daemonize no
+TimeoutStartSec=infinity
+TimeoutStopSec=300
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=65535
+RuntimeDirectory=sycache
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/sycache/instances/%i /var/log/sycache
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
