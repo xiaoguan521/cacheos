@@ -7,7 +7,7 @@
 
 | 阶段 | 内容 | 状态 | 验收门 |
 | --- | --- | --- | --- |
-| P1 | 数据面 sycache：改名 patch、构建打包、品牌门禁 | 进行中 | Valkey 测试集与客户端兼容矩阵全部通过 |
+| P1 | 数据面 sycache：改名 patch、构建打包、品牌门禁 | 已完成（麒麟 / 统信实机验证待环境） | Valkey 测试集与客户端兼容矩阵全部通过 |
 | P2 | 控制台与 agent（复用 EdgeTraffic 底座） | 未开始 | 可建单机与主从，参数热改与一键切换可用 |
 | P3 | 哨兵与集群 | 未开始 | 杀主节点演练：自动切换，压测客户端无失败 |
 | P4 | MVP 演示 | 未开始 | 领导演示通过 |
@@ -27,9 +27,16 @@
 
 本地一条命令完成全部校验：`make ci UPSTREAM_SRC=<上游源码>`。GitHub Actions 只在手动触发或推送 v* 标签时运行。
 
-### P1 待办
+### P1 验证结果（2026-10-31，p1-verify 工作流）
 
-- [ ] 兼容构建在 glibc 2.17 容器中实跑（`make compat-build`，需要 docker）：产出 RPM / DEB，并在麒麟 V10、统信 UOS、openEuler、CentOS 7 上安装验证
-- [ ] aarch64（鲲鹏 / 飞腾）构建与验证
-- [ ] 上游 Tcl 测试集首轮结果评审，填写 `test/upstream/known-diff.txt`（`make upstream-suite`，需要 tclsh）
-- [ ] Java 客户端矩阵：Jedis、Lettuce、Redisson、Spring Data Redis（需要 Maven 仓库）
+| 项目 | 结果 |
+| --- | --- |
+| 兼容构建 x86_64 / aarch64 | 通过：glibc 2.17 容器、OpenSSL 3.5.9 静态链接，产出 tar.gz / RPM / DEB / SBOM |
+| 安装冒烟（安装、以 sycache 用户运行主从与持久化、卸载） | 11/11 通过：CentOS 7、Rocky 8/9、openEuler 22.03/24.03、Ubuntu 20.04/22.04/24.04、Debian 12；aarch64 含 openEuler 22.03、Rocky 8、Ubuntu 22.04 |
+| 上游 Tcl 测试集（全量） | 通过：4 个失败均为断言了被改名的字串，已登记 `test/upstream/known-diff.txt` |
+| 客户端矩阵 | 通过：redis-py 17 项、go-redis 11 项（两架构）；Jedis / Lettuce / Redisson / Spring Data Redis 20 项（x86_64） |
+
+### P1 遗留
+
+- [ ] 麒麟 V10、统信 UOS 实机安装验证（无公开镜像；openEuler 与 Rocky 8 已作为近似验证）
+- [ ] known-diff 中两个用例（集群关机丢槽、双通道复制 RDB 加载）因等待改名后的日志而未走到后续断言：P3 集群演练时补一个等价用例
