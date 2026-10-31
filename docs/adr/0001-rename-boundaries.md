@@ -17,7 +17,7 @@
 | `SERVER_NAME` / `SERVER_TITLE` | valkey / Valkey | sycache / SyCache（INFO `server_name`、HELLO `server`、日志） |
 | 日志、帮助、错误文案、LATENCY/MEMORY DOCTOR、COMMAND DOCS | Valkey | SyCache |
 | cli 环境变量与配置文件 | VALKEYCLI_*、~/.valkeyclirc | SYCACHECLI_*、~/.sycacheclirc |
-| URI 协议名 | valkey://、valkeys:// | sycache://、sycaches://；redis://、rediss:// 照常可用 |
+| cli / benchmark 的 `-u` 帮助文本 | valkey://… | 展示 redis:// / rediss://（两者本来就支持） |
 | 启动横幅 | Valkey 字符画 | SyCache 字符画，格式参数顺序不变 |
 
 ## 刻意保留（KEEP）
@@ -30,6 +30,7 @@
 | INFO `redis_version:7.2.4` | 客户端靠它判断支持哪些命令 |
 | 模块 API 符号 `ValkeyModule_*`、头文件 valkeymodule.h / redismodule.h | 第三方模块按名字链接 |
 | ldb 调试命令 `valkey` | 用户在调试会话中输入的命令名 |
+| `-u` 参数可解析的 URI 协议名 valkey://、valkeys:// | 已有连接串与迁移脚本依赖它；首轮上游测试集中 URI 用例因改成 sycache:// 而失败，已改回 |
 | 所有错误前缀（MOVED、ASK、NOAUTH、CLUSTERDOWN…） | 本来就不含品牌词，测试中断言不变 |
 | C 标识符、断言表达式、`__FILE__` 中的源文件名 | 代码本身，改了就是逻辑改动；只在崩溃报告中出现 |
 

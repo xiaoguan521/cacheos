@@ -39,11 +39,11 @@ no_brand "安装包文件名" "$(cd "$ROOT_DIR" && find . | grep -v '/licenses/'
 no_brand "默认配置模板" "$(cat "$P"/conf/*.default)"
 
 echo "== 二进制字符串"
-# 允许：协议 / 格式字面量（RDB 魔数 VALKEY、valkey-ver、Lua 的 VALKEY_VERSION、ldb 命令 valkey）、
+# 允许：协议 / 格式字面量（RDB 魔数 VALKEY、valkey-ver、Lua 的 VALKEY_VERSION、ldb 命令 valkey、URI 协议名 valkey://）、
 # 断言中的源文件名（*.c）、C 标识符（valkeyConnect、ValkeyModule_* 等，不是单词边界匹配）
 for b in sycache-server sycache-cli sycache-benchmark; do
   left="$(strings "$B/$b" | grep -E '(^|[^A-Za-z0-9_])([Vv]alkey|VALKEY)([^A-Za-z0-9_]|$)' \
-    | grep -vxE 'VALKEY|valkey-ver|VALKEY_VERSION(_NUM)?|valkey' \
+    | grep -vxE 'VALKEY|valkey-ver|VALKEY_VERSION(_NUM)?|valkey|valkeys?://' \
     | grep -vE '^[A-Za-z0-9_/.-]*valkey[A-Za-z0-9_-]*\.c$' || true)"
   [[ -z "$left" ]] && ok "strings $b 只含白名单" || fail "strings $b: $(head -3 <<<"$left" | tr '\n' '|')"
 done
@@ -80,6 +80,8 @@ expect_eq "Lua 版本变量" "$lua" "sycache $BI_upstream_version 7.2.4 "
 no_brand "COMMAND DOCS" "$("$B/sycache-cli" -p "$PORT" command docs)"
 no_brand "LATENCY DOCTOR" "$("$B/sycache-cli" -p "$PORT" latency doctor)"
 no_brand "MEMORY DOCTOR" "$("$B/sycache-cli" -p "$PORT" memory doctor)"
+expect_eq "cli -u redis:// 连接串" "$("$B/sycache-cli" -u "redis://127.0.0.1:$PORT" ping)" "PONG"
+expect_eq "cli -u valkey:// 连接串（迁移兼容）" "$("$B/sycache-cli" -u "valkey://127.0.0.1:$PORT" ping)" "PONG"
 no_brand "错误回复" "$("$B/sycache-cli" -p "$PORT" nosuchcommand 2>&1)"
 # RDB 文件格式保持上游：魔数与 valkey-ver 字段不变，迁移工具与上游可互读
 "$B/sycache-cli" -p "$PORT" set golden 1 >/dev/null

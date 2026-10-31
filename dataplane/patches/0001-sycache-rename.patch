@@ -85,17 +85,6 @@ diff -ruN a/src/asciilogo.h b/src/asciilogo.h
 diff -ruN a/src/cli_common.c b/src/cli_common.c
 --- a/src/cli_common.c
 +++ b/src/cli_common.c
-@@ -317,8 +317,8 @@
-     UNUSED(tls_flag);
- #endif
- 
--    const char *scheme = "valkey://";
--    const char *tlsscheme = "valkeys://";
-+    const char *scheme = "sycache://";
-+    const char *tlsscheme = "sycaches://";
-     /* We need to support redis:// and rediss:// too for compatibility. */
-     const char *redisScheme = "redis://";
-     const char *redisTlsscheme = "rediss://";
 @@ -396,7 +396,7 @@
  }
  
@@ -803,11 +792,11 @@ diff -ruN a/src/valkey-benchmark.c b/src/valkey-benchmark.c
 +        " -a <password>      Password for SyCache Auth\n"
          " --user <username>  Used to send ACL style 'AUTH username pass'. Needs -a.\n"
 -        " -u <uri>           Server URI on format valkey://user:password@host:port/dbnum\n"
-+        " -u <uri>           Server URI on format sycache://user:password@host:port/dbnum\n"
++        " -u <uri>           Server URI on format redis://user:password@host:port/dbnum\n"
          "                    User, password and dbnum are optional. For authentication\n"
          "                    without a username, use username 'default'. For TLS, use\n"
 -        "                    the scheme 'valkeys'.\n"
-+        "                    the scheme 'sycaches'.\n"
++        "                    the scheme 'rediss'.\n"
          " -c <clients>       Number of parallel connections (default 50).\n"
          "                    Note: If --cluster is used then number of clients has to be\n"
          "                    the same or higher than the number of nodes.\n"
@@ -998,11 +987,11 @@ diff -ruN a/src/valkey-cli.c b/src/valkey-cli.c
              "                     If this argument is used, '-a' and " CLI_AUTH_ENV "\n"
              "                     environment variable will be ignored.\n"
 -            "  -u <uri>           Server URI on format valkey://user:password@host:port/dbnum\n"
-+            "  -u <uri>           Server URI on format sycache://user:password@host:port/dbnum\n"
++            "  -u <uri>           Server URI on format redis://user:password@host:port/dbnum\n"
              "                     User, password and dbnum are optional. For authentication\n"
              "                     without a username, use username 'default'. For TLS, use\n"
 -            "                     the scheme 'valkeys'.\n"
-+            "                     the scheme 'sycaches'.\n"
++            "                     the scheme 'rediss'.\n"
              "  -r <repeat>        Execute specified command N times.\n"
              "  -i <interval>      When -r is used, waits <interval> seconds per command.\n"
              "                     It is possible to specify sub-second times like -i 0.1.\n"
@@ -1019,7 +1008,7 @@ diff -ruN a/src/valkey-cli.c b/src/valkey-cli.c
 -            "  valkey-cli --eval myscript.lua key1 key2 , arg1 arg2 arg3\n"
 -            "  valkey-cli --scan --pattern '*:12345*'\n"
 -            "  valkey-cli --scan --pattern '*:12345*' --count 100\n"
-+            "  sycache-cli -u sycache://default:PASSWORD@localhost:6379/0\n"
++            "  sycache-cli -u redis://default:PASSWORD@localhost:6379/0\n"
 +            "  cat /etc/passwd | sycache-cli -x set mypasswd\n"
 +            "  sycache-cli -D \"\" --raw dump key > key.dump && sycache-cli -X dump_tag restore key2 0 dump_tag replace < key.dump\n"
 +            "  sycache-cli -r 100 lpush mylist x\n"

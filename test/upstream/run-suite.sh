@@ -44,7 +44,9 @@ summary="upstream suite: $(wc -l < "$WORK/failed.txt") failed, $(wc -l < "$WORK/
 echo "$summary" | annotate notice "upstream suite summary"
 # 失败用例的断言细节（每个用例取 [err] 之后的几行），供评审 known-diff 时判断是否只是改名导致
 if [[ -s "$WORK/new.txt" ]]; then
-  { grep -A4 -F '[err]' "$WORK/test.log" || true; } | cut -c1-240 | head -400 | annotate warning "upstream failure details" || true
+  # runtest 结束时汇总打印 "The following tests failed:" 及每个用例的断言信息
+  { sed -n '/The following tests failed/,$p' "$WORK/test.log" || true; } | cut -c1-240 | head -400 \
+    | annotate warning "upstream failure details" || true
 fi
 if ! grep -q 'All tests passed' "$WORK/test.log" && [[ ! -s "$WORK/failed.txt" ]]; then
   tail -80 "$WORK/test.log" | cut -c1-240 | annotate error "suite did not finish (crash or timeout), log tail"

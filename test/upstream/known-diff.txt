@@ -1,4 +1,7 @@
 # 上游 Tcl 测试集中因改名而预期失败的用例（规格书 5.6）。
 # 每行一个用例，格式与 runtest 的 "[err]: " 后内容一致：<用例名> in <测试文件>
 # 每条必须写明原因（# 之后），且原因只能是「用例断言了被改名的字串」；行为差异一律视为缺陷。
-# 首轮结果待评审后填入。
+# 首轮（2026-10-31，p1-verify）评审结果：
+Extended Redis Compatibility config in tests/unit/other.tcl  # 断言 HELLO server 为 valkey、INFO/LOLWUT 输出 "Valkey ver."；sycache 为 sycache / SyCache（兼容模式下返回 redis 的部分照常通过）
+Process title set as expected in tests/unit/other.tcl  # 断言进程标题中的可执行文件为 */valkey-server；sycache 为 sycache-server
+Primary lost a slot during the shutdown waiting in tests/unit/cluster/slot-ownership.tcl  # 等待日志 "Valkey is now ready to exit, bye bye"；sycache 日志为 "SyCache is now ready to exit"

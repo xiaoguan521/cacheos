@@ -21,6 +21,7 @@ hits=$(grep -rnE '"[^"]*[Vv][Aa][Ll][Kk][Ee][Yy][^"]*"' --include=*.c --include=
   | grep -vE '^\./rdb\.c:.*"valkey-ver"' \
   | grep -vE '^\./modules/lua/script_lua\.c:.*"VALKEY_VERSION(_NUM)?"' \
   | grep -vE '^\./modules/lua/debug_lua\.c:.*\("valkey",' \
+  | grep -vE '^\./cli_common\.c:.*"valkeys?://"' \
   || true)
 
 if [[ -n "$hits" ]]; then

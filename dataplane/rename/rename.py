@@ -43,6 +43,11 @@ KEEP_EXACT = {
     ("src/modules/lua/script_lua.c", "VALKEY_VERSION_NUM"),
     # Lua 调试器（ldb）的命令名：用户在调试会话中输入
     ("src/modules/lua/debug_lua.c", "valkey"),
+    # cli / benchmark 的 -u 参数接受的 URI 协议名：改名会让已有的 valkey:// 连接串失效（上游测试集
+    # "Valid Connection Scheme" 与 benchmark URI 用例即因此失败）。redis:// 与 rediss:// 本来就支持，
+    # 帮助文本统一改为展示 redis://（见 SPECIAL）。
+    ("src/cli_common.c", "valkey://"),
+    ("src/cli_common.c", "valkeys://"),
 }
 # 含这些子串的字面量一律保留：模块 API 符号名（dlsym 按名字查找）
 KEEP_SUBSTR = ["ValkeyModule_", "VALKEYMODULE"]
@@ -61,6 +66,10 @@ SPECIAL = [
     # 外部链接：不指向上游社区
     (None, "https://github.com/valkey-io/valkey/issues", "your CacheOS support channel"),
     (None, "https://valkey.io/commands/slowlog", "the SLOWLOG command documentation"),
+    # -u 参数帮助文本：展示通用的 redis:// / rediss:// 写法（sycache:// 不是可解析的协议名）
+    (None, "on format valkey://user:password@", "on format redis://user:password@"),
+    (None, "the scheme 'valkeys'", "the scheme 'rediss'"),
+    (None, "-u valkey://default:", "-u redis://default:"),
     # 依赖库名：不是产品名，换成中性描述
     (None, "support from libvalkey", "support in the client library"),
 ]

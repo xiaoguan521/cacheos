@@ -28,7 +28,7 @@ if [[ -n "$SRC" ]]; then
 fi
 docker run --rm "${MOUNTS[@]}" "$IMAGE" bash -euo pipefail -c "
   /repo/dataplane/build-sycache.sh -S ${SRC_OPT[*]} -o /out
-  /repo/dataplane/packaging/build-rpm.sh /out/sycache-*-$ARCH.tar.gz /out
+  /repo/dataplane/packaging/build-rpm.sh /out/sycache-[0-9]*-$ARCH.tar.gz /out
   chown -R $(id -u):$(id -g) /out
 "
 # DEB 在宿主机上打（dpkg-deb 不依赖 glibc 版本，包内二进制与 RPM 完全相同）
