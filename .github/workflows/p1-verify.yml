@@ -4,6 +4,11 @@ name: p1-verify
 # 结果以注解（annotations）汇总，可在 Actions 页面查看，也可通过 API 读取。
 on:
   workflow_dispatch:
+    inputs:
+      upstream_suite:
+        description: "运行上游 Tcl 测试集（约 40 分钟；已有结果时可关闭）"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -93,6 +98,7 @@ jobs:
           bash /t/smoke.sh ${{ matrix.kind }}
 
   upstream-suite:
+    if: inputs.upstream_suite
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:

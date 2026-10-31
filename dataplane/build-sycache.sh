@@ -90,6 +90,9 @@ done
 # 二进制中的 sha（--version、启动日志 commit=）因此唯一对应「上游 + 全部 patch」的源码树，且可复现；
 # 否则上游的 mkreleasehdr.sh 在非 git 目录下会报 sha=00000000、modified=1。
 export SOURCE_DATE_EPOCH=1767225600   # 2026-01-01T00:00:00Z，同时让 BUILD_ID 可复现
+# 源码目录可能来自其他用户（如容器内以 root 构建挂载进来的源码），git 会拒绝「属主不一致」的仓库；
+# 用环境变量放行，对本脚本和上游 mkreleasehdr.sh 中的 git 调用都生效。
+export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*'
 git init -q && git add -A
 GIT_AUTHOR_DATE="@$SOURCE_DATE_EPOCH +0000" GIT_COMMITTER_DATE="@$SOURCE_DATE_EPOCH +0000" \
   git -c user.name=cacheos-build -c user.email=build@cacheos.invalid commit -qm "sycache $VERSION"
