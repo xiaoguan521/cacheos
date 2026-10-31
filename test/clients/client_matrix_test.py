@@ -68,6 +68,9 @@ class ClientMatrix(unittest.TestCase):
         env = {**os.environ, "TOPOLOGY": json.dumps(self.topo), **env_extra}
         out = subprocess.run(argv, env=env, cwd=cwd, capture_output=True, text=True, timeout=300)
         sys.stdout.write(out.stdout)
+        oks = [l for l in out.stdout.splitlines() if l.startswith("ok ")]
+        first = out.stdout.splitlines()[0] if out.stdout else argv[-1]
+        print(f"NOTICE: {first}: {len(oks)} checks passed")
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
 
     def test_redis_py(self):
@@ -99,6 +102,28 @@ class ClientMatrix(unittest.TestCase):
                                capture_output=True, text=True, timeout=300)
             self.assertEqual(b.returncode, 0, b.stdout + b.stderr)
             self.run_client([os.path.join(work, "matrix")], {})
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+
+    @unittest.skipUnless(os.environ.get("JAVA_CLIENTS") == "1" and shutil.which("mvn"),
+                         "set JAVA_CLIENTS=1 (needs mvn and access to a Maven repository)")
+    def test_java_clients(self):
+        work = tempfile.mkdtemp(prefix="sycache-javaclient-")
+        try:
+            shutil.copytree(os.path.join(HERE, "java"), work, dirs_exist_ok=True)
+            b = subprocess.run(["mvn", "-B", "-q", "package", "-DskipTests"], cwd=work, capture_output=True,
+                               text=True, timeout=900)
+            self.assertEqual(b.returncode, 0, (b.stdout + b.stderr)[-4000:])
+            c = self.topo["certs"]
+            sep = os.pathsep
+            cp = sep.join([os.path.join(work, "target", "classes"), os.path.join(work, "target", "lib", "*")])
+            self.run_client(["java", "-cp", cp, "cacheos.ClientMatrix"], {
+                "STANDALONE_PORT": str(self.topo["standalone"]), "TLS_PORT": str(self.topo["tls"]),
+                "CLUSTER_PORTS": ",".join(map(str, self.topo["cluster"])),
+                "SENTINEL_PORTS": ",".join(map(str, self.topo["sentinels"])),
+                "MASTER_NAME": self.topo["master_name"],
+                "TLS_CA": c["ca.crt"], "TLS_CERT": c["client.crt"], "TLS_KEY": c["client.key"]})
         finally:
             shutil.rmtree(work, ignore_errors=True)
 

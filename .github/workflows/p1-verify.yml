@@ -1,0 +1,107 @@
+name: p1-verify
+
+# P1 收尾验证，只手动触发：兼容构建（x86_64 / aarch64）→ 各发行版容器安装冒烟 → 上游 Tcl 测试集 → 客户端矩阵（含 Java）。
+# 结果以注解（annotations）汇总，可在 Actions 页面查看，也可通过 API 读取。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p1-verify
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04, java: "1" }
+          - { arch: aarch64, runner: ubuntu-24.04-arm, java: "0" }
+    env:
+      JAVA_CLIENTS: ${{ matrix.java }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch upstream
+        run: |
+          source dataplane/UPSTREAM
+          git -c advice.detachedHead=false clone -q --depth 1 --branch "$UPSTREAM_TAG" "$UPSTREAM_GIT" upstream
+          test "$(git -C upstream rev-parse HEAD)" = "$UPSTREAM_COMMIT"
+      - name: Compat build (glibc 2.17 container, static OpenSSL, RPM + DEB)
+        run: scripts/ci-run.sh "compat build ${{ matrix.arch }}" dataplane/build-compat.sh -s upstream -o dist
+      - name: Build info
+        if: always()
+        run: |
+          [ -f dist/BUILDINFO ] || exit 0
+          echo "::notice title=BUILDINFO ${{ matrix.arch }}::$(tr '\n' ' ' < dist/BUILDINFO)"
+          echo "::notice title=artifacts ${{ matrix.arch }}::$(cd dist && ls | tr '\n' ' ')"
+      - name: Golden rename
+        run: scripts/ci-run.sh "golden ${{ matrix.arch }}" scripts/golden-rename.sh dist/sycache-[0-9]*-${{ matrix.arch }}.tar.gz
+      - name: Version consistency
+        run: scripts/ci-run.sh "versions ${{ matrix.arch }}" scripts/check-versions.sh dist/sycache-[0-9]*-${{ matrix.arch }}.tar.gz
+      - name: Compat and interop with upstream
+        run: scripts/ci-run.sh "compat ${{ matrix.arch }}" make compat-interop UPSTREAM_SRC=upstream DIST=dist
+      - name: Client matrix
+        run: scripts/ci-run.sh "clients ${{ matrix.arch }}" make clients DIST=dist
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sycache-${{ matrix.arch }}
+          path: |
+            dist/*.rpm
+            dist/*.deb
+            dist/sycache-*.tar.gz
+            dist/*.spdx.json
+            dist/BUILDINFO
+          if-no-files-found: ignore
+
+  install:
+    name: install ${{ matrix.image }} (${{ matrix.arch }})
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04, image: "centos:7", kind: rpm }
+          - { arch: x86_64, runner: ubuntu-24.04, image: "rockylinux/rockylinux:8", kind: rpm }
+          - { arch: x86_64, runner: ubuntu-24.04, image: "rockylinux/rockylinux:9", kind: rpm }
+          - { arch: x86_64, runner: ubuntu-24.04, image: "openeuler/openeuler:22.03-lts", kind: rpm }
+          - { arch: x86_64, runner: ubuntu-24.04, image: "openeuler/openeuler:24.03-lts", kind: rpm }
+          - { arch: x86_64, runner: ubuntu-24.04, image: "ubuntu:20.04", kind: deb }
+          - { arch: x86_64, runner: ubuntu-24.04, image: "ubuntu:24.04", kind: deb }
+          - { arch: x86_64, runner: ubuntu-24.04, image: "debian:12", kind: deb }
+          - { arch: aarch64, runner: ubuntu-24.04-arm, image: "openeuler/openeuler:22.03-lts", kind: rpm }
+          - { arch: aarch64, runner: ubuntu-24.04-arm, image: "rockylinux/rockylinux:8", kind: rpm }
+          - { arch: aarch64, runner: ubuntu-24.04-arm, image: "ubuntu:22.04", kind: deb }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: sycache-${{ matrix.arch }}
+          path: dist
+      - name: Install, run and uninstall
+        run: >-
+          scripts/ci-run.sh "install ${{ matrix.image }} ${{ matrix.arch }}"
+          docker run --rm -v "$PWD/dist:/dist:ro" -v "$PWD/test/install:/t:ro" "${{ matrix.image }}"
+          bash /t/smoke.sh ${{ matrix.kind }}
+
+  upstream-suite:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq tcl libssl-dev pkg-config
+      - name: Fetch upstream
+        run: |
+          source dataplane/UPSTREAM
+          git -c advice.detachedHead=false clone -q --depth 1 --branch "$UPSTREAM_TAG" "$UPSTREAM_GIT" upstream
+      - name: Upstream Tcl suite on renamed source
+        run: test/upstream/run-suite.sh -s upstream

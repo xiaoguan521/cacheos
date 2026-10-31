@@ -33,10 +33,19 @@ grep -vE '^\s*(#|$)' "$KNOWN" | sed -E 's/[[:space:]]+#.*$//' | sort -u > "$WORK
 comm -23 "$WORK/failed.txt" "$WORK/known.txt" > "$WORK/new.txt"
 comm -13 "$WORK/failed.txt" "$WORK/known.txt" > "$WORK/fixed.txt"
 
-annotate() { if [[ -n "${GITHUB_ACTIONS:-}" ]]; then echo "::$1::$2"; else echo "$1: $2"; fi; }
-while IFS= read -r t; do annotate error "new upstream failure: $t"; done < "$WORK/new.txt"
-while IFS= read -r t; do annotate warning "known diff now passes, remove from known-diff.txt: $t"; done < "$WORK/fixed.txt"
-echo "upstream suite: $(wc -l < "$WORK/failed.txt") failed, $(wc -l < "$WORK/new.txt") new, $(wc -l < "$WORK/fixed.txt") fixed"
+# 汇总成单条注解（GitHub 每步只显示前 10 条注解；单条消息可容纳全部用例名，便于通过 API 读取）
+enc() { sed -e 's/%/%25/g' | sed -e ':a;N;$!ba;s/\n/%0A/g'; }
+annotate() {
+  if [[ -n "${GITHUB_ACTIONS:-}" ]]; then echo "::$1 title=$2::$(enc)"; else echo "$1: $2"; cat; fi
+}
+[[ -s "$WORK/new.txt" ]] && annotate error "upstream suite: $(wc -l < "$WORK/new.txt") new failures" < "$WORK/new.txt"
+[[ -s "$WORK/fixed.txt" ]] && annotate warning "known diffs now passing (remove from known-diff.txt)" < "$WORK/fixed.txt"
+summary="upstream suite: $(wc -l < "$WORK/failed.txt") failed, $(wc -l < "$WORK/new.txt") new, $(wc -l < "$WORK/fixed.txt") fixed"
+echo "$summary" | annotate notice "upstream suite summary"
+# 失败用例的断言细节（每个用例取 [err] 之后的几行），供评审 known-diff 时判断是否只是改名导致
+if [[ -s "$WORK/new.txt" ]]; then
+  grep -A4 -F '[err]' "$WORK/test.log" | cut -c1-240 | head -400 | annotate warning "upstream failure details"
+fi
 grep -q 'All tests passed' "$WORK/test.log" || [[ -s "$WORK/failed.txt" ]] \
   || { annotate error "suite did not finish (crash or timeout), see log"; exit 1; }
 [[ ! -s "$WORK/new.txt" ]]
