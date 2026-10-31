@@ -29,7 +29,7 @@ make -j"$(nproc)" ENGINE_NAME=sycache USE_REDIS_SYMLINKS=no BUILD_TLS=yes >"$WOR
 # 失败用例：runtest 输出 "[err]: <名称> in <文件>"
 grep -oE '\[err\]: .*' "$WORK/test.log" | sed -E 's/^\[err\]: //' | sort -u > "$WORK/failed.txt" || true
 KNOWN="$ROOT/test/upstream/known-diff.txt"
-grep -vE '^\s*(#|$)' "$KNOWN" | sed -E 's/[[:space:]]+#.*$//' | sort -u > "$WORK/known.txt"
+{ grep -vE '^\s*(#|$)' "$KNOWN" || true; } | sed -E 's/[[:space:]]+#.*$//' | sort -u > "$WORK/known.txt"
 comm -23 "$WORK/failed.txt" "$WORK/known.txt" > "$WORK/new.txt"
 comm -13 "$WORK/failed.txt" "$WORK/known.txt" > "$WORK/fixed.txt"
 
@@ -44,8 +44,15 @@ summary="upstream suite: $(wc -l < "$WORK/failed.txt") failed, $(wc -l < "$WORK/
 echo "$summary" | annotate notice "upstream suite summary"
 # 失败用例的断言细节（每个用例取 [err] 之后的几行），供评审 known-diff 时判断是否只是改名导致
 if [[ -s "$WORK/new.txt" ]]; then
-  grep -A4 -F '[err]' "$WORK/test.log" | cut -c1-240 | head -400 | annotate warning "upstream failure details"
+  { grep -A4 -F '[err]' "$WORK/test.log" || true; } | cut -c1-240 | head -400 | annotate warning "upstream failure details" || true
 fi
-grep -q 'All tests passed' "$WORK/test.log" || [[ -s "$WORK/failed.txt" ]] \
-  || { annotate error "suite did not finish (crash or timeout), see log"; exit 1; }
+if ! grep -q 'All tests passed' "$WORK/test.log" && [[ ! -s "$WORK/failed.txt" ]]; then
+  tail -80 "$WORK/test.log" | cut -c1-240 | annotate error "suite did not finish (crash or timeout), log tail"
+  exit 1
+fi
+# 异常（[exception]）与超时也要暴露，它们不会出现在 [err] 列表里
+if grep -qE '\[(exception|timeout)\]' "$WORK/test.log"; then
+  { grep -B2 -A20 -E '\[(exception|timeout)\]' "$WORK/test.log" || true; } | cut -c1-240 | head -200 \
+    | annotate error "suite exceptions / timeouts" || true
+fi
 [[ ! -s "$WORK/new.txt" ]]

@@ -110,4 +110,4 @@ jobs:
           source dataplane/UPSTREAM
           git -c advice.detachedHead=false clone -q --depth 1 --branch "$UPSTREAM_TAG" "$UPSTREAM_GIT" upstream
       - name: Upstream Tcl suite on renamed source
-        run: test/upstream/run-suite.sh -s upstream
+        run: scripts/ci-run.sh "upstream suite" test/upstream/run-suite.sh -s upstream
