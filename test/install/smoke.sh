@@ -35,9 +35,11 @@ id sycache
 for b in sycache-server sycache-cli sycache-sentinel sycache-benchmark sycache-check-rdb sycache-check-aof; do
   test -x "$B/$b"
 done
-if ldd "$B/sycache-server" | grep -q 'not found'; then ldd "$B/sycache-server"; exit 1; fi
+deps="$(ldd "$B/sycache-server")"
+if [[ "$deps" == *"not found"* ]]; then echo "$deps"; exit 1; fi
 ver="$(sed -n 's/^product_version=//p' /opt/sycache/share/BUILDINFO)"
-"$B/sycache-server" --version | grep -q "SyCache server v=$ver "
+v="$("$B/sycache-server" --version)"
+[[ "$v" == *"SyCache server v=$ver "* ]] || { echo "unexpected --version: $v"; exit 1; }
 test -f /usr/lib/systemd/system/sycache@.service
 test -d /opt/sycache/instances && test "$(stat -c %U /opt/sycache/instances)" = sycache
 
@@ -45,20 +47,27 @@ step "primary / replica as user sycache"
 for p in 7001 7002; do
   install -d -o sycache -g sycache /opt/sycache/instances/$p
 done
+# 最小化镜像（如 openEuler）可能不带 util-linux 的 runuser：按需安装
+if ! command -v runuser >/dev/null; then
+  if command -v dnf >/dev/null; then dnf install -y -q util-linux >/dev/null; else yum install -y -q util-linux >/dev/null; fi
+fi
 run() { runuser -u sycache -- "$@"; }
 run "$B/sycache-server" --port 7001 --daemonize yes --dir /opt/sycache/instances/7001 \
   --logfile /var/log/sycache/7001.log --pidfile /opt/sycache/instances/7001/pid
 run "$B/sycache-server" --port 7002 --daemonize yes --dir /opt/sycache/instances/7002 \
   --logfile /var/log/sycache/7002.log --pidfile /opt/sycache/instances/7002/pid --replicaof 127.0.0.1 7001
 cli() { "$B/sycache-cli" "$@"; }
-for _ in $(seq 50); do cli -p 7002 info replication | grep -q 'master_link_status:up' && break; sleep 0.2; done
-cli -p 7002 info replication | grep -q 'master_link_status:up'
+# 用变量承接输出再匹配：管道里的 grep -q 提前退出会让上游收到 SIGPIPE，在 pipefail 下被误判为失败
+link() { cli -p 7002 info replication 2>/dev/null | tr -d '\r' | sed -n 's/^master_link_status://p'; }
+for _ in $(seq 50); do [ "$(link)" = up ] && break; sleep 0.2; done
+[ "$(link)" = up ]
 cli -p 7001 set smoke:k v >/dev/null
 for _ in $(seq 50); do [ "$(cli -p 7002 get smoke:k)" = v ] && break; sleep 0.1; done
 [ "$(cli -p 7002 get smoke:k)" = v ]
 [ "$(cli -p 7001 eval "return redis.call('GET', KEYS[1])" 1 smoke:k)" = v ]
 cli -p 7001 save >/dev/null
-(cd /opt/sycache/instances/7001 && "$B/sycache-check-rdb" dump.rdb | grep -q 'RDB looks OK')
+chk="$(cd /opt/sycache/instances/7001 && "$B/sycache-check-rdb" dump.rdb)"
+[[ "$chk" == *"RDB looks OK"* ]] || { echo "$chk"; exit 1; }
 cli -p 7002 shutdown nosave >/dev/null 2>&1 || true
 cli -p 7001 shutdown nosave >/dev/null 2>&1 || true
 
@@ -69,5 +78,5 @@ case "$KIND" in
   deb) apt-get remove -y -qq sycache >/dev/null ;;
 esac
 test ! -e "$B/sycache-server"
-glibc="$(ldd --version | head -1 | grep -oE '[0-9]+\.[0-9]+$')"
+glibc="$(getconf GNU_LIBC_VERSION | awk '{print $2}')"
 echo "NOTICE: $KIND install/run/uninstall OK on $OS ($ARCH, glibc $glibc)"

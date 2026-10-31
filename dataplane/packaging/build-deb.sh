@@ -42,6 +42,7 @@ Architecture: $DEB_ARCH
 Maintainer: CacheOS <support@cacheos.invalid>
 Section: database
 Priority: optional
+Pre-Depends: passwd
 Depends: $DEPENDS
 Installed-Size: $(du -sk --exclude=DEBIAN "$R" | cut -f1)
 Description: CacheOS sycache - Redis-compatible in-memory data store

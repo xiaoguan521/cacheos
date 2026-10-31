@@ -31,6 +31,8 @@ Summary:        CacheOS sycache - Redis-compatible in-memory data store
 License:        Proprietary; includes BSD-3-Clause and other third-party components (see /opt/sycache/licenses)
 URL:            https://cacheos.invalid
 AutoReqProv:    yes
+# 安装前脚本创建系统用户；用文件依赖，兼容 RHEL 系（shadow-utils）与 openEuler（shadow）
+Requires(pre):  /usr/sbin/useradd /usr/sbin/groupadd /usr/bin/getent
 %global __os_install_post %{nil}
 %global debug_package %{nil}
 %global _build_id_links none
