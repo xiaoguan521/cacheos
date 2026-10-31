@@ -1,0 +1,15 @@
+[Unit]
+Description=Set transparent hugepages to madvise for SyCache (CacheOS)
+DefaultDependencies=no
+After=sysinit.target local-fs.target
+Before=basic.target
+ConditionPathExists=/sys/kernel/mm/transparent_hugepage/enabled
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# fork 持久化时透明大页会放大写时复制的延迟与内存占用（规格书 5.4）
+ExecStart=/bin/sh -c 'echo madvise > /sys/kernel/mm/transparent_hugepage/enabled; [ -e /sys/kernel/mm/transparent_hugepage/defrag ] && echo madvise > /sys/kernel/mm/transparent_hugepage/defrag || true'
+
+[Install]
+WantedBy=basic.target

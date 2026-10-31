@@ -1,8 +1,8 @@
 [Unit]
 Description=SyCache sentinel on port %i (CacheOS)
 Documentation=man:sycache-sentinel(1)
-After=network-online.target
-Wants=network-online.target
+After=network-online.target sycache-thp.service
+Wants=network-online.target sycache-thp.service
 
 [Service]
 Type=notify

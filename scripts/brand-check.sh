@@ -9,7 +9,8 @@ cd "$(dirname "$0")/.."
 SCOPE=()
 for d in cmd internal web/src deploy api/proto \
          dataplane/packaging/sycache@.service dataplane/packaging/sycache-sentinel@.service \
-         dataplane/packaging/90-sycache.conf dataplane/packaging/sycache.logrotate; do
+         dataplane/packaging/90-sycache.conf dataplane/packaging/sycache.logrotate \
+         dataplane/packaging/sycache-thp.service dataplane/packaging/scripts; do
   [[ -e "$d" ]] && SCOPE+=("$d")
 done
 hits=$(grep -rniI 'valkey' "${SCOPE[@]}" 2>/dev/null \

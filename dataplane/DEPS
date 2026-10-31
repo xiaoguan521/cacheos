@@ -1,0 +1,6 @@
+# 兼容构建（-S）静态链接的第三方依赖，按 tag 拉取并校验提交哈希。
+# OpenSSL 跟 LTS 线：3.5 LTS 支持至 2030-04（3.0 LTS 已于 2026-09 结束支持）。Apache-2.0。
+OPENSSL_VERSION=3.5.9
+OPENSSL_GIT=https://github.com/openssl/openssl.git
+OPENSSL_TAG=openssl-3.5.9
+OPENSSL_COMMIT=45e844fa2a14ec92d146bd8f5778ac130b6625fb

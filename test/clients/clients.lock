@@ -1,0 +1,9 @@
+# 客户端兼容矩阵使用的上游客户端库，按 tag 拉取并校验提交哈希（规格书 5.6）。
+# 格式：<目录名> <git 地址> <tag> <提交哈希>
+# Java 客户端（Jedis、Lettuce、Redisson、Spring Data Redis）需要 Maven 仓库，见 test/clients/README.md。
+redis-py        https://github.com/redis/redis-py.git        v6.4.0   fff669daaf43ae8092ea8ab7a2a3196a9b1b7e41
+go-redis        https://github.com/redis/go-redis.git        v9.7.3   a29d91d9ca72a9c26708fba7dc9872f339a3549e
+xxhash          https://github.com/cespare/xxhash.git        v2.2.0   a76eb16a93c1e30527c073ca831d9048b4b935f6
+go-rendezvous   https://github.com/dgryski/go-rendezvous.git -        9f7001d12a5f0021fd3283525f888b5814ccee27
+ginkgo          https://github.com/bsm/ginkgo.git            v2.12.0  384424d6135c404efdc0536f4802562829335c7f
+gomega          https://github.com/bsm/gomega.git            v1.27.10 4704b17a354f5c3f9b6b5fda166050d371705aaa

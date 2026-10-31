@@ -5,7 +5,9 @@
 # 不需要 root：把安装包解压到临时目录，用非特权端口启动单机实例与哨兵。
 set -euo pipefail
 PKG="${1:?usage: golden-rename.sh <package.tar.gz> [base-port]}"
-PORT="${2:-17001}"; SPORT=$((PORT + 1))
+PORT="${2:-17001}"
+[[ "$PORT" =~ ^[0-9]+$ ]] || { echo "base port must be a number: $PORT" >&2; exit 2; }
+SPORT=$((PORT + 1))
 ROOT_DIR="$(mktemp -d)"; RUN="$ROOT_DIR/run"; mkdir -p "$RUN"
 tar -C "$ROOT_DIR" -xzf "$PKG"
 P="$ROOT_DIR/opt/sycache"; B="$P/bin"

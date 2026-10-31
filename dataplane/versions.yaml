@@ -2,7 +2,7 @@
 # 规则：
 #   - 产品版本号的每一次变化都必须对应真实的代码变化；禁止只改版本号规避扫描。
 #   - 安全补丁原样 backport 上游官方 commit，每个 CVE 一个文件 dataplane/patches/1xxx-cve-YYYY-NNNNN.patch。
-#   - 本文件、BUILDINFO 与 SBOM 必须一致（校验脚本 scripts/check-versions.sh 待实现，见 docs/spec 待办）。
+#   - 本文件、BUILDINFO 与 SBOM 必须一致，scripts/check-versions.sh 校验（make ci）。
 current: 1.0.0-dev
 
 releases:

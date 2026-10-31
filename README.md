@@ -43,6 +43,8 @@ make patch-check UPSTREAM_SRC=/tmp/valkey   # patch 与规则一致
 make sycache     UPSTREAM_SRC=/tmp/valkey   # 构建 dist/sycache-<版本>-<架构>.tar.gz
 make golden                                 # 改名黄金验收
 make compat                                 # 行为等价测试；加 VALKEY_BIN=<上游 src 目录> 跑混合版本互通
+make ci          UPSTREAM_SRC=/tmp/valkey   # 提交前的完整校验（含版本一致性、上游互通、客户端矩阵）
+make compat-build                           # glibc 2.17 容器中兼容构建，产出 tar.gz / RPM / DEB（需要 docker）
 ```
 
 修改改名规则后执行 `make patch UPSTREAM_SRC=…` 重新生成 patch，并把规则与 patch 一起提交。

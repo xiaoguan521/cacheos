@@ -10,6 +10,7 @@
 import os
 import shutil
 import socket
+import ssl
 import subprocess
 import tempfile
 import time
@@ -26,8 +27,10 @@ class RespError(Exception):
 
 
 class Conn:
-    def __init__(self, port, host="127.0.0.1", timeout=5):
+    def __init__(self, port, host="127.0.0.1", timeout=5, tls=None):
         self.sock = socket.create_connection((host, port), timeout=timeout)
+        if tls is not None:
+            self.sock = tls.wrap_socket(self.sock, server_hostname="localhost")
         self.buf = b""
 
     def close(self):
@@ -250,6 +253,70 @@ class SentinelTest(CompatBase):
         wait_until(lambda: s0.cmd("SENTINEL", "GET-MASTER-ADDR-BY-NAME", "mymaster") == ["127.0.0.1", str(p2)],
                    what="failover to replica")
         wait_until(lambda: info(Conn(p2), "replication")["role"] == "master", what="new primary role")
+
+
+def make_certs(d):
+    """用 openssl 命令行生成测试用 CA、服务端与客户端证书（RSA 2048，1 天有效）。"""
+    def run(*args):
+        subprocess.run(["openssl", *args], cwd=d, check=True, capture_output=True)
+    run("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=CacheOS Test CA",
+        "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+        "-keyout", "ca.key", "-out", "ca.crt")
+    for name in ("server", "client"):
+        run("req", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=localhost", "-keyout", f"{name}.key",
+            "-out", f"{name}.csr")
+        with open(os.path.join(d, f"{name}.ext"), "w") as f:
+            f.write("subjectAltName=DNS:localhost,IP:127.0.0.1\n"
+                    "keyUsage=critical,digitalSignature,keyEncipherment\n"
+                    "extendedKeyUsage=serverAuth,clientAuth\n")
+        run("x509", "-req", "-in", f"{name}.csr", "-CA", "ca.crt", "-CAkey", "ca.key", "-CAcreateserial",
+            "-days", "1", "-extfile", f"{name}.ext", "-out", f"{name}.crt")
+    return {k: os.path.join(d, k) for k in ("ca.crt", "server.crt", "server.key", "client.crt", "client.key")}
+
+
+@unittest.skipUnless(shutil.which("openssl"), "openssl CLI not found")
+class TlsTest(CompatBase):
+    """业务链路与复制链路 TLS（规格书 9.1）。"""
+
+    def tls_conf(self, c, port):
+        return [f"tls-port {port}", "port 0", f"tls-cert-file {c['server.crt']}", f"tls-key-file {c['server.key']}",
+                f"tls-ca-cert-file {c['ca.crt']}", "tls-auth-clients yes", "tls-replication yes",
+                f"tls-client-cert-file {c['client.crt']}", f"tls-client-key-file {c['client.key']}"]
+
+    def client_ctx(self, c, with_cert=True):
+        ctx = ssl.create_default_context(cafile=c["ca.crt"])
+        if with_cert:
+            ctx.load_cert_chain(c["client.crt"], c["client.key"])
+        return ctx
+
+    def start_tls(self, port, c, extra=()):
+        d = os.path.join(self.env.dir, str(port))
+        os.makedirs(d, exist_ok=True)
+        conf = os.path.join(d, "node.conf")
+        with open(conf, "w") as f:
+            f.write(f"bind 127.0.0.1\ndir {d}\nsave \"\"\nappendonly no\n")
+            for line in [*self.tls_conf(c, port), *extra]:
+                f.write(line + "\n")
+        log = open(os.path.join(d, "out.log"), "w")
+        self.env.procs.append(subprocess.Popen([sy("sycache-server"), conf], stdout=log, stderr=subprocess.STDOUT))
+        wait_until(lambda: Conn(port, tls=self.client_ctx(c)).cmd("PING") == "PONG", timeout=10, what="tls server")
+
+    def test_mutual_tls_and_tls_replication(self):
+        c = make_certs(self.env.dir)
+        p1, p2 = self.next_port(), self.next_port()
+        self.start_tls(p1, c)
+        self.start_tls(p2, c, extra=[f"replicaof 127.0.0.1 {p1}"])
+        prim, rep = Conn(p1, tls=self.client_ctx(c)), Conn(p2, tls=self.client_ctx(c))
+        prim.cmd("SET", "tk", "tv")
+        wait_until(lambda: rep.cmd("GET", "tk") == "tv", what="replication over TLS")
+        # 不带客户端证书的连接被拒绝（tls-auth-clients yes）
+        with self.assertRaises((ssl.SSLError, ConnectionError, OSError)):
+            Conn(p1, tls=self.client_ctx(c, with_cert=False)).cmd("PING")
+        # sycache-cli 的 TLS 参数与上游一致
+        out = subprocess.run([sy("sycache-cli"), "-p", str(p1), "--tls", "--cacert", c["ca.crt"], "--cert",
+                              c["client.crt"], "--key", c["client.key"], "GET", "tk"],
+                             capture_output=True, text=True, timeout=10)
+        self.assertEqual(out.stdout.strip(), "tv", out.stderr)
 
 
 @unittest.skipUnless(VALKEY_BIN, "VALKEY_BIN not set: skip mixed-version interop with upstream Valkey")
