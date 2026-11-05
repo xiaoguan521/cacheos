@@ -1,0 +1,433 @@
+syntax = "proto3";
+
+// 控制台 <-> sycache-agent 协议（CacheOS 规格书 6.2）。
+// agent 主动发起连接；除 Enroll 外全部要求 mTLS。
+// 每条 ServerMessage 另带 Ed25519 应用层签名与 cmd_id，用于防伪造和防重放。
+// 协议中只有类型化的运维指令，没有「执行任意命令」「读写任意文件」类消息；
+// agent 以只授予运维命令的管理账号、经 Unix Socket 访问本机实例。
+package cacheos.agent.v1;
+
+option go_package = "github.com/xiaoguan521/cacheos/api/gen/agent/v1;agentv1";
+
+service AgentGateway {
+  // 首次注册：只凭一次性令牌，不要求客户端证书
+  rpc Enroll(EnrollRequest) returns (EnrollResponse);
+  // 长连接：控制台经此下发指令，agent 回传结果、心跳与实例状态（mTLS）
+  rpc Connect(stream AgentMessage) returns (stream ServerMessage);
+  // 分片下载版本库中的数据面 / agent 升级包（mTLS）
+  rpc FetchPackage(FetchPackageRequest) returns (stream PackageChunk);
+  // 上传备份文件（P5 远端备份）：首个分片携带元数据（mTLS）
+  rpc UploadBackup(stream BackupChunk) returns (UploadResult);
+}
+
+message EnrollRequest {
+  string enroll_token = 1;
+  bytes csr_der = 2;
+  string hostname = 3;
+  string agent_version = 4;
+  string machine_fingerprint = 5;
+}
+
+message EnrollResponse {
+  string host_id = 1;
+  bytes client_cert_der = 2;
+  bytes ca_cert_der = 3;
+  bytes command_pubkey = 4;
+}
+
+// ---------------- agent -> 控制台 ----------------
+
+message AgentMessage {
+  string msg_id = 1;
+  oneof body {
+    Hello hello = 10;
+    Heartbeat heartbeat = 11;
+    CommandResult result = 12;
+  }
+}
+
+message Hello {
+  string agent_version = 1;          // "<版本> linux/<amd64|arm64>"
+  string hostname = 2;
+  string machine_fingerprint = 3;
+  uint32 cpu_cores = 4;
+  uint64 mem_total_bytes = 5;
+  string os_release = 6;             // /etc/os-release 的 PRETTY_NAME
+  string kernel = 7;
+  repeated string engine_versions = 8; // /opt/sycache/versions 下已安装的产品版本
+  string engine_current = 9;           // current 软链指向的版本
+  string engine_buildinfo = 10;        // 当前版本的 BUILDINFO 原文
+  HostTuning tuning = 11;
+  repeated InstanceStatus instances = 12;
+}
+
+// 主机内核参数体检（规格书 7 节 M3）
+message HostTuning {
+  string transparent_hugepage = 1;   // always | madvise | never
+  int64 overcommit_memory = 2;
+  int64 somaxconn = 3;
+  uint64 nofile_limit = 4;
+}
+
+message Heartbeat {
+  double cpu_percent = 1;
+  uint64 mem_used_bytes = 2;
+  uint64 mem_total_bytes = 3;
+  uint64 data_disk_free_bytes = 4;   // /opt/sycache/instances 所在分区
+  repeated InstanceStatus instances = 5;
+}
+
+// 实例运行状态：agent 从 INFO / CONFIG GET / CLUSTER INFO 汇总。
+message InstanceStatus {
+  uint32 port = 1;
+  Kind kind = 2;
+  State state = 3;
+  string role = 4;                   // master | slave | sentinel
+  string run_id = 5;
+  uint64 uptime_seconds = 6;
+  uint64 used_memory = 7;
+  uint64 maxmemory = 8;
+  double mem_fragmentation_ratio = 9;
+  uint64 connected_clients = 10;
+  uint64 ops_per_sec = 11;
+  uint64 keyspace_hits = 12;
+  uint64 keyspace_misses = 13;
+  uint64 keys = 14;
+  uint64 expired_keys = 15;
+  uint64 evicted_keys = 16;
+  // 复制
+  string master_host = 17;
+  uint32 master_port = 18;
+  string master_link_status = 19;    // up | down（从节点）
+  int64 master_repl_offset = 20;
+  uint32 connected_slaves = 21;
+  repeated ReplicaInfo replicas = 22;
+  // 持久化
+  string rdb_last_bgsave_status = 23;
+  int64 rdb_last_save_time = 24;
+  string aof_last_write_status = 25;
+  bool aof_enabled = 26;
+  // 集群
+  bool cluster_enabled = 27;
+  string cluster_state = 28;
+  string cluster_node_id = 29;
+  uint32 cluster_slots_assigned = 30;
+  string cluster_slots = 31;         // 本节点负责的槽区间，如 "0-5460"
+  // 哨兵
+  repeated SentinelMaster sentinel_masters = 32;
+  // 配置与漂移：受管参数（CONFIG GET）的摘要，与控制台版本不一致即漂移
+  string config_digest = 33;
+  map<string, string> config = 34;   // 只上报受管参数，不含口令类参数
+  string error = 35;                 // state=FAILED / UNREACHABLE 时的原因
+  string engine_version = 36;        // INFO 中的 sycache_version
+  repeated SlowlogEntry slowlog_tail = 37; // 最近 10 条慢日志（命令参数已截断脱敏）
+  int64 latency_max_ms = 38;
+  uint64 total_net_input_bytes = 39;
+  uint64 total_net_output_bytes = 40;
+}
+
+enum Kind {
+  KIND_UNSPECIFIED = 0;
+  KIND_SERVER = 1;
+  KIND_SENTINEL = 2;
+}
+
+enum State {
+  STATE_UNSPECIFIED = 0;
+  STATE_RUNNING = 1;
+  STATE_STOPPED = 2;
+  STATE_LOADING = 3;
+  STATE_FAILED = 4;      // 进程在但无法通过管理账号访问，或 systemd 报失败
+  STATE_PENDING_RESTART = 5; // 有需重启才生效的参数
+}
+
+message ReplicaInfo {
+  string ip = 1;
+  uint32 port = 2;
+  string state = 3;
+  int64 offset = 4;
+  int64 lag = 5;
+}
+
+message SentinelMaster {
+  string name = 1;
+  string ip = 2;
+  uint32 port = 3;
+  string flags = 4;
+  uint32 num_slaves = 5;
+  uint32 num_other_sentinels = 6;
+  uint32 quorum = 7;
+}
+
+message SlowlogEntry {
+  int64 id = 1;
+  int64 timestamp = 2;
+  int64 duration_us = 3;
+  string command = 4;    // 只有命令名与第一个参数（键名），值一律不上报
+  string client = 5;
+}
+
+message CommandResult {
+  string cmd_id = 1;
+  Status status = 2;
+  string message = 3;
+  string error_code = 4;             // CONFLICT | INVALID | LICENSE | TIMEOUT | NOT_FOUND | UNSUPPORTED | INTERNAL
+  InstanceStatus instance = 5;       // 操作后的实例状态
+  map<string, string> details = 6;
+  bytes payload = 7;                 // 诊断报告、Key 浏览结果等 JSON（大小有上限）
+
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    OK = 1;
+    FAILED = 2;
+    ROLLED_BACK = 3;
+    PENDING_RESTART = 4;
+  }
+}
+
+// ---------------- 控制台 -> agent ----------------
+
+message ServerMessage {
+  string cmd_id = 1;
+  int64 issued_at_unix = 2;
+  bytes signature = 3;
+  oneof body {
+    LicenseUpdate license = 10;
+    CreateInstance create = 11;
+    ApplyParams params = 12;
+    InstanceAction action = 13;
+    SetReplication replication = 14;
+    Failover failover = 15;
+    ClusterOp cluster = 16;
+    SentinelOp sentinel = 17;
+    SyncAcl acl = 18;
+    Backup backup = 19;
+    Restore restore = 20;
+    Diagnose diagnose = 21;
+    BrowseKeys keys = 22;
+    SwitchVersion switch_version = 23;
+    UpgradeAgent upgrade_agent = 24;
+    Probe probe = 25;
+  }
+}
+
+message LicenseUpdate { string raw = 1; }
+
+// 创建实例：agent 生成管理账号口令（只存本机），写入配置并经 wrapper 启动。
+message CreateInstance {
+  uint32 port = 1;                   // 1024-65535
+  Kind kind = 2;
+  map<string, string> params = 3;    // 经控制台参数目录校验后的参数
+  string revision_id = 4;            // 参数版本，写入 MANIFEST，用于漂移检测
+  ReplicaOf replica_of = 5;          // 主从形态的从节点
+  string masterauth = 6;             // 复制口令（控制台生成并加密保存，仅随指令下发）
+  repeated AclUser acl_users = 7;    // 业务账号（口令只下发哈希）
+  string sentinel_monitor_name = 8;  // kind=SENTINEL
+  string sentinel_master_host = 9;
+  uint32 sentinel_master_port = 10;
+  uint32 sentinel_quorum = 11;
+  bool cluster_enabled = 12;
+  TlsMaterial tls = 13;
+}
+
+message ReplicaOf {
+  string host = 1;
+  uint32 port = 2;
+}
+
+message TlsMaterial {
+  bytes cert_pem = 1;
+  bytes key_pem = 2;   // 只写入实例目录（0600），不回传
+  bytes ca_pem = 3;
+  bool tls_replication = 4;
+  bool tls_cluster = 5;
+  bool auth_clients = 6;
+}
+
+// 参数变更状态机（规格书 6.3）：parent_revision_id 乐观锁；可热改的逐项 CONFIG SET 并回读，再 CONFIG REWRITE。
+message ApplyParams {
+  uint32 port = 1;
+  string revision_id = 2;
+  string parent_revision_id = 3;
+  map<string, string> params = 4;    // 只含变化的参数
+  repeated string restart_required = 5; // 需重启生效的参数名（由控制台参数目录判定，agent 复核）
+}
+
+message InstanceAction {
+  uint32 port = 1;
+  Action action = 2;
+  enum Action {
+    ACTION_UNSPECIFIED = 0;
+    START = 1;
+    STOP = 2;          // 先 SHUTDOWN（按配置持久化），再由 wrapper 停 systemd 单元
+    RESTART = 3;       // 单实例；滚动顺序由控制台编排
+    DELETE = 4;        // 必须已停止；数据目录移入 trash 保留 7 天
+  }
+}
+
+message SetReplication {
+  uint32 port = 1;
+  ReplicaOf replica_of = 2;          // 为空表示 REPLICAOF NO ONE
+  string masterauth = 3;
+}
+
+message Failover {
+  uint32 port = 1;
+  Mode mode = 2;
+  string sentinel_master_name = 3;
+  uint32 timeout_ms = 4;
+  enum Mode {
+    MODE_UNSPECIFIED = 0;
+    PROMOTE = 1;            // 在从节点上 REPLICAOF NO ONE（主节点已下线时的应急切换）
+    COORDINATED = 2;        // 在主节点上 FAILOVER（等从节点追平偏移再切换，不丢数据）
+    CLUSTER = 3;            // 在从节点上 CLUSTER FAILOVER
+    CLUSTER_FORCE = 4;      // CLUSTER FAILOVER FORCE（主节点不可达）
+    SENTINEL = 5;           // 在哨兵上 SENTINEL FAILOVER <name>
+  }
+}
+
+// 集群操作（规格书 7 节在线迁槽）：一次一个原子步骤，由控制台编排。
+message ClusterOp {
+  uint32 port = 1;
+  Op op = 2;
+  string peer_host = 3;
+  uint32 peer_port = 4;
+  repeated SlotRange slots = 5;
+  string node_id = 6;           // REPLICATE / SETSLOT NODE / FORGET 的目标节点
+  uint32 slot = 7;              // SETSLOT / MIGRATE_SLOT 的槽
+  uint32 batch = 8;             // MIGRATE_SLOT 每批键数
+  uint32 timeout_ms = 9;
+  enum Op {
+    OP_UNSPECIFIED = 0;
+    MEET = 1;
+    ADD_SLOTS = 2;
+    REPLICATE = 3;
+    SETSLOT_IMPORTING = 4;
+    SETSLOT_MIGRATING = 5;
+    SETSLOT_NODE = 6;
+    MIGRATE_SLOT = 7;           // 把一个槽内的键分批 MIGRATE 到 peer，返回迁移键数
+    FORGET = 8;
+    NODES = 9;                  // 返回 CLUSTER NODES 解析结果（payload JSON）
+    RESET = 10;                 // CLUSTER RESET SOFT（仅用于空节点重新加入）
+  }
+}
+
+message SlotRange {
+  uint32 start = 1;
+  uint32 end = 2;
+}
+
+message SentinelOp {
+  uint32 port = 1;
+  Op op = 2;
+  string master_name = 3;
+  string master_host = 4;
+  uint32 master_port = 5;
+  uint32 quorum = 6;
+  map<string, string> options = 7;   // down-after-milliseconds、failover-timeout 等（白名单）
+  string auth_pass = 8;
+  enum Op {
+    OP_UNSPECIFIED = 0;
+    MONITOR = 1;
+    REMOVE = 2;
+    SET = 3;
+    RESET = 4;
+  }
+}
+
+// 业务账号同步（规格书 7 节 M11）：全量下发，agent 计算差异后 ACL SETUSER / DELUSER，再 ACL SAVE。
+message SyncAcl {
+  uint32 port = 1;
+  repeated AclUser users = 2;
+}
+
+message AclUser {
+  string name = 1;
+  repeated string password_sha256 = 2; // 只下发哈希（ACL 的 #<hash> 语法）
+  repeated string rules = 3;           // 已由控制台按白名单生成的规则，如 "~app:*" "+@read" "-@dangerous"
+  bool enabled = 4;
+}
+
+// 备份（P5）：BGSAVE 后拷贝 RDB 到备份目录；remote 时由 agent 分片上传到控制台。
+message Backup {
+  uint32 port = 1;
+  string backup_id = 2;
+  bool upload = 3;
+}
+
+message Restore {
+  uint32 port = 1;              // 必须是已停止的实例或新建的空实例
+  string backup_id = 2;
+  bool from_console = 3;        // 先从控制台下载（FetchPackage 复用分片通道）
+  string sha256 = 4;
+}
+
+// 诊断（P5）：只读。
+message Diagnose {
+  uint32 port = 1;
+  Kind what = 2;
+  uint32 sample = 3;            // 大 Key 抽样数
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    SLOWLOG = 1;
+    LATENCY = 2;
+    MEMORY = 3;
+    BIGKEYS = 4;                // SCAN + MEMORY USAGE 抽样，只返回键名、类型、大小
+    CLIENTS = 5;
+    RDB_ANALYZE = 6;            // 离线解析最近一次 RDB（不访问实例）
+  }
+}
+
+// Key 浏览（P5）：SCAN 分页，value 默认只返回类型、长度与 TTL；明文需单独授权，由控制台审计。
+message BrowseKeys {
+  uint32 port = 1;
+  string pattern = 2;           // 只允许前缀匹配：字母数字与 :_-./ 加结尾 *
+  string cursor = 3;
+  uint32 count = 4;
+  string key = 5;               // 查看单个键
+  bool reveal = 6;              // 返回明文（截断到 4KB）
+}
+
+// 数据面版本切换（规格书 6.4）：下载并验签升级包后，由 wrapper 切换 current 软链；实例重启由控制台按滚动顺序另行下发。
+message SwitchVersion {
+  string version = 1;
+  string arch = 2;
+  string sha256 = 3;
+  bytes vendor_signature = 4;   // 厂商 Ed25519 签名（与 License 签名密钥分开）
+}
+
+message UpgradeAgent {
+  string version = 1;
+  string arch = 2;
+  string sha256 = 3;
+  bytes vendor_signature = 4;
+}
+
+// 探活：返回实例状态，不做变更。
+message Probe { uint32 port = 1; }
+
+message FetchPackageRequest {
+  string kind = 1;      // engine | agent | backup
+  string name = 2;      // backup 时为 backup_id
+  string version = 3;
+  string arch = 4;
+}
+
+message PackageChunk {
+  bytes data = 1;
+  int64 offset = 2;
+  bool last = 3;
+}
+
+message BackupChunk {
+  string backup_id = 1;   // 仅首个分片
+  uint32 port = 2;        // 仅首个分片
+  bytes data = 3;
+  bool last = 4;
+  string sha256 = 5;      // 仅最后一个分片：整个文件的 sha256
+}
+
+message UploadResult {
+  int64 size = 1;
+  string sha256 = 2;
+}

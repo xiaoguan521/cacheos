@@ -1,0 +1,9 @@
+# 生成：cd api/proto && buf generate（插件由 deps 工作流 go install 到 PATH；离线环境可用等价工具 protoc-lite（protocompile + protoc-gen-go + protoc-gen-go-grpc））
+version: v2
+plugins:
+  - local: protoc-gen-go
+    out: ../gen
+    opt: paths=source_relative
+  - local: protoc-gen-go-grpc
+    out: ../gen
+    opt: paths=source_relative

@@ -8,7 +8,7 @@ Wants=network-online.target sycache-thp.service
 Type=notify
 User=sycache
 Group=sycache
-ExecStart=/opt/sycache/bin/sycache-sentinel /opt/sycache/instances/sentinel-%i/sycache-sentinel.conf --supervised systemd --daemonize no
+ExecStart=/opt/sycache/current/bin/sycache-sentinel /opt/sycache/instances/%i/sycache-sentinel.conf --supervised systemd --daemonize no
 TimeoutStartSec=infinity
 Restart=on-failure
 RestartSec=5s
@@ -21,7 +21,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/opt/sycache/instances/sentinel-%i /var/log/sycache
+ReadWritePaths=/opt/sycache/instances/%i /var/log/sycache
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 
 [Install]
