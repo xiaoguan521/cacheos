@@ -5,7 +5,7 @@ import router from '../router'
 // 所有请求带 X-Requested-With：控制台据此做 CSRF 防护
 export const http = axios.create({
   baseURL: '/api/v1',
-  headers: { 'X-Requested-With': 'etos' },
+  headers: { 'X-Requested-With': 'cacheos' },
   timeout: 30000,
 })
 

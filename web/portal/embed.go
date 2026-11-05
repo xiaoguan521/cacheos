@@ -1,4 +1,4 @@
-// Package portal 内嵌授权后台前端的构建产物（web/portal/dist），只由 syapp-license-server 使用，
+// Package portal 内嵌授权后台前端的构建产物（web/portal/dist），只由 CacheOS 授权服务使用，
 // 不进入客户的控制台程序。构建：cd web && pnpm build:portal。
 package portal
 

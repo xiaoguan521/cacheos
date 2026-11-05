@@ -186,7 +186,7 @@ func (s *Server) openAPI(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"openapi": "3.0.3",
-		"info":    gin.H{"title": "EdgeTraffic OS Console API", "version": "v1", "description": "使用 Authorization: Bearer <令牌> 调用；修改类接口在控制台会话中还需 X-Requested-With: etos。"},
+		"info":    gin.H{"title": "CacheOS Console API", "version": "v1", "description": "使用 Authorization: Bearer <令牌> 调用；修改类接口在控制台会话中还需 X-Requested-With: cacheos。"},
 		"servers": []gin.H{{"url": "/api/v1"}},
 		"components": gin.H{"securitySchemes": gin.H{"bearer": gin.H{"type": "http", "scheme": "bearer"},
 			"cookie": gin.H{"type": "apiKey", "in": "cookie", "name": cookieName}}},

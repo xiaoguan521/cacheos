@@ -21,10 +21,10 @@ import (
 	"sync"
 	"time"
 
-	"gorm.io/gorm"
-
 	agentv1 "github.com/xiaoguan521/cacheos/api/gen/agent/v1"
+	"github.com/xiaoguan521/cacheos/internal/agent/instance"
 	"github.com/xiaoguan521/cacheos/internal/console/store"
+	"github.com/xiaoguan521/cacheos/internal/console/store/query"
 	"github.com/xiaoguan521/cacheos/internal/license"
 	"github.com/xiaoguan521/cacheos/internal/paramcat"
 	"github.com/xiaoguan521/cacheos/internal/pkg/secretbox"
@@ -102,27 +102,31 @@ type opRun struct {
 	steps []Step
 }
 
+func (s *Service) q() *query.Query { return query.Use(s.Store.DB) }
+
 func (r *opRun) step(name string, inst uint, status, msg string) {
 	r.steps = append(r.steps, Step{Name: name, InstanceID: inst, Status: status, Message: msg, At: time.Now()})
 	b, _ := json.Marshal(r.steps)
-	r.s.Store.DB.Model(&store.Operation{}).Where("id = ?", r.op.ID).Update("steps", string(b))
+	op := r.s.q().Operation
+	_, _ = op.WithContext(context.Background()).Where(op.ID.Eq(r.op.ID)).Update(op.Steps, string(b))
 }
 
 func (r *opRun) finish(status, errMsg string) {
 	now := time.Now()
-	r.s.Store.DB.Model(&store.Operation{}).Where("id = ?", r.op.ID).Updates(map[string]any{"status": status, "error": errMsg, "finished_at": &now})
+	op := r.s.q().Operation
+	_, _ = op.WithContext(context.Background()).Where(op.ID.Eq(r.op.ID)).UpdateSimple(op.Status.Value(status), op.Error.Value(errMsg), op.FinishedAt.Value(now))
 	_ = r.s.Store.UnlockUnit(r.op.UnitID, r.op.ID)
 }
 
 // start 创建变更记录并加单元锁；返回的 opRun 在后台执行。
-func (s *Service) start(tx *gorm.DB, unitID uint, kind string, req any, by string) (*opRun, error) {
+func (s *Service) start(tx *query.Query, unitID uint, kind string, req any, by string) (*opRun, error) {
 	b, _ := json.Marshal(req)
 	now := time.Now()
 	op := &store.Operation{UnitID: unitID, Kind: kind, Status: store.OpApplying, Request: string(b), CreatedBy: by, StartedAt: &now}
-	if err := tx.Create(op).Error; err != nil {
+	if err := tx.Operation.WithContext(context.Background()).Create(op); err != nil {
 		return nil, err
 	}
-	st := &store.Store{DB: tx}
+	st := &store.Store{DB: tx.UnderlyingDB()}
 	if err := st.LockUnit(unitID, op.ID); err != nil {
 		return nil, err
 	}
@@ -171,14 +175,17 @@ func (s *Service) TemplateParams(id uint) (map[string]string, error) {
 
 // EnsureBuiltinTemplates 写入三套内置模板（已存在则跳过）。
 func (s *Service) EnsureBuiltinTemplates() error {
+	tq := s.q().ParamTemplate
 	for _, t := range paramcat.Builtin {
-		var n int64
-		s.Store.DB.Model(&store.ParamTemplate{}).Where("name = ?", t.Name).Count(&n)
+		n, err := tq.WithContext(context.Background()).Where(tq.Name.Eq(t.Name)).Count()
+		if err != nil {
+			return err
+		}
 		if n > 0 {
 			continue
 		}
 		b, _ := json.Marshal(t.Params)
-		if err := s.Store.DB.Create(&store.ParamTemplate{Name: t.Name, Description: t.Description, Params: string(b), Builtin: true, UpdatedBy: "system", UpdatedAt: time.Now()}).Error; err != nil {
+		if err := tq.WithContext(context.Background()).Create(&store.ParamTemplate{Name: t.Name, Description: t.Description, Params: string(b), Builtin: true, UpdatedBy: "system", UpdatedAt: time.Now()}); err != nil {
 			return err
 		}
 	}
@@ -199,16 +206,20 @@ func (s *Service) licenseCheck(addInstances int, addMemoryMB uint64) error {
 	}
 	lim := snap.Payload.Limits
 	if lim.Instances > 0 {
-		var n int64
-		s.Store.DB.Model(&store.Instance{}).Count(&n)
+		n, err := s.q().Instance.WithContext(context.Background()).Count()
+		if err != nil {
+			return err
+		}
 		if int(n)+addInstances > lim.Instances {
 			return fmt.Errorf("%w: %d instances licensed", ErrLicense, lim.Instances)
 		}
 	}
 	if lim.MemoryGB > 0 {
 		var used uint64
-		var units []store.Unit
-		s.Store.DB.Find(&units)
+		units, err := s.q().Unit.WithContext(context.Background()).Find()
+		if err != nil {
+			return err
+		}
 		for _, u := range units {
 			used += uint64(u.MemoryMB) * uint64(u.Shards*(1+u.Replicas))
 		}
@@ -226,16 +237,21 @@ type hostLoad struct {
 }
 
 // place 为一个分片的 n 个数据实例选择主机：只选在线主机，同一分片不放同一台主机，尽量分散到不同 zone，
-// 优先选已分配内存少的主机；内存超过物理内存 80% 的主机不选。
-func (s *Service) place(n int, memMB uint32, explicit []uint) ([]*hostLoad, error) {
-	var hosts []store.Host
-	if err := s.Store.DB.Where("status = ?", "online").Find(&hosts).Error; err != nil {
+// 优先选已分配内存少的主机；内存超过物理内存 80% 或持久化目录空间不足的主机不选。
+func (s *Service) place(n int, memMB uint32, diskNeed uint64, explicit []uint) ([]*hostLoad, error) {
+	hq := s.q().Host
+	hosts, err := hq.WithContext(context.Background()).Where(hq.Status.Eq("online")).Find()
+	if err != nil {
 		return nil, err
 	}
-	var insts []store.Instance
-	s.Store.DB.Find(&insts)
-	var units []store.Unit
-	s.Store.DB.Find(&units)
+	insts, err := s.q().Instance.WithContext(context.Background()).Find()
+	if err != nil {
+		return nil, err
+	}
+	units, err := s.q().Unit.WithContext(context.Background()).Find()
+	if err != nil {
+		return nil, err
+	}
 	unitMem := map[uint]uint32{}
 	for _, u := range units {
 		unitMem[u.ID] = u.MemoryMB
@@ -246,7 +262,7 @@ func (s *Service) place(n int, memMB uint32, explicit []uint) ([]*hostLoad, erro
 		if s.GW != nil && !s.GW.Online(h.ID) {
 			continue
 		}
-		l := &hostLoad{h: h, ports: map[uint32]bool{}}
+		l := &hostLoad{h: *h, ports: map[uint32]bool{}}
 		loads[h.ID] = l
 		cands = append(cands, l)
 	}
@@ -259,7 +275,19 @@ func (s *Service) place(n int, memMB uint32, explicit []uint) ([]*hostLoad, erro
 		}
 	}
 	fits := func(l *hostLoad) bool {
-		return l.h.MemTotalBytes == 0 || (l.allocMB+uint64(memMB))<<20 <= l.h.MemTotalBytes*8/10
+		memoryOK := l.h.MemTotalBytes == 0 || (l.allocMB+uint64(memMB))<<20 <= l.h.MemTotalBytes*8/10
+		diskOK := diskNeed == 0 || l.h.DiskFreeBytes >= diskNeed
+		return memoryOK && diskOK
+	}
+	reason := func(l *hostLoad) string {
+		memoryOK := l.h.MemTotalBytes == 0 || (l.allocMB+uint64(memMB))<<20 <= l.h.MemTotalBytes*8/10
+		if !memoryOK {
+			return "lacks memory"
+		}
+		if diskNeed > 0 && l.h.DiskFreeBytes < diskNeed {
+			return fmt.Sprintf("needs %d free bytes for persistence, has %d", diskNeed, l.h.DiskFreeBytes)
+		}
+		return "does not meet placement constraints"
 	}
 	if len(explicit) > 0 {
 		if len(explicit) != n {
@@ -273,7 +301,7 @@ func (s *Service) place(n int, memMB uint32, explicit []uint) ([]*hostLoad, erro
 				return nil, fmt.Errorf("%w: host %d is offline, unknown or listed twice", ErrNoHosts, id)
 			}
 			if !fits(l) {
-				return nil, fmt.Errorf("%w: host %s lacks memory", ErrNoHosts, l.h.Name)
+				return nil, fmt.Errorf("%w: host %s %s", ErrNoHosts, l.h.Name, reason(l))
 			}
 			seen[id] = true
 			out = append(out, l)
@@ -372,7 +400,15 @@ func (s *Service) CreateUnit(spec UnitSpec, by string) (*store.Unit, *store.Oper
 	if err := s.licenseCheck(n, uint64(spec.MemoryMB)*uint64(n)); err != nil {
 		return nil, nil, err
 	}
-	hosts, err := s.place(n, spec.MemoryMB, spec.HostIDs)
+	diskNeed := uint64(0)
+	if instance.ParamsNeedPersistence(params) {
+		maxMemory, err := instance.MaxMemoryBytes(params)
+		if err != nil {
+			return nil, nil, invalid("%v", err)
+		}
+		diskNeed = instance.PersistenceRequiredBytes(maxMemory, 0)
+	}
+	hosts, err := s.place(n, spec.MemoryMB, diskNeed, spec.HostIDs)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -384,8 +420,8 @@ func (s *Service) CreateUnit(spec UnitSpec, by string) (*store.Unit, *store.Oper
 		TemplateID: spec.TemplateID, Status: "creating", MasterAuth: sealed, CreatedBy: by}
 	var run *opRun
 	var insts []*store.Instance
-	err = s.Store.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(unit).Error; err != nil {
+	err = s.q().Transaction(func(tx *query.Query) error {
+		if err := tx.Unit.WithContext(context.Background()).Create(unit); err != nil {
 			if strings.Contains(strings.ToLower(err.Error()), "unique") {
 				return invalid("unit %s already exists", spec.Name)
 			}
@@ -396,7 +432,7 @@ func (s *Service) CreateUnit(spec UnitSpec, by string) (*store.Unit, *store.Oper
 			return err
 		}
 		unit.RevisionID = rev.ID
-		if err := tx.Model(unit).Update("revision_id", rev.ID).Error; err != nil {
+		if _, err := tx.Unit.WithContext(context.Background()).Where(tx.Unit.ID.Eq(unit.ID)).Update(tx.Unit.RevisionID, rev.ID); err != nil {
 			return err
 		}
 		for i, l := range hosts {
@@ -409,7 +445,7 @@ func (s *Service) CreateUnit(spec UnitSpec, by string) (*store.Unit, *store.Oper
 				role = "master"
 			}
 			in := &store.Instance{UnitID: unit.ID, HostID: l.h.ID, Port: port, Kind: "server", Desired: role, State: "creating"}
-			if err := tx.Create(in).Error; err != nil {
+			if err := tx.Instance.WithContext(context.Background()).Create(in); err != nil {
 				return err
 			}
 			insts = append(insts, in)
@@ -424,14 +460,19 @@ func (s *Service) CreateUnit(spec UnitSpec, by string) (*store.Unit, *store.Oper
 	return unit, run.op, nil
 }
 
-func (s *Service) newRevision(tx *gorm.DB, unitID uint, parent string, params map[string]string, note, by string) (*store.ParamRevision, error) {
-	id, err := store.NextRevisionID(tx)
+func (s *Service) newRevision(tx *query.Query, unitID uint, parent string, params map[string]string, note, by string) (*store.ParamRevision, error) {
+	last, err := tx.ParamRevision.WithContext(context.Background()).Order(tx.ParamRevision.Seq.Desc()).Limit(1).Find()
 	if err != nil {
 		return nil, err
 	}
+	var next uint
+	if len(last) > 0 {
+		next = last[0].Seq
+	}
+	id := fmt.Sprintf("p%08d", next+1)
 	b, _ := json.Marshal(params)
 	rev := &store.ParamRevision{ID: id, UnitID: unitID, ParentID: parent, Params: string(b), Digest: paramDigest(params), Note: note, CreatedBy: by, CreatedAt: time.Now()}
-	return rev, tx.Create(rev).Error
+	return rev, tx.ParamRevision.WithContext(context.Background()).Create(rev)
 }
 
 func paramDigest(m map[string]string) string {
@@ -495,7 +536,8 @@ func (s *Service) saveStatus(inst *store.Instance, st *agentv1.InstanceStatus) {
 	u := map[string]any{"state": stateName(st.State), "role": st.Role, "master_host": st.MasterHost, "master_port": st.MasterPort,
 		"link_status": st.MasterLinkStatus, "used_memory": st.UsedMemory, "max_memory": st.Maxmemory, "error": st.Error,
 		"pending_restart": st.State == agentv1.State_STATE_PENDING_RESTART}
-	s.Store.DB.Model(&store.Instance{}).Where("id = ?", inst.ID).Updates(u)
+	iq := s.q().Instance
+	_, _ = iq.WithContext(context.Background()).Where(iq.ID.Eq(inst.ID)).Updates(u)
 }
 
 func stateName(st agentv1.State) string {
@@ -515,13 +557,14 @@ func stateName(st agentv1.State) string {
 }
 
 func (s *Service) aclUsers(unitID uint) ([]*agentv1.AclUser, error) {
-	var accts []store.AclAccount
-	if err := s.Store.DB.Where("unit_id = ?", unitID).Order("name").Find(&accts).Error; err != nil {
+	aq := s.q().AclAccount
+	accts, err := aq.WithContext(context.Background()).Where(aq.UnitID.Eq(unitID)).Order(aq.Name).Find()
+	if err != nil {
 		return nil, err
 	}
 	var out []*agentv1.AclUser
 	for _, a := range accts {
-		out = append(out, AclUser(a))
+		out = append(out, AclUser(*a))
 	}
 	return out, nil
 }
@@ -573,11 +616,13 @@ func (s *Service) runCreate(ctx context.Context, r *opRun, unit *store.Unit, par
 		res, err := s.send(ctx, in.HostID, req)
 		if err != nil {
 			r.step(name, in.ID, "failed", err.Error())
-			s.Store.DB.Model(in).Updates(map[string]any{"state": "failed", "error": err.Error()})
+			iq := s.q().Instance
+			_, _ = iq.WithContext(ctx).Where(iq.ID.Eq(in.ID)).UpdateSimple(iq.State.Value("failed"), iq.Error.Value(err.Error()))
 			failed = err.Error()
 			break
 		}
-		s.Store.DB.Model(in).Update("applied_rev", unit.RevisionID)
+		iq := s.q().Instance
+		_, _ = iq.WithContext(ctx).Where(iq.ID.Eq(in.ID)).Update(iq.AppliedRev, unit.RevisionID)
 		s.saveStatus(in, res.GetInstance())
 		r.step(name, in.ID, "ok", "")
 		if in.Desired == "master" {
@@ -585,11 +630,13 @@ func (s *Service) runCreate(ctx context.Context, r *opRun, unit *store.Unit, par
 		}
 	}
 	if failed != "" {
-		s.Store.DB.Model(unit).Update("status", "failed")
+		uq := s.q().Unit
+		_, _ = uq.WithContext(ctx).Where(uq.ID.Eq(unit.ID)).Update(uq.Status, "failed")
 		r.finish(store.OpFailed, failed)
 		return errors.New(failed)
 	}
-	s.Store.DB.Model(unit).Update("status", "running")
+	uq := s.q().Unit
+	_, _ = uq.WithContext(ctx).Where(uq.ID.Eq(unit.ID)).Update(uq.Status, "running")
 	r.finish(store.OpApplied, "")
 	return nil
 }

@@ -11,10 +11,8 @@ const lic = computed(() => session.license)
 const users = ref<any[]>([])
 const version = ref<any>({})
 
-const approval = ref<{ enabled: boolean; licensed: boolean }>({ enabled: false, licensed: false })
 onMounted(async () => {
   await session.loadLicense()
-  approval.value = await api.get('/release-approval')
   if (session.can('admin')) users.value = await api.get('/users')
 })
 const tokens = ref<any[]>([])
@@ -45,27 +43,14 @@ async function revokeToken(id: number) {
 }
 const apiLicensed = computed(() => !!lic.value?.features?.includes('api_token'))
 
-async function setApproval(on: boolean) {
-  try {
-    approval.value = await api.put('/release-approval', { enabled: on })
-    message.success(on ? '已开启发布审批' : '已关闭发布审批')
-  } catch (e) {
-    message.error(errMsg(e))
-  }
-}
-
 const featureName: Record<string, string> = {
-  core: '站点、证书、发布、回滚、监控',
+  core: '主机、实例、参数与监控',
   api_token: '开放 API',
-  batch_release: '批量发布',
-  release_approval: '发布审批',
   sso: 'LDAP / OIDC 单点登录',
   audit_export: '审计导出',
   alert_im: '企业微信 / 钉钉告警',
-  stream: '四层代理',
-  ha: '高可用',
-  canary: '灰度发布',
-  gm_tls: '国密 TLS',
+  sentinel: '哨兵部署',
+  cluster: '集群部署',
 }
 const allFeatures = Object.keys(featureName)
 const tone = computed(() => (lic.value?.writable ? (lic.value.state === 'VALID' ? 'ok' : 'warn') : 'bad'))
@@ -157,7 +142,7 @@ async function testLDAP() {
     message.error(errMsg(e))
   }
 }
-const roleName: Record<string, string> = { admin: '管理员', operator: '运维', releaser: '发布员', viewer: '只读' }
+const roleName: Record<string, string> = { admin: '管理员', operator: '运维', releaser: '发布员', developer: '开发者', auditor: '审计员', viewer: '只读' }
 </script>
 
 <template>
@@ -165,7 +150,7 @@ const roleName: Record<string, string> = { admin: '管理员', operator: '运维
     <div class="page-head">
       <div>
         <h1>授权与系统</h1>
-        <p>授权过期只限制控制台的新增变更，从不停止或干扰节点上的 syapp 流量。</p>
+        <p>授权过期只限制控制台的新增变更，从不停止或干扰主机上的已有实例。</p>
       </div>
     </div>
 
@@ -184,15 +169,15 @@ const roleName: Record<string, string> = { admin: '管理员', operator: '运维
           <dd>{{ dayjs(lic.expires_at).format('YYYY-MM-DD') }}<span class="sub">（{{ lic.days_left >= 0 ? `剩余 ${lic.days_left} 天` : `已过期 ${-lic.days_left} 天` }}）</span></dd>
           <dt>维保到期</dt>
           <dd>{{ dayjs(lic.maintenance_until).format('YYYY-MM-DD') }}</dd>
-          <dt>节点</dt>
+            <dt>主机</dt>
           <dd>
-            <a-progress :percent="lic.nodes_limit ? Math.round((lic.nodes_used / lic.nodes_limit) * 100) : 0" :show-info="false" size="small" />
-            <span class="num">{{ lic.nodes_used }} / {{ lic.nodes_limit || '不限' }}</span>
+            <a-progress :percent="lic.hosts_limit ? Math.round((lic.hosts_used / lic.hosts_limit) * 100) : 0" :show-info="false" size="small" />
+            <span class="num">{{ lic.hosts_used }} / {{ lic.hosts_limit || '不限' }}</span>
           </dd>
-          <dt>站点</dt>
+          <dt>实例</dt>
           <dd>
-            <a-progress :percent="lic.sites_limit ? Math.round((lic.sites_used / lic.sites_limit) * 100) : 0" :show-info="false" size="small" />
-            <span class="num">{{ lic.sites_used }} / {{ lic.sites_limit || '不限' }}</span>
+            <a-progress :percent="lic.instances_limit ? Math.round((lic.instances_used / lic.instances_limit) * 100) : 0" :show-info="false" size="small" />
+            <span class="num">{{ lic.instances_used }} / {{ lic.instances_limit || '不限' }}</span>
           </dd>
           <dt>安装 ID</dt>
           <dd class="code">{{ lic.installation_id }}</dd>
@@ -252,17 +237,6 @@ const roleName: Record<string, string> = { admin: '管理员', operator: '运维
           <a-form-item label="有效天数（0 表示不过期）"><a-input-number v-model:value="tkForm.expire_days" :min="0" :max="3650" /></a-form-item>
         </a-form>
       </a-modal>
-    </section>
-
-    <section class="panel" v-if="session.can('admin')">
-      <div class="uhead">
-        <h2>发布审批</h2>
-        <a-switch :checked="approval.enabled" :disabled="!approval.enabled && (!approval.licensed || !session.writable)" @change="(v: any) => setApproval(!!v)" />
-      </div>
-      <p class="muted">
-        开启后，每次发布都要由另一位发布员看过差异并批准才会下发（提交人不能批准自己的申请）。回滚、漂移恢复与证书续期不经审批，保证应急与授权过期时可用。
-        <template v-if="!approval.licensed">当前授权不包含“发布审批”（专业版及以上）。</template>
-      </p>
     </section>
 
     <section class="panel" v-if="session.can('admin')">
@@ -375,8 +349,8 @@ const roleName: Record<string, string> = { admin: '管理员', operator: '运维
 
     <section class="panel about">
       <h2>关于</h2>
-      <p>EdgeTraffic OS，数据面 syapp。</p>
-      <p class="sub">The syapp data plane is based on NGINX Open Source (BSD-2-Clause). 完整的第三方许可声明见安装目录 /opt/syapp/share/doc/NOTICE。</p>
+      <p>CacheOS 控制台与 agent。</p>
+      <p class="sub">数据面第三方许可与归因信息见安装目录的 NOTICE 文件。</p>
     </section>
 
     <a-modal v-model:open="uOpen" title="新建用户" ok-text="创建" @ok="addUser">

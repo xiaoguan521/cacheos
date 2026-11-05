@@ -24,6 +24,7 @@ import (
 	"github.com/xiaoguan521/cacheos/internal/console/store"
 	"github.com/xiaoguan521/cacheos/internal/license"
 	"github.com/xiaoguan521/cacheos/internal/pkg/audit"
+	"github.com/xiaoguan521/cacheos/internal/pkg/secretbox"
 )
 
 // Server 汇总 API 依赖。
@@ -34,6 +35,7 @@ type Server struct {
 	Alerts        *alerts.Service
 	Lic           *licsvc.Service
 	Audit         *audit.Logger
+	Box           *secretbox.Box // 加密 LDAP/OIDC 等配置中的凭据
 	Log           *slog.Logger
 	Web           fs.FS  // 前端构建产物（web/dist）
 	GRPCAddr      string // agent 连接控制台使用的地址，写入安装命令

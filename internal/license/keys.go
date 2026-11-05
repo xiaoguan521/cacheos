@@ -47,7 +47,7 @@ func BuiltinKeyRing() KeyRing {
 }
 
 // AgentCheck 是 agent 侧的独立校验（规格书 8.6）：只验签名与有效期，不涉及控制台安装绑定。
-// 返回 License 是否允许新的发布；任何结果都不会影响 syapp 的运行。
+// 返回 License 是否允许新的发布；任何结果都不会影响已有实例的运行。
 func AgentCheck(raw string, keys KeyRing, now time.Time) (writable bool, reason string) {
 	p, err := Verify(raw, keys)
 	if err != nil {

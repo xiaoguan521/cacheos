@@ -3,17 +3,11 @@ import { computed, h, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   AlertOutlined,
-  ApiOutlined,
   AuditOutlined,
   ClusterOutlined,
-  CloudUploadOutlined,
   CodeOutlined,
   DashboardOutlined,
-  EnvironmentOutlined,
-  GlobalOutlined,
-  ImportOutlined,
   KeyOutlined,
-  LockOutlined,
   LogoutOutlined,
   RocketOutlined,
   SafetyCertificateOutlined,
@@ -26,23 +20,18 @@ const session = useSession()
 
 const items = [
   { key: 'dashboard', icon: () => h(DashboardOutlined), label: '总览' },
-  { key: 'nodes', icon: () => h(ClusterOutlined), label: '节点' },
-  { key: 'sites', icon: () => h(GlobalOutlined), label: '站点与上游' },
-  { key: 'ip-sets', icon: () => h(EnvironmentOutlined), label: 'IP 集与地域库' },
-  { key: 'streams', icon: () => h(ApiOutlined), label: '四层代理' },
-  { key: 'certificates', icon: () => h(LockOutlined), label: '证书' },
-  { key: 'imports', icon: () => h(ImportOutlined), label: '配置导入' },
-  { key: 'snippets', icon: () => h(CodeOutlined), label: '自定义片段' },
-  { key: 'releases', icon: () => h(RocketOutlined), label: '发布' },
-  { key: 'dataplane', icon: () => h(CloudUploadOutlined), label: '数据面版本' },
+  { key: 'hosts', icon: () => h(ClusterOutlined), label: '主机' },
+  { key: 'units', icon: () => h(RocketOutlined), label: '部署单元' },
+  { key: 'operations', icon: () => h(CodeOutlined), label: '操作记录' },
+  { key: 'templates', icon: () => h(CodeOutlined), label: '参数模板' },
   { key: 'alerts', icon: () => h(AlertOutlined), label: '告警' },
   { key: 'audit', icon: () => h(AuditOutlined), label: '审计' },
   { key: 'system', icon: () => h(SafetyCertificateOutlined), label: '授权与系统' },
 ]
 
-const roleName: Record<string, string> = { admin: '管理员', operator: '运维', releaser: '发布员', viewer: '只读' }
+const roleName: Record<string, string> = { admin: '管理员', operator: '运维', releaser: '发布员', developer: '开发者', auditor: '审计员', viewer: '只读' }
 
-const selected = computed(() => [String(route.name || 'dashboard')])
+const selected = computed(() => [route.name === 'unit-detail' ? 'units' : String(route.name || 'dashboard')])
 
 const lic = computed(() => session.license)
 const licTone = computed(() => {
@@ -85,12 +74,12 @@ async function logout() {
       <div class="brand">
         <div class="mark" aria-hidden="true"><span /><span /><span /></div>
         <div>
-          <div class="name">EdgeTraffic OS</div>
-          <div class="sub">边缘流量操作系统</div>
+          <div class="name">CacheOS</div>
+          <div class="sub">缓存服务控制台</div>
         </div>
       </div>
       <a-menu theme="dark" mode="inline" :selected-keys="selected" :items="items" @click="(e: any) => router.push({ name: e.key })" />
-      <div class="runtime">数据面 syapp</div>
+      <div class="runtime">CacheOS agent</div>
     </a-layout-sider>
     <a-layout>
       <a-layout-header class="topbar">

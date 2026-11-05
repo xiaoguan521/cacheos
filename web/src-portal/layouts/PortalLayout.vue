@@ -50,7 +50,7 @@ async function logout() {
   <a-layout class="shell">
     <a-layout-sider :width="216" class="sider" breakpoint="md" :collapsed-width="0" v-model:collapsed="collapsed">
       <div class="brand">
-        <div class="name">EdgeTraffic OS</div>
+        <div class="name">CacheOS</div>
         <div class="sub">厂商授权后台</div>
       </div>
       <a-menu theme="dark" mode="inline" :selected-keys="selected" :items="items" @click="go" />

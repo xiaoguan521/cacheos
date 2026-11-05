@@ -62,7 +62,10 @@ func (s *Server) oidcEnabled() bool {
 func (s *Server) oidcClientConfig(c OIDCConfig) (oidc.Config, error) {
 	secret := ""
 	if c.SecretEnc != "" {
-		v, err := s.Certs.Box.Open(c.SecretEnc)
+		if s.Box == nil {
+			return oidc.Config{}, errors.New("secret box is not configured")
+		}
+		v, err := s.Box.Open(c.SecretEnc)
 		if err != nil {
 			return oidc.Config{}, err
 		}
@@ -230,7 +233,11 @@ func (s *Server) putOIDC(c *gin.Context) {
 	old := s.oidcConfig()
 	in.SecretEnc = old.SecretEnc
 	if in.ClientSecret != "" {
-		enc, err := s.Certs.Box.Seal(in.ClientSecret)
+		if s.Box == nil {
+			fail(c, http.StatusInternalServerError, "SECRET_BOX_UNAVAILABLE", "服务端加密密钥未就绪")
+			return
+		}
+		enc, err := s.Box.Seal(in.ClientSecret)
 		if err != nil {
 			failErr(c, err)
 			return

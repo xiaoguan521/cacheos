@@ -26,7 +26,10 @@ import (
 const NodeCertValidity = 30 * 24 * time.Hour
 
 // SpiffePrefix 是节点证书 URI SAN 的前缀。
-const SpiffePrefix = "spiffe://edgetraffic/node/"
+const SpiffePrefix = "spiffe://cacheos/node/"
+
+// legacySpiffePrefix keeps certificates issued by pre-CacheOS builds usable during an upgrade.
+const legacySpiffePrefix = "spiffe://edgetraffic/node/"
 
 // CA 是控制台的私有根证书。
 type CA struct {
@@ -54,7 +57,7 @@ func LoadOrCreate(dir string) (*CA, error) {
 	}
 	tpl := &x509.Certificate{
 		SerialNumber:          serial(),
-		Subject:               pkix.Name{CommonName: "EdgeTraffic OS Internal CA", Organization: []string{"EdgeTraffic OS"}},
+		Subject:               pkix.Name{CommonName: "CacheOS Internal CA", Organization: []string{"CacheOS"}},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().AddDate(10, 0, 0),
 		IsCA:                  true,
@@ -168,6 +171,9 @@ func NodeID(cert *x509.Certificate) (string, error) {
 	for _, u := range cert.URIs {
 		if s := u.String(); strings.HasPrefix(s, SpiffePrefix) {
 			return strings.TrimPrefix(s, SpiffePrefix), nil
+		}
+		if s := u.String(); strings.HasPrefix(s, legacySpiffePrefix) {
+			return strings.TrimPrefix(s, legacySpiffePrefix), nil
 		}
 	}
 	return "", fmt.Errorf("pki: certificate has no node identity")

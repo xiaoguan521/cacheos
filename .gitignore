@@ -4,5 +4,10 @@
 /upstream-build/
 /src-tree/
 /pkg/
+/.pnpm-store/
+web/node_modules/
+web/.pnpm-store/
+web/dist/
+web/portal/dist/
 __pycache__/
 *.pyc

@@ -3,13 +3,10 @@ package api
 import (
 	"context"
 	"encoding/csv"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -17,7 +14,6 @@ import (
 
 	"github.com/xiaoguan521/cacheos/internal/console/store"
 	"github.com/xiaoguan521/cacheos/internal/console/store/query"
-	"github.com/xiaoguan521/cacheos/internal/license"
 	"github.com/xiaoguan521/cacheos/internal/pkg/crypto"
 )
 
@@ -97,7 +93,7 @@ func (s *Server) setup(c *gin.Context) {
 		failErr(c, err)
 		return
 	}
-	if err := render.ValidateName(strings.ToLower(req.Username)); err != nil || req.Username != strings.ToLower(req.Username) {
+	if !usernameRe.MatchString(req.Username) {
 		fail(c, http.StatusBadRequest, "BAD_USERNAME", "用户名只能包含小写字母、数字和连字符，2–63 位")
 		return
 	}
@@ -116,14 +112,6 @@ func (s *Server) setup(c *gin.Context) {
 	if err := q.User.WithContext(ctx).Create(u); err != nil {
 		failErr(c, err)
 		return
-	}
-	// 初始化默认节点组
-	if n, err := q.NodeGroup.WithContext(ctx).Count(); err == nil && n == 0 {
-		if err := q.NodeGroup.WithContext(ctx).Create(&store.NodeGroup{Name: "default", Description: "默认节点组",
-			AllowedCIDRs: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"}); err != nil {
-			failErr(c, err)
-			return
-		}
 	}
 	c.Set("user", u.Username)
 	s.audit(c, "system.setup", "user", u.Username, nil)
@@ -278,7 +266,7 @@ func parseID(c *gin.Context) (uint, bool) {
 	return uint(id), true
 }
 
-var usernameRe = regexp.MustCompile(`^[a-z][a-z0-9-]{1,31}$`)
+var usernameRe = regexp.MustCompile(`^[a-z][a-z0-9-]{1,62}$`)
 
 // ---------- 审计 ----------
 

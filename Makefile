@@ -1,4 +1,4 @@
-# CacheOS —— 当前阶段只有数据面（P1）。控制台、agent、wrapper 在 P2 加入。
+# CacheOS —— 数据面门禁与控制面/agent 的 Go、Vue 测试分开执行。
 UPSTREAM_SRC ?=
 DIST         ?= dist
 SRC_OPT      := $(if $(UPSTREAM_SRC),-s $(UPSTREAM_SRC),)

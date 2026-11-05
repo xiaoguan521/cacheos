@@ -112,7 +112,10 @@ func (s *Server) ldapAuth(cfg LDAPConfig, username, password string) (string, st
 	if cfg.BindDN != "" {
 		pass := ""
 		if cfg.BindPassEnc != "" {
-			if pass, err = s.Certs.Box.Open(cfg.BindPassEnc); err != nil {
+			if s.Box == nil {
+				return "", "", errors.New("secret box is not configured")
+			}
+			if pass, err = s.Box.Open(cfg.BindPassEnc); err != nil {
 				return "", "", err
 			}
 		}
@@ -149,7 +152,7 @@ func (s *Server) ldapAuth(cfg LDAPConfig, username, password string) (string, st
 // ldapLogin 用 LDAP 认证并同步本地账号（来源 ldap）。
 func (s *Server) ldapLogin(c *gin.Context, username, password string) (*store.User, bool) {
 	cfg := s.ldapConfig()
-	if s.Certs == nil {
+	if s.Box == nil {
 		return nil, false
 	}
 	username = strings.ToLower(strings.TrimSpace(username))
@@ -206,7 +209,11 @@ func (s *Server) putLDAP(c *gin.Context) {
 	old := s.ldapConfig()
 	in.BindPassEnc = old.BindPassEnc
 	if in.BindPassword != "" {
-		enc, err := s.Certs.Box.Seal(in.BindPassword)
+		if s.Box == nil {
+			fail(c, http.StatusInternalServerError, "SECRET_BOX_UNAVAILABLE", "服务端加密密钥未就绪")
+			return
+		}
+		enc, err := s.Box.Seal(in.BindPassword)
 		if err != nil {
 			failErr(c, err)
 			return

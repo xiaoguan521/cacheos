@@ -62,14 +62,15 @@ func (s *Server) hostView(h store.Host) hostView {
 }
 
 func (s *Server) listHosts(c *gin.Context) {
-	var hosts []store.Host
-	if err := s.Store.DB.Where("status <> ?", "revoked").Order("id").Find(&hosts).Error; err != nil {
+	hq := s.q().Host
+	hosts, err := hq.WithContext(c.Request.Context()).Where(hq.Status.Neq("revoked")).Order(hq.ID).Find()
+	if err != nil {
 		failErr(c, err)
 		return
 	}
 	out := make([]hostView, 0, len(hosts))
 	for _, h := range hosts {
-		out = append(out, s.hostView(h))
+		out = append(out, s.hostView(*h))
 	}
 	c.JSON(http.StatusOK, out)
 }
@@ -85,7 +86,13 @@ func (s *Server) getHost(c *gin.Context) {
 		return
 	}
 	v := s.hostView(*h)
-	s.Store.DB.Where("host_id = ?", id).Order("port").Find(&v.Instances)
+	iq := s.q().Instance
+	instances, err := iq.WithContext(c.Request.Context()).Where(iq.HostID.Eq(id)).Order(iq.Port).Find()
+	if err != nil {
+		failErr(c, err)
+		return
+	}
+	v.Instances = instances
 	c.JSON(http.StatusOK, v)
 }
 
@@ -128,7 +135,8 @@ func (s *Server) updateHost(c *gin.Context) {
 		}
 		u["status"] = *req.Status
 	}
-	if err := s.Store.DB.Model(&store.Host{}).Where("id = ? AND status <> ?", id, "revoked").Updates(u).Error; err != nil {
+	hq := s.q().Host
+	if _, err := hq.WithContext(c.Request.Context()).Where(hq.ID.Eq(id), hq.Status.Neq("revoked")).Updates(u); err != nil {
 		failErr(c, err)
 		return
 	}
@@ -173,13 +181,18 @@ func (s *Server) revokeHost(c *gin.Context) {
 	if !ok {
 		return
 	}
-	var n int64
-	s.Store.DB.Model(&store.Instance{}).Where("host_id = ?", id).Count(&n)
+	iq := s.q().Instance
+	n, err := iq.WithContext(c.Request.Context()).Where(iq.HostID.Eq(id)).Count()
+	if err != nil {
+		failErr(c, err)
+		return
+	}
 	if n > 0 && c.Query("force") != "1" {
 		fail(c, http.StatusConflict, "HOST_IN_USE", fmt.Sprintf("该主机上还有 %d 个实例；先删除或迁移部署单元（吊销不会停止实例，只是控制台不再管理它们）", n))
 		return
 	}
-	if err := s.Store.DB.Model(&store.Host{}).Where("id = ?", id).Update("status", "revoked").Error; err != nil {
+	hq := s.q().Host
+	if _, err := hq.WithContext(c.Request.Context()).Where(hq.ID.Eq(id)).Update(hq.Status, "revoked"); err != nil {
 		failErr(c, err)
 		return
 	}
@@ -225,7 +238,11 @@ func (s *Server) switchVersion(c *gin.Context) {
 		fail(c, http.StatusConflict, "SWITCH_FAILED", r.Message)
 		return
 	}
-	s.Store.DB.Model(&store.Host{}).Where("id = ?", id).Update("engine_current", req.Version)
+	hq := s.q().Host
+	if _, err := hq.WithContext(c.Request.Context()).Where(hq.ID.Eq(id)).Update(hq.EngineCurrent, req.Version); err != nil {
+		failErr(c, err)
+		return
+	}
 	s.audit(c, "host.switch_version", "host", fmt.Sprint(id), map[string]string{"from": h.EngineCurrent, "to": req.Version})
 	c.JSON(http.StatusOK, gin.H{"engine_current": req.Version})
 }
@@ -242,14 +259,15 @@ type templateView struct {
 }
 
 func (s *Server) listTemplates(c *gin.Context) {
-	var ts []store.ParamTemplate
-	if err := s.Store.DB.Order("builtin DESC, id").Find(&ts).Error; err != nil {
+	tq := s.q().ParamTemplate
+	ts, err := tq.WithContext(c.Request.Context()).Order(tq.Builtin.Desc(), tq.ID).Find()
+	if err != nil {
 		failErr(c, err)
 		return
 	}
 	out := make([]templateView, 0, len(ts))
 	for _, t := range ts {
-		v := templateView{ParamTemplate: t, Params: map[string]string{}}
+		v := templateView{ParamTemplate: *t, Params: map[string]string{}}
 		_ = json.Unmarshal([]byte(t.Params), &v.Params)
 		out = append(out, v)
 	}
@@ -299,7 +317,7 @@ func (s *Server) saveTemplate(c *gin.Context) {
 		}
 		t.ID = id
 	}
-	if err := s.Store.DB.Save(&t).Error; err != nil {
+	if err := s.q().ParamTemplate.WithContext(c.Request.Context()).Save(&t); err != nil {
 		fail(c, http.StatusConflict, "DUPLICATE", "模板名已存在")
 		return
 	}
@@ -321,7 +339,10 @@ func (s *Server) deleteTemplate(c *gin.Context) {
 		fail(c, http.StatusForbidden, "BUILTIN", "内置模板不可删除")
 		return
 	}
-	s.Store.DB.Delete(t)
+	if _, err := s.q().ParamTemplate.WithContext(c.Request.Context()).Where(s.q().ParamTemplate.ID.Eq(id)).Delete(t); err != nil {
+		failErr(c, err)
+		return
+	}
 	s.audit(c, "template.delete", "param_template", fmt.Sprint(id), nil)
 	c.Status(http.StatusNoContent)
 }
@@ -350,8 +371,8 @@ type unitView struct {
 func (s *Server) unitView(u store.Unit, detail bool) unitView {
 	v := unitView{Unit: u, Instances: []instanceView{}, Problems: []string{}, Usage: map[string]any{}}
 	v.Busy, _ = s.Store.UnitLockOwner(u.ID)
-	var insts []store.Instance
-	s.Store.DB.Where("unit_id = ?", u.ID).Order("id").Find(&insts)
+	iq := s.q().Instance
+	insts, _ := iq.WithContext(bg).Where(iq.UnitID.Eq(u.ID)).Order(iq.ID).Find()
 	hosts := map[uint]store.Host{}
 	var used, ops, keys uint64
 	for _, in := range insts {
@@ -362,7 +383,7 @@ func (s *Server) unitView(u store.Unit, detail bool) unitView {
 			}
 			hosts[in.HostID] = h
 		}
-		iv := instanceView{Instance: in, Host: h.Name, Addr: fmt.Sprintf("%s:%d", h.Address, in.Port)}
+		iv := instanceView{Instance: *in, Host: h.Name, Addr: fmt.Sprintf("%s:%d", h.Address, in.Port)}
 		v.Instances = append(v.Instances, iv)
 		if in.Role == "master" || (in.Role == "" && in.Desired == "master") {
 			v.Endpoint = iv.Addr
@@ -395,29 +416,35 @@ func (s *Server) unitView(u store.Unit, detail bool) unitView {
 		}
 	}
 	if detail {
-		var rev store.ParamRevision
-		if s.Store.DB.Where("id = ?", u.RevisionID).First(&rev).Error == nil {
+		rq := s.q().ParamRevision
+		rev, err := rq.WithContext(bg).Where(rq.ID.Eq(u.RevisionID)).First()
+		if err == nil {
 			v.Params = map[string]string{}
 			_ = json.Unmarshal([]byte(rev.Params), &v.Params)
 		}
-		var op store.Operation
-		if s.Store.DB.Where("unit_id = ?", u.ID).Order("id DESC").First(&op).Error == nil {
-			v.LastOp = &op
+		oq := s.q().Operation
+		if op, err := oq.WithContext(bg).Where(oq.UnitID.Eq(u.ID)).Order(oq.ID.Desc()).First(); err == nil {
+			v.LastOp = op
 		}
-		s.Store.DB.Where("unit_id = ?", u.ID).Order("name").Find(&v.Accounts)
+		aq := s.q().AclAccount
+		accounts, _ := aq.WithContext(bg).Where(aq.UnitID.Eq(u.ID)).Order(aq.Name).Find()
+		for _, account := range accounts {
+			v.Accounts = append(v.Accounts, *account)
+		}
 	}
 	return v
 }
 
 func (s *Server) listUnits(c *gin.Context) {
-	var units []store.Unit
-	if err := s.Store.DB.Order("id").Find(&units).Error; err != nil {
+	uq := s.q().Unit
+	units, err := uq.WithContext(c.Request.Context()).Order(uq.ID).Find()
+	if err != nil {
 		failErr(c, err)
 		return
 	}
 	out := make([]unitView, 0, len(units))
 	for _, u := range units {
-		out = append(out, s.unitView(u, false))
+		out = append(out, s.unitView(*u, false))
 	}
 	c.JSON(http.StatusOK, out)
 }
@@ -520,14 +547,15 @@ func (s *Server) listRevisions(c *gin.Context) {
 	if !ok {
 		return
 	}
-	var revs []store.ParamRevision
-	if err := s.Store.DB.Where("unit_id = ?", id).Order("seq DESC").Limit(50).Find(&revs).Error; err != nil {
+	rq := s.q().ParamRevision
+	revs, err := rq.WithContext(c.Request.Context()).Where(rq.UnitID.Eq(id)).Order(rq.Seq.Desc()).Limit(50).Find()
+	if err != nil {
 		failErr(c, err)
 		return
 	}
 	out := make([]revisionView, 0, len(revs))
 	for _, r := range revs {
-		v := revisionView{ParamRevision: r, Params: map[string]string{}}
+		v := revisionView{ParamRevision: *r, Params: map[string]string{}}
 		_ = json.Unmarshal([]byte(r.Params), &v.Params)
 		out = append(out, v)
 	}
@@ -590,12 +618,20 @@ func (s *Server) unitMetrics(c *gin.Context) {
 		minutes = 60
 	}
 	since := time.Now().Add(-time.Duration(minutes) * time.Minute).Unix()
+	iq := s.q().Instance
 	var ids []uint
-	s.Store.DB.Model(&store.Instance{}).Where("unit_id = ?", id).Pluck("id", &ids)
+	if err := iq.WithContext(c.Request.Context()).Where(iq.UnitID.Eq(id)).Pluck(iq.ID, &ids); err != nil {
+		failErr(c, err)
+		return
+	}
 	out := map[uint][]metricPoint{}
 	if len(ids) > 0 {
-		var rows []store.MetricMinute
-		s.Store.DB.Where("instance_id IN ? AND minute >= ?", ids, since).Order("minute").Find(&rows)
+		mq := s.q().MetricMinute
+		rows, err := mq.WithContext(c.Request.Context()).Where(mq.InstanceID.In(ids...), mq.Minute.Gte(since)).Order(mq.Minute).Find()
+		if err != nil {
+			failErr(c, err)
+			return
+		}
 		last := map[uint]store.MetricMinute{}
 		for _, r := range rows {
 			p := metricPoint{Minute: r.Minute, OpsPerSec: r.OpsPerSec, UsedMemory: r.UsedMemory, Clients: r.Clients}
@@ -604,7 +640,7 @@ func (s *Server) unitMetrics(c *gin.Context) {
 					p.HitRate = float64(r.Hits-prev.Hits) / float64(d)
 				}
 			}
-			last[r.InstanceID] = r
+			last[r.InstanceID] = *r
 			out[r.InstanceID] = append(out[r.InstanceID], p)
 		}
 	}
@@ -616,8 +652,12 @@ func (s *Server) listAccounts(c *gin.Context) {
 	if !ok {
 		return
 	}
-	var as []store.AclAccount
-	s.Store.DB.Where("unit_id = ?", id).Order("name").Find(&as)
+	aq := s.q().AclAccount
+	as, err := aq.WithContext(c.Request.Context()).Where(aq.UnitID.Eq(id)).Order(aq.Name).Find()
+	if err != nil {
+		failErr(c, err)
+		return
+	}
 	c.JSON(http.StatusOK, as)
 }
 
@@ -676,18 +716,18 @@ func (s *Server) opView(op store.Operation) opView {
 }
 
 func (s *Server) listOperations(c *gin.Context) {
-	q := s.Store.DB.Order("id DESC").Limit(100)
+	oq := s.q().Operation.WithContext(c.Request.Context()).Order(s.q().Operation.ID.Desc()).Limit(100)
 	if uid, _ := strconv.Atoi(c.Query("unit_id")); uid > 0 {
-		q = q.Where("unit_id = ?", uid)
+		oq = oq.Where(s.q().Operation.UnitID.Eq(uint(uid)))
 	}
-	var ops []store.Operation
-	if err := q.Find(&ops).Error; err != nil {
+	ops, err := oq.Find()
+	if err != nil {
 		failErr(c, err)
 		return
 	}
 	out := make([]opView, 0, len(ops))
 	for _, op := range ops {
-		out = append(out, s.opView(op))
+		out = append(out, s.opView(*op))
 	}
 	c.JSON(http.StatusOK, out)
 }
@@ -708,8 +748,8 @@ func (s *Server) getOperation(c *gin.Context) {
 // ---------- 总览 ----------
 
 func (s *Server) dashboard(c *gin.Context) {
-	var hosts []store.Host
-	s.Store.DB.Where("status <> ?", "revoked").Find(&hosts)
+	hq := s.q().Host
+	hosts, _ := hq.WithContext(c.Request.Context()).Where(hq.Status.Neq("revoked")).Find()
 	online, warnHosts := 0, 0
 	for _, h := range hosts {
 		if s.GW.Online(h.ID) {
@@ -719,13 +759,13 @@ func (s *Server) dashboard(c *gin.Context) {
 			warnHosts++
 		}
 	}
-	var units []store.Unit
-	s.Store.DB.Order("id").Find(&units)
+	uq := s.q().Unit
+	units, _ := uq.WithContext(c.Request.Context()).Order(uq.ID).Find()
 	health := map[string]int{"ok": 0, "warning": 0, "critical": 0}
 	var problems []gin.H
 	var memTotal, memUsed, ops uint64
 	for _, u := range units {
-		v := s.unitView(u, false)
+		v := s.unitView(*u, false)
 		health[v.Health]++
 		for _, p := range v.Problems {
 			problems = append(problems, gin.H{"unit": u.Name, "unit_id": u.ID, "problem": p})
@@ -740,12 +780,12 @@ func (s *Server) dashboard(c *gin.Context) {
 	}
 	sort.SliceStable(problems, func(i, j int) bool { return fmt.Sprint(problems[i]["unit"]) < fmt.Sprint(problems[j]["unit"]) })
 	var instCount int64
-	s.Store.DB.Model(&store.Instance{}).Count(&instCount)
-	var ops6 []store.Operation
-	s.Store.DB.Order("id DESC").Limit(6).Find(&ops6)
+	instCount, _ = s.q().Instance.WithContext(c.Request.Context()).Count()
+	opq := s.q().Operation
+	ops6, _ := opq.WithContext(c.Request.Context()).Order(opq.ID.Desc()).Limit(6).Find()
 	recent := make([]opView, 0, len(ops6))
 	for _, op := range ops6 {
-		recent = append(recent, s.opView(op))
+		recent = append(recent, s.opView(*op))
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"hosts": len(hosts), "hosts_online": online, "hosts_tuning_warnings": warnHosts,

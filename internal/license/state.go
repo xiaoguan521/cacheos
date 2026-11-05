@@ -17,7 +17,7 @@ const (
 	StateInvalid    State = "INVALID"
 )
 
-// ProductName 是本产品在 License 中的产品标识；同一授权后台签发的其他产品（如 EdgeTraffic OS）的 License 不能激活本产品。
+// ProductName 是本产品在 License 中的产品标识；其他产品的 License 不能激活本产品。
 const ProductName = "cacheos"
 
 // ExpiringWindow 是到期提醒的提前量。

@@ -9,14 +9,16 @@ export interface LicenseView {
   customer?: string
   edition?: string
   features?: string[]
-  nodes_limit: number
-  sites_limit: number
+  hosts_limit: number
+  instances_limit: number
+  memory_gb_limit: number
   expires_at?: string
   maintenance_until?: string
   days_left: number
   installation_id: string
-  nodes_used: number
-  sites_used: number
+  hosts_used: number
+  instances_used: number
+  memory_mb_used: number
   crl?: { serial: number; issued_at: string; revoked: number } | null
 }
 

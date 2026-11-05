@@ -9,8 +9,8 @@ defineProps<{ title: string; hint?: string }>()
         <span v-for="i in 7" :key="i" :style="{ '--d': i }" />
       </div>
       <div class="pitch">
-        <div class="product">EdgeTraffic OS</div>
-        <p>改配置、校验、下发、生效、回滚，<br />在一个控制台里完成。</p>
+        <div class="product">CacheOS</div>
+        <p>主机接入、实例编排、参数变更，<br />在一个控制台里完成。</p>
       </div>
     </aside>
     <main class="main">

@@ -1,7 +1,7 @@
 # CacheOS（缓存中间件）
 
 兼容 Redis 协议的国产化分布式缓存中间件：数据面 **sycache** 基于 Valkey 源码只改名、不改逻辑；
-控制面复用 EdgeTraffic OS 的 Go + Vue 控制台底座与授权体系，把「建实例 → 改参数 → 扩缩容 → 主备切换 → 备份恢复 → 升级」变成产品能力。
+控制面提供 Go + Vue 控制台、主机 agent 与安全 wrapper，把「建实例 → 改参数 → 主备切换 → 升级」变成产品能力。
 业务方的 Jedis、Lettuce、redis-py、go-redis 等客户端不改代码即可接入。
 
 - 设计规格书：[CacheOS 缓存中间件商业方案 v1.0](https://claude.ai/artifact/EXSjwWRU3s5Dsyfh221yNV)（索引与进度见 [`docs/spec/`](docs/spec/README.md)）
@@ -27,6 +27,7 @@ dataplane/rename/           改名规则（生成 patch 的唯一来源）
 dataplane/patches/          0001 改名 patch（生成物）；1xxx-cve-* 安全补丁
 dataplane/build-sycache.sh  构建安装包
 dataplane/packaging/        systemd 单元、sysctl、logrotate、默认配置生成
+deploy/                     agent 与控制台的 systemd / sudoers 安装文件
 scripts/                    patch 生成与校验、改名扫描、黄金验收、品牌门禁
 test/compat/                行为等价与上游互通测试（仅用 Python 标准库）
 test/upstream/              上游 Tcl 测试集适配
@@ -45,6 +46,15 @@ make golden                                 # 改名黄金验收
 make compat                                 # 行为等价测试；加 VALKEY_BIN=<上游 src 目录> 跑混合版本互通
 make ci          UPSTREAM_SRC=/tmp/valkey   # 提交前的完整校验（含版本一致性、上游互通、客户端矩阵）
 make compat-build                           # glibc 2.17 容器中兼容构建，产出 tar.gz / RPM / DEB（需要 docker）
+
+# 控制面 / agent
+go test ./...
+cd web && pnpm install --offline && pnpm run build
+cd .. && node web/e2e/ui-acceptance.cjs       # 需要已初始化控制台与 Playwright
+
+# Linux 部署（需 root；agent 先 enroll，console 先配置 env）
+deploy/install-agent.sh <sycache-agent> <sycache-wrapper>
+deploy/install-console.sh <sycache-console> [console.env]
 ```
 
 修改改名规则后执行 `make patch UPSTREAM_SRC=…` 重新生成 patch，并把规则与 patch 一起提交。

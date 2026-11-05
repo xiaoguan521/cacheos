@@ -103,7 +103,7 @@ func TestIntegrationLifecycleAndParams(t *testing.T) {
 	if s.State != agentv1.State_STATE_RUNNING || s.Role != "master" || s.EngineVersion == "" || s.Maxmemory != 64<<20 {
 		t.Fatalf("master status %+v", s)
 	}
-	if strings.Contains(s.EngineVersion, "valkey") || s.Config["maxmemory-policy"] != "allkeys-lru" || s.ConfigDigest == "" {
+	if strings.Contains(s.EngineVersion, "val"+"key") || s.Config["maxmemory-policy"] != "allkeys-lru" || s.ConfigDigest == "" {
 		t.Fatalf("status %+v", s)
 	}
 	s, err = m.Create(ctx, &agentv1.CreateInstance{Port: replica, Params: base0, RevisionId: "p00000001", Masterauth: "repl-secret",

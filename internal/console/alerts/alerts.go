@@ -284,7 +284,7 @@ func (s *Service) Send(ch *store.AlertChannel, m Message) error {
 	md := fmt.Sprintf("### %s\n%s", m.Title, m.Text)
 	switch ch.Type {
 	case "webhook":
-		return s.post(ch.URL, map[string]any{"title": m.Title, "text": m.Text, "resolved": m.Resolved, "source": "EdgeTraffic OS"})
+		return s.post(ch.URL, map[string]any{"title": m.Title, "text": m.Text, "resolved": m.Resolved, "source": "CacheOS"})
 	case "wecom":
 		return s.post(ch.URL, map[string]any{"msgtype": "markdown", "markdown": map[string]string{"content": md}})
 	case "dingtalk":

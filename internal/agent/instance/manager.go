@@ -22,6 +22,7 @@ import (
 	"time"
 
 	agentv1 "github.com/xiaoguan521/cacheos/api/gen/agent/v1"
+	"github.com/xiaoguan521/cacheos/internal/agent/collect"
 	"github.com/xiaoguan521/cacheos/internal/agent/resp"
 	"github.com/xiaoguan521/cacheos/internal/paramcat"
 )
@@ -201,6 +202,23 @@ func (m *Manager) Create(ctx context.Context, c *agentv1.CreateInstance) (*agent
 	params, err := paramcat.NormalizeAll(c.GetParams())
 	if err != nil {
 		return nil, errf("INVALID", "%v", err)
+	}
+	if _, declared := params["maxmemory"]; declared {
+		maxMemory, err := MaxMemoryBytes(params)
+		if err != nil {
+			return nil, errf("INVALID", "%v", err)
+		}
+		if err := ValidateMaxMemory(maxMemory, 0); err != nil {
+			return nil, errf("INVALID", "%v", err)
+		}
+		if ParamsNeedPersistence(params) {
+			free := collect.DiskFree(filepath.Join(m.L.Root, "instances"))
+			if err := ValidatePersistenceDisk(free, maxMemory, 0); err != nil {
+				return nil, errf("INVALID", "%v", err)
+			}
+		}
+	} else if ParamsNeedPersistence(params) {
+		return nil, errf("INVALID", "maxmemory is required for persistence-enabled instances")
 	}
 	for _, u := range c.GetAclUsers() {
 		if err := ValidateUser(u); err != nil {
@@ -433,6 +451,35 @@ func (m *Manager) Apply(ctx context.Context, req *agentv1.ApplyParams) (*ApplyRe
 		return nil, errf("INTERNAL", "connect: %v", err)
 	}
 	defer c.Close()
+	effective := make(map[string]string, len(st.Params)+len(want))
+	for k, v := range st.Params {
+		effective[k] = v
+	}
+	for k, v := range want {
+		effective[k] = v
+	}
+	maxBytes, maxErr := MaxMemoryBytes(effective)
+	if maxErr != nil && (ParamsNeedPersistence(effective) || want["maxmemory"] != "") {
+		return nil, errf("INVALID", "%v", maxErr)
+	}
+	if maxErr == nil && (maxBytes != 0 && ParamsNeedPersistence(effective) || want["maxmemory"] != "") {
+		info, err := c.Do(ctx, "INFO", "memory")
+		if err != nil {
+			return nil, errf("INTERNAL", "read used_memory: %v", err)
+		}
+		usedMemory := atou(resp.ParseInfo(info.Text())["used_memory"])
+		if want["maxmemory"] != "" {
+			if err := ValidateMaxMemory(maxBytes, usedMemory); err != nil {
+				return nil, errf("INVALID", "%v", err)
+			}
+		}
+		if ParamsNeedPersistence(effective) {
+			free := collect.DiskFree(filepath.Join(m.L.Root, "instances"))
+			if err := ValidatePersistenceDisk(free, maxBytes, usedMemory); err != nil {
+				return nil, errf("INVALID", "%v", err)
+			}
+		}
+	}
 
 	old, err := configGet(ctx, c, hot)
 	if err != nil {

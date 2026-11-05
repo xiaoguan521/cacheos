@@ -2,21 +2,22 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/xiaoguan521/cacheos/internal/console/store"
+	"github.com/xiaoguan521/cacheos/internal/console/store/query"
 )
 
 func TestBackupRestoreCLI(t *testing.T) {
 	src, dst := t.TempDir(), t.TempDir()
-	st, err := store.Open(filepath.Join(src, "console.db"))
+	_, err := store.Open(filepath.Join(src, "console.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	st.DB.Create(&store.NodeGroup{Name: "default"})
 	os.MkdirAll(filepath.Join(src, "pki"), 0o700)
 	os.WriteFile(filepath.Join(src, "pki", "ca.key"), []byte("K"), 0o600)
 	pf := filepath.Join(t.TempDir(), "pass")
@@ -50,8 +51,8 @@ func TestBackupRestoreCLI(t *testing.T) {
 		t.Fatal("ca.key not restored")
 	}
 	rst, _ := store.Open(filepath.Join(dst, "console.db"))
-	var n int64
-	rst.DB.Model(&store.AuditLog{}).Where("action = ?", "system.restore").Count(&n)
+	aq := query.Use(rst.DB).AuditLog
+	n, _ := aq.WithContext(context.Background()).Where(aq.Action.Eq("system.restore")).Count()
 	if n != 1 {
 		t.Fatal("restore not audited")
 	}

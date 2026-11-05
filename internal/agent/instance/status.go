@@ -2,6 +2,7 @@ package instance
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -74,6 +75,47 @@ func (m *Manager) Status(ctx context.Context, port uint32) *agentv1.InstanceStat
 		}
 	}
 	return s
+}
+
+// ReplicationOffsets 读取本机实例 INFO replication 中的复制偏移，供控制台的滚动重启门禁（规格书 6.4 第 1 步）使用。
+//
+//   - streamOffset 取 master_repl_offset。在主节点上它是复制流的当前偏移；在从节点上它只是从节点自己那份流的偏移，
+//     与从节点已处理的偏移本来就相等，不能用来判断从节点是否追平了主节点。
+//   - replicaOffset 取 slave_repl_offset，即从节点已处理（已应用）的偏移，只有从节点才有（isReplica 为 true）。
+//     不回退到 slave_read_repl_offset：那是已收到但可能尚未应用的偏移，用来判断追平会偏乐观。
+//
+// 控制台必须分别探测两端，用「主节点的 streamOffset」与「从节点的 replicaOffset」比较。
+func (m *Manager) ReplicationOffsets(ctx context.Context, port uint32) (streamOffset, replicaOffset int64, isReplica bool, err error) {
+	st, err := m.Load(port)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	c, err := m.Dial(ctx, st)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	defer c.Close()
+	v, err := c.Do(ctx, "INFO", "replication")
+	if err != nil {
+		return 0, 0, false, err
+	}
+	streamOffset, replicaOffset, isReplica, ok := replicationOffsets(resp.ParseInfo(v.Text()))
+	if !ok {
+		return 0, 0, false, fmt.Errorf("INFO replication has no master_repl_offset")
+	}
+	return streamOffset, replicaOffset, isReplica, nil
+}
+
+func replicationOffsets(info map[string]string) (streamOffset, replicaOffset int64, isReplica, ok bool) {
+	raw, exists := info["master_repl_offset"]
+	if !exists || strings.TrimSpace(raw) == "" {
+		return 0, 0, false, false
+	}
+	streamOffset = atoi(raw)
+	if r, exists := info["slave_repl_offset"]; exists && strings.TrimSpace(r) != "" {
+		return streamOffset, atoi(r), true, true
+	}
+	return streamOffset, 0, false, true
 }
 
 // Drift 返回实际值与当前参数版本不一致的参数（名称 → 实际值）。等待重启的参数不算漂移。

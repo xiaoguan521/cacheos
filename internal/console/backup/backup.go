@@ -233,7 +233,7 @@ func Restore(r io.Reader, st *store.Store, dataDir string, pass []byte, force bo
 		return nil, err
 	}
 	if len(raw) < len(magic)+28 || string(raw[:len(magic)]) != magic {
-		return nil, errors.New("不是 EdgeTraffic OS 备份文件")
+		return nil, errors.New("不是 CacheOS 备份文件")
 	}
 	header := raw[:len(magic)+28]
 	salt, nonce := header[len(magic):len(magic)+16], header[len(magic)+16:]

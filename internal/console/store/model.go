@@ -5,7 +5,7 @@ package store
 import "time"
 
 // 模型定义（CacheOS 规格书 7、8 节）。修改任何字段或索引都必须在 migrations.go 中新增一条迁移
-// （TestModelsMatchMigrations 会检查）。账号、令牌、告警、审计、授权、系统键值沿用 EdgeTraffic 底座。
+// （TestModelsMatchMigrations 会检查）。账号、令牌、告警、审计、授权、系统键值属于控制面基础能力。
 
 // 角色（规格书 8 节 M13）。developer 可改参数与浏览 Key（需单独授权），releaser 可做切换与扩缩容，operator 可建删部署单元。
 const (

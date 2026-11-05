@@ -1,38 +1,55 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import dayjs from 'dayjs'
-import { api } from '../api/client'
-import TrafficChart from '../components/TrafficChart.vue'
-import { deployStatus, kindName } from '../components/status'
+import { api, errMsg } from '../api/client'
+import { deployStatus } from '../components/status'
 
 const data = ref<any>(null)
-const nodes = ref<any[]>([])
-const groups = ref<any[]>([])
+const error = ref('')
 
 async function load() {
-  const [d, n, g] = await Promise.all([api.get('/dashboard'), api.get('/nodes'), api.get('/node-groups')])
-  data.value = d
-  nodes.value = n.filter((x: any) => x.status !== 'revoked')
-  groups.value = g
+  try {
+    data.value = await api.get('/dashboard')
+    error.value = ''
+  } catch (e) {
+    error.value = errMsg(e)
+  }
 }
 
-let t: number | undefined
+let timer: number | undefined
 onMounted(() => {
   load()
-  t = window.setInterval(load, 5000)
+  timer = window.setInterval(load, 10000)
 })
-onUnmounted(() => clearInterval(t))
+onUnmounted(() => clearInterval(timer))
 
-function groupName(id: number) {
-  return groups.value.find((g) => g.id === id)?.name || id
+const health = computed(() => data.value?.unit_health || { ok: 0, warning: 0, critical: 0 })
+const problems = computed(() => data.value?.problems || [])
+const operations = computed(() => data.value?.operations || [])
+
+function bytes(v: number) {
+  if (!v) return '0 B'
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+  let n = v
+  let i = 0
+  while (n >= 1024 && i < units.length - 1) {
+    n /= 1024
+    i++
+  }
+  return `${n >= 10 || i === 0 ? Math.round(n) : n.toFixed(1)} ${units[i]}`
 }
-function currentRev(groupId: number) {
-  return groups.value.find((g) => g.id === groupId)?.current_revision_id || ''
+
+function ago(value?: string) {
+  if (!value) return '—'
+  const seconds = dayjs().diff(dayjs(value), 'second')
+  if (seconds < 60) return `${Math.max(seconds, 0)} 秒前`
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`
+  return dayjs(value).format('MM-DD HH:mm')
 }
-function ago(t?: string) {
-  if (!t) return '从未'
-  const s = dayjs().diff(dayjs(t), 'second')
-  return s < 60 ? `${s} 秒前` : s < 3600 ? `${Math.floor(s / 60)} 分钟前` : dayjs(t).format('MM-DD HH:mm')
+
+function opText(op: any) {
+  const names: Record<string, string> = { create: '创建', params: '参数变更', start: '启动', stop: '停止', restart: '重启', failover: '故障切换', delete: '删除' }
+  return names[op.kind] || op.kind
 }
 </script>
 
@@ -40,177 +57,69 @@ function ago(t?: string) {
   <div class="page">
     <div class="page-head">
       <div>
-        <h1>边缘节点</h1>
-        <p v-if="data">
-          <span class="num">{{ data.online }}</span> / <span class="num">{{ data.nodes }}</span> 在线，
-          <span class="num">{{ data.sites }}</span> 个站点，最近 15 分钟
-          <span class="num">{{ data.requests_15m }}</span> 次请求，5xx 占比
-          <span class="num">{{ data.error_rate_15m.toFixed(2) }}%</span>
-        </p>
+        <h1>CacheOS 总览</h1>
+        <p>主机、部署单元与最近变更的运行状态。</p>
       </div>
-      <router-link to="/nodes"><a-button>添加节点</a-button></router-link>
+      <a-button @click="load">刷新</a-button>
     </div>
 
-    <a-alert v-if="data && (data.certs_expired || data.certs_expiring)" :type="data.certs_expired ? 'error' : 'warning'" show-icon style="margin-bottom: 16px">
-      <template #message>
-        <span v-if="data.certs_expired"><b class="num">{{ data.certs_expired }}</b> 张证书已过期</span>
-        <span v-if="data.certs_expired && data.certs_expiring">，</span>
-        <span v-if="data.certs_expiring"><b class="num">{{ data.certs_expiring }}</b> 张证书 30 天内到期</span>
-        <router-link to="/certificates" style="margin-left: 12px">去续期</router-link>
-      </template>
-    </a-alert>
+    <a-alert v-if="error" type="error" show-icon :message="error" style="margin-bottom: 16px" />
 
-    <section class="fleet" v-if="data">
-      <a-empty v-if="!nodes.length" description="还没有节点。在“节点”页生成注册命令，在边缘服务器上执行即可接入。" />
-      <article v-for="n in nodes" :key="n.id" class="node" :class="[n.status, { drift: n.drifted, behind: n.status === 'online' && currentRev(n.group_id) && n.applied_revision !== currentRev(n.group_id) }]">
-        <header>
-          <span class="light" />
-          <strong>{{ n.name }}</strong>
-          <span class="grp">{{ groupName(n.group_id) }}</span>
-        </header>
-        <div class="rev num">{{ n.applied_revision || '未发布' }}</div>
-        <div class="meta">
-          <template v-if="n.status === 'online'">
-            <span class="num">{{ n.active_connections }}</span> 个连接，CPU <span class="num">{{ Math.round(n.cpu_percent) }}%</span>
-          </template>
-          <template v-else>离线，最后心跳 {{ ago(n.last_seen_at) }}</template>
-        </div>
-        <div v-if="n.drifted" class="flag">配置被手动改动</div>
-        <div v-else-if="n.status === 'online' && currentRev(n.group_id) && n.applied_revision !== currentRev(n.group_id)" class="flag">落后于组版本 {{ currentRev(n.group_id) }}</div>
-      </article>
+    <div v-if="data" class="stats">
+      <div class="stat"><span>在线主机</span><strong>{{ data.hosts_online }}<small> / {{ data.hosts }}</small></strong><em>{{ data.hosts_tuning_warnings }} 台有调优提醒</em></div>
+      <div class="stat"><span>部署单元</span><strong>{{ data.units }}</strong><em>{{ data.instances }} 个实例</em></div>
+      <div class="stat"><span>使用内存</span><strong>{{ bytes(data.memory_used) }}</strong><em>规格 {{ bytes(data.memory_total) }}</em></div>
+      <div class="stat"><span>吞吐</span><strong>{{ data.ops_per_sec }}</strong><em>ops / sec</em></div>
+    </div>
+
+    <div v-if="data" class="health-row">
+      <div class="health ok"><span />健康 {{ health.ok }}</div>
+      <div class="health warning"><span />需关注 {{ health.warning }}</div>
+      <div class="health critical"><span />异常 {{ health.critical }}</div>
+      <router-link to="/units">查看全部部署单元 →</router-link>
+    </div>
+
+    <section v-if="data" class="panel">
+      <div class="phead"><h2>需要关注</h2><span class="muted">{{ problems.length }} 条</span></div>
+      <a-empty v-if="!problems.length" description="当前没有异常" />
+      <div v-else class="problem-list">
+        <router-link v-for="(p, i) in problems" :key="i" :to="{ name: 'unit-detail', params: { id: p.unit_id } }">
+          <a-tag color="warning">{{ p.unit }}</a-tag><span>{{ p.problem }}</span>
+        </router-link>
+      </div>
     </section>
 
-    <div class="grid" v-if="data">
-      <section class="panel">
-        <h2>全网流量（最近 30 分钟）</h2>
-        <TrafficChart :series="data.series" />
-      </section>
-      <section class="panel">
-        <h2>最近发布</h2>
-        <a-empty v-if="!data.deployments.length" description="还没有发布记录" />
-        <ul class="deps">
-          <li v-for="d in data.deployments" :key="d.id">
-            <router-link :to="{ name: 'releases', query: { d: d.id } }" class="num">{{ d.revision_id }}</router-link>
-            <span class="kind">{{ kindName[d.kind] || d.kind }}</span>
-            <a-tag :color="deployStatus[d.status]?.color">{{ deployStatus[d.status]?.text || d.status }}</a-tag>
-            <span class="note">{{ d.note }}</span>
-            <time>{{ ago(d.started_at) }}</time>
-          </li>
-        </ul>
-      </section>
-    </div>
+    <section v-if="data" class="panel">
+      <div class="phead"><h2>最近操作</h2><router-link to="/operations">查看全部 →</router-link></div>
+      <a-table :data-source="operations" row-key="id" size="small" :pagination="false"
+        :columns="[{ title: '时间', key: 'time', width: 150 }, { title: '部署单元', dataIndex: 'unit' }, { title: '操作', key: 'kind' }, { title: '状态', key: 'status' }, { title: '操作人', dataIndex: 'created_by' }]">
+        <template #emptyText><a-empty description="还没有操作记录" /></template>
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'time'"><span class="num">{{ ago(record.created_at) }}</span></template>
+          <template v-else-if="column.key === 'kind'">{{ opText(record) }}</template>
+          <template v-else-if="column.key === 'status'"><a-tag :color="deployStatus[record.status]?.color || 'default'">{{ deployStatus[record.status]?.text || record.status }}</a-tag></template>
+        </template>
+      </a-table>
+    </section>
   </div>
 </template>
 
 <style scoped>
-.fleet {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 12px;
-  margin-bottom: 16px;
-}
-.node {
-  position: relative;
-  background: #fff;
-  border: 1px solid #e1e7e6;
-  border-left: 4px solid #2f9e5b;
-  border-radius: 6px;
-  padding: 12px 14px;
-}
-.node.offline {
-  border-left-color: #b8c3c2;
-  background: #fafbfb;
-}
-.node.behind {
-  border-left-color: #d9a21b;
-}
-.node.drift {
-  border-left-color: #c8423b;
-}
-.node header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.light {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #2f9e5b;
-  box-shadow: 0 0 0 3px #e6f3ec;
-}
-.offline .light {
-  background: #b8c3c2;
-  box-shadow: none;
-}
-.grp {
-  margin-left: auto;
-  font-size: 12px;
-  color: #6b7c80;
-}
-.rev {
-  margin: 10px 0 4px;
-  font-size: 22px;
-  font-weight: 600;
-  color: #16323a;
-}
-.offline .rev {
-  color: #8a9a9d;
-}
-.meta {
-  font-size: 12px;
-  color: #6b7c80;
-}
-.flag {
-  margin-top: 8px;
-  font-size: 12px;
-  color: #a3332d;
-}
-.behind .flag {
-  color: #8a6510;
-}
-.grid {
-  display: grid;
-  grid-template-columns: 1.6fr 1fr;
-  gap: 16px;
-  align-items: start;
-}
-.grid .panel + .panel {
-  margin-top: 0;
-}
-.deps {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-.deps li {
-  display: grid;
-  grid-template-columns: 76px 64px auto 1fr auto;
-  align-items: center;
-  gap: 8px;
-  padding: 9px 0;
-  border-bottom: 1px solid #eef2f1;
-  font-size: 13px;
-}
-.deps li:last-child {
-  border-bottom: 0;
-}
-.kind {
-  color: #6b7c80;
-}
-.note {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: #3b4a4e;
-}
-time {
-  color: #8a9a9d;
-  font-size: 12px;
-}
-@media (max-width: 980px) {
-  .grid {
-    grid-template-columns: 1fr;
-  }
-}
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+.stat { background: #fff; border: 1px solid #e1e7e6; border-radius: 8px; padding: 16px 18px; display: flex; flex-direction: column; gap: 6px; }
+.stat span, .stat em, .muted { color: #6b7c80; font-size: 12px; font-style: normal; }
+.stat strong { color: #16323a; font-size: 26px; font-weight: 650; line-height: 1.1; }
+.stat small { color: #8a9a9d; font-size: 14px; font-weight: 400; }
+.health-row { display: flex; align-items: center; gap: 20px; margin-bottom: 16px; font-size: 13px; }
+.health { display: inline-flex; gap: 7px; align-items: center; }
+.health span { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.health.ok { color: #1f6f43; }.health.warning { color: #8a6510; }.health.critical { color: #a3332d; }
+.health-row a { margin-left: auto; }
+.phead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.phead h2 { margin: 0; }
+.problem-list { display: flex; flex-direction: column; gap: 9px; }
+.problem-list a { display: flex; align-items: center; gap: 10px; color: #334b51; text-decoration: none; }
+.problem-list a:hover { color: #0e7c86; }
+@media (max-width: 900px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 560px) { .stats { grid-template-columns: 1fr; } .health-row { flex-wrap: wrap; } }
 </style>

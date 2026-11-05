@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -458,7 +459,20 @@ func (a *Agent) handle(ctx context.Context, client agentv1.AgentGatewayClient, m
 		r.Details = d
 		sendResult(r)
 	case *agentv1.ServerMessage_Probe:
-		sendResult(result(m.CmdId, a.M.Status(ctx, b.Probe.Port), nil))
+		st := a.M.Status(ctx, b.Probe.Port)
+		r := result(m.CmdId, st, nil)
+		// 复制偏移放在 details 中（InstanceStatus 没有对应字段）：主节点给出复制流偏移 repl_offset，
+		// 从节点另给出已处理偏移 replica_offset。控制台用主节点的 repl_offset 与从节点的 replica_offset 比较。
+		if role := st.GetRole(); role == "master" || role == "slave" {
+			if stream, replica, isReplica, err := a.M.ReplicationOffsets(ctx, b.Probe.Port); err == nil {
+				d := map[string]string{"repl_offset": strconv.FormatInt(stream, 10)}
+				if isReplica {
+					d["replica_offset"] = strconv.FormatInt(replica, 10)
+				}
+				r.Details = d
+			}
+		}
+		sendResult(r)
 	case *agentv1.ServerMessage_SwitchVersion:
 		out, err := a.M.Run(ctx, "switch-version", b.SwitchVersion.Version)
 		if err != nil {

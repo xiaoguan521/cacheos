@@ -2,7 +2,7 @@ import axios, { AxiosError } from 'axios'
 import router from '../router'
 
 // 所有请求带 X-Requested-With：授权后台据此做 CSRF 防护
-export const http = axios.create({ baseURL: '/api/v1', headers: { 'X-Requested-With': 'etos' }, timeout: 30000 })
+export const http = axios.create({ baseURL: '/api/v1', headers: { 'X-Requested-With': 'cacheos' }, timeout: 30000 })
 
 http.interceptors.response.use(
   (r) => r,

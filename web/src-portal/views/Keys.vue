@@ -54,7 +54,7 @@ onMounted(load)
     <div class="page-head">
       <div>
         <h1>签名公钥</h1>
-        <p>本系统只保存公钥。私钥在离线签名机上以口令加密文件存在，由 syapp-license-signer keygen 生成。</p>
+        <p>本系统只保存公钥。私钥在离线签名机上以口令加密文件保存，由离线签名工具生成。</p>
       </div>
       <a-button v-if="session.has('admin')" type="primary" @click="open = true">登记公钥</a-button>
     </div>

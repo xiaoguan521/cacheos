@@ -1,0 +1,31 @@
+[Unit]
+Description=CacheOS outbound agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sycache-agent
+Group=sycache
+ExecStart=/usr/bin/sycache-agent run -state-dir /var/lib/sycache-agent -root /opt/sycache -wrapper "sudo -n /usr/libexec/sycache/sycache-wrapper"
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+UMask=0077
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectControlGroups=yes
+# agent 必须通过 sudo 进入 root 所有、自带参数校验的 wrapper，因此进程不能带 no_new_privs 标志。
+# systemd 规定：以非 root 用户运行时，只要设置了 RestrictAddressFamilies、ProtectKernelTunables、
+# ProtectKernelModules、RestrictSUIDSGID、SystemCallFilter、SystemCallArchitectures、RestrictNamespaces、
+# PrivateDevices、ProtectKernelLogs、ProtectClock、MemoryDenyWriteExecute、RestrictRealtime、
+# LockPersonality 中的任意一项，就会强制启用 NoNewPrivileges，显式写 NoNewPrivileges=no 也无法关闭。
+# 所以这些选项一律不能出现在本单元中（internal/wrapper/packaging_test.go 会检查）。
+RuntimeDirectory=sycache
+RuntimeDirectoryMode=0775
+RuntimeDirectoryPreserve=yes
+ReadWritePaths=/var/lib/sycache-agent /opt/sycache /run/sycache /var/log/sycache
+
+[Install]
+WantedBy=multi-user.target

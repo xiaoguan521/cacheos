@@ -12,6 +12,6 @@ func TestReleaseKeyRing(t *testing.T) {
 		t.Fatal("release build must not contain the demo signing key")
 	}
 	if len(ProductionKIDs()) == 0 {
-		t.Fatal("release build has no production signing key: generate one with syapp-license-signer keygen and add its public key to internal/license/keys.go (docs/license-ops.md)")
+		t.Fatal("release build has no production signing key: generate one with the offline signing tool and add its public key to internal/license/keys.go (docs/license-ops.md)")
 	}
 }

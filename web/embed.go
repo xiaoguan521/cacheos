@@ -1,4 +1,4 @@
-// Package web 内嵌控制台前端构建产物（web/dist），由 syapp-console 提供静态文件。
+// Package web 内嵌控制台前端构建产物（web/dist），由 sycache-console 提供静态文件。
 // 构建前端：cd web && pnpm build（产物输出到 dist/）。
 package web
 

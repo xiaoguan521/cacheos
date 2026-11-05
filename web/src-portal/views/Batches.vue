@@ -98,7 +98,7 @@ onMounted(load)
     <div class="page-head">
       <div>
         <h1>签名批次</h1>
-        <p>导出签名请求 → U 盘拷到离线签名机，运行 syapp-license-signer sign → 拷回 signed-*.json 并导入。</p>
+        <p>导出签名请求 → U 盘拷到离线签名机，运行离线签名工具 → 拷回 signed-*.json 并导入。</p>
       </div>
       <a-space v-if="session.has('signer')">
         <a-button :loading="importing" @click="doImport">导入签名结果</a-button>

@@ -1,0 +1,26 @@
+[Unit]
+Description=CacheOS control console
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sycache-console
+Group=sycache-console
+EnvironmentFile=-/etc/cacheos/console.env
+ExecStart=/usr/bin/sycache-console
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+UMask=0077
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/var/lib/sycache-console /etc/cacheos
+
+[Install]
+WantedBy=multi-user.target

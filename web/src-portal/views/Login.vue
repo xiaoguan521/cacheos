@@ -38,7 +38,7 @@ async function submit() {
 <template>
   <div class="wrap">
     <form class="card" @submit.prevent="submit">
-      <h1>EdgeTraffic OS 授权后台</h1>
+      <h1>CacheOS 授权后台</h1>
       <p class="sub">{{ initialized ? '登录' : '首次使用：创建管理员账号' }}</p>
       <a-form layout="vertical" :model="form" name="login">
         <a-form-item label="用户名" name="username"><a-input v-model:value="form.username" autocomplete="username" /></a-form-item>

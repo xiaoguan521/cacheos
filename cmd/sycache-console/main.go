@@ -1,4 +1,4 @@
-// sycache-console：EdgeTraffic OS Web 控制台（规格书第 7 节）。
+// sycache-console：CacheOS Web 控制台。
 //
 // 一个进程同时提供：Web 控制台与 REST API（-listen），以及供节点主动连接的 gRPC 网关（-grpc-listen）。
 package main
@@ -164,7 +164,7 @@ func run(log *slog.Logger, o options) error {
 		log.Warn("Web 控制台未启用 HTTPS 却监听在非本机地址：登录凭据会以明文传输。生产环境请配置 -tls-cert/-tls-key 或 -tls-auto（CACHEOS_TLS_AUTO=1）",
 			"listen", listen)
 	}
-	apiSrv := &api.Server{Store: st, GW: gw, Orch: orc, Alerts: alr, Lic: lic, Audit: aud, Log: log, Web: web.Dist(),
+	apiSrv := &api.Server{Store: st, GW: gw, Orch: orc, Alerts: alr, Lic: lic, Audit: aud, Box: box, Log: log, Web: web.Dist(),
 		GRPCAddr: grpcAdvertise, CAFingerprint: pki.Fingerprint(ca.Cert.Raw), SecureCookie: useTLS, HA: el}
 	if webCA != nil {
 		apiSrv.WebCAPEM = webCA.CertPEM()
