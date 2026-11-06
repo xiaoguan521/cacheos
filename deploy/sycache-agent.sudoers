@@ -1,5 +1,1 @@
-# sycache-wrapper validates the complete argument grammar and filesystem targets.
-sycache-agent ALL=(root) NOPASSWD: /usr/libexec/sycache/sycache-wrapper start *
-sycache-agent ALL=(root) NOPASSWD: /usr/libexec/sycache/sycache-wrapper stop *
-sycache-agent ALL=(root) NOPASSWD: /usr/libexec/sycache/sycache-wrapper restart *
-sycache-agent ALL=(root) NOPASSWD: /usr/libexec/sycache/sycache-wrapper switch-version *
+../dataplane/packaging/sycache-agent.sudoers

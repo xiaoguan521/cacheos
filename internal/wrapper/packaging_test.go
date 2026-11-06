@@ -55,7 +55,7 @@ func TestAgentPackagingIsPresentAndHardened(t *testing.T) {
 	}
 
 	service := readPackaging(t, "dataplane/packaging/sycache-agent.service")
-	for _, want := range []string{"User=sycache-agent", "Group=sycache", "ExecStart=/usr/bin/sycache-agent run", "Restart=on-failure", "ProtectSystem=strict", "NoNewPrivileges=no", "RuntimeDirectory=sycache", "ReadWritePaths=/var/lib/sycache-agent /opt/sycache /run/sycache"} {
+	for _, want := range []string{"User=sycache-agent", "Group=sycache", "ExecStart=/usr/bin/sycache-agent run", "Restart=on-failure", "ProtectSystem=strict", "UMask=0007", "RuntimeDirectory=sycache", "ReadWritePaths=/var/lib/sycache-agent /opt/sycache /run/sycache"} {
 		if !strings.Contains(service, want) {
 			t.Errorf("agent service missing %q", want)
 		}
