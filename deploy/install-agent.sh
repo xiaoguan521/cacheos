@@ -11,17 +11,18 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-getent group sycache >/dev/null 2>&1 || groupadd -r sycache
-if ! getent passwd sycache-agent >/dev/null 2>&1; then
-  useradd -r -g sycache -d /var/lib/sycache-agent -s /usr/sbin/nologin -c "CacheOS agent" sycache-agent
+# Reuse the same user/group/directory creation logic as the DEB/RPM packages.
+PREINSTALL="$(cd "$(dirname "$0")/../dataplane/packaging/agent-scripts" && pwd)/preinstall.sh"
+if [ ! -f "$PREINSTALL" ]; then
+  echo "preinstall.sh not found at $PREINSTALL" >&2
+  exit 1
 fi
+bash "$PREINSTALL"
+
 install -D -o root -g root -m 0755 "$AGENT" /usr/bin/sycache-agent
 install -D -o root -g root -m 0755 "$WRAPPER" /usr/libexec/sycache/sycache-wrapper
 install -D -o root -g root -m 0644 "$HERE/sycache-agent.service" /etc/systemd/system/sycache-agent.service
 install -D -o root -g root -m 0440 "$HERE/sycache-agent.sudoers" /etc/sudoers.d/sycache-agent
-install -d -o root -g sycache -m 0750 /opt/sycache
-install -d -o sycache-agent -g sycache -m 0700 /var/lib/sycache-agent
-install -d -o sycache -g sycache -m 2770 /opt/sycache/instances /var/log/sycache
 
 systemctl daemon-reload
 systemctl enable sycache-agent.service >/dev/null
