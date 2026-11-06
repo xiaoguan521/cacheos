@@ -44,9 +44,10 @@ type Server struct {
 	WebCAPEM      []byte      // -tls-auto 时的 Web CA 证书，公开下载以便导入浏览器
 	HA            *ha.Elector // 主备选主；nil 视为单机
 
-	jwtKey []byte
-	fails  sync.Map // ip -> *loginFail
-	routes func() gin.RoutesInfo
+	jwtKey        []byte
+	fails         sync.Map // ip -> *loginFail
+	migrationRuns sync.Map // migration id -> struct{}; prevents duplicate recovery in one process
+	routes        func() gin.RoutesInfo
 }
 
 type loginFail struct {
@@ -98,6 +99,8 @@ func (s *Server) Handler() (http.Handler, error) {
 
 	a := v1.Group("", s.auth)
 	a.GET("/auth/me", s.me)
+	a.GET("/auth/totp/status", s.totpStatus)
+	a.POST("/auth/totp/setup", s.stepUp, s.setupTOTP)
 	a.GET("/openapi.json", s.openAPI)
 
 	// 告警（P9，规格书 7.1 M9）：企业微信 / 钉钉通道需要授权功能 alert_im
@@ -118,14 +121,20 @@ func (s *Server) Handler() (http.Handler, error) {
 	a.GET("/license/request", role(store.RoleAdmin), s.licenseRequest)
 	a.POST("/license/import", role(store.RoleAdmin), s.licenseImport) // 过期状态下仍可用
 	a.POST("/license/crl", role(store.RoleAdmin), s.licenseCRL)       // 过期状态下仍可用
+	a.GET("/system/about", role(store.RoleAdmin), s.about)
+
+	// 数据面 / agent 版本库（M14）：导入时验厂商签名，agent 只从已验签包拉取。
+	a.GET("/engine-packages", role(store.RoleAdmin), s.listEnginePackages)
+	a.POST("/engine-packages", role(store.RoleAdmin), s.writable, s.stepUp, s.importEnginePackage)
+	a.DELETE("/engine-packages/:id", role(store.RoleAdmin), s.writable, s.stepUp, s.deleteEnginePackage)
 
 	// 主机（规格书 7 节 M3）
 	a.GET("/hosts", s.listHosts)
 	a.GET("/hosts/:id", s.getHost)
 	a.PUT("/hosts/:id", role(store.RoleOperator), s.updateHost)
-	a.POST("/hosts/enroll", role(store.RoleOperator), s.writable, s.enrollToken)
-	a.POST("/hosts/:id/revoke", role(store.RoleAdmin), s.revokeHost)
-	a.POST("/hosts/:id/switch-version", role(store.RoleOperator), s.writable, s.switchVersion)
+	a.POST("/hosts/enroll", role(store.RoleOperator), s.writable, s.stepUp, s.enrollToken)
+	a.POST("/hosts/:id/revoke", role(store.RoleAdmin), s.stepUp, s.revokeHost)
+	a.POST("/hosts/:id/switch-version", role(store.RoleOperator), s.writable, s.stepUp, s.switchVersion)
 
 	// 参数目录与模板（M5）
 	a.GET("/params/catalog", s.paramCatalog)
@@ -136,20 +145,36 @@ func (s *Server) Handler() (http.Handler, error) {
 
 	// 部署单元（M4、M6）：启停、切换与删除在授权只读时仍可用（授权失效不得影响已有实例，规格书 10 节）
 	a.GET("/units", s.listUnits)
-	a.POST("/units", role(store.RoleOperator), s.writable, s.createUnit)
+	a.POST("/units", role(store.RoleOperator), s.writable, s.stepUp, s.createUnit)
 	a.GET("/units/:id", s.getUnit)
-	a.DELETE("/units/:id", role(store.RoleOperator), s.deleteUnit)
-	a.POST("/units/:id/actions/:action", role(store.RoleOperator), s.unitAction)
-	a.POST("/units/:id/failover", role(store.RoleOperator), s.failover)
-	a.GET("/units/:id/revisions", s.listRevisions)
+	a.DELETE("/units/:id", role(store.RoleOperator), s.stepUp, s.deleteUnit)
+	a.POST("/units/:id/actions/:action", role(store.RoleOperator), s.stepUp, s.unitAction)
+	a.POST("/units/:id/failover", role(store.RoleReleaser), s.stepUp, s.failover)
+	a.POST("/units/:id/upgrade", role(store.RoleReleaser), s.writable, s.stepUp, s.upgradeUnit)
+	a.POST("/units/:id/scale", role(store.RoleReleaser), s.writable, s.stepUp, s.scaleUnit)
+	a.POST("/units/:id/sentinel", role(store.RoleReleaser), s.writable, s.stepUp, s.sentinelOperation)
+	a.GET("/units/:id/revisions", role(store.RoleDeveloper), s.listRevisions)
 	a.POST("/units/:id/params/preview", role(store.RoleDeveloper), s.previewParams)
-	a.POST("/units/:id/params", role(store.RoleReleaser), s.writable, s.applyParams)
+	a.POST("/units/:id/params", role(store.RoleReleaser), s.writable, s.stepUp, s.applyParams)
 	a.GET("/units/:id/metrics", s.unitMetrics)
-	a.GET("/units/:id/accounts", s.listAccounts)
-	a.POST("/units/:id/accounts", role(store.RoleOperator), s.saveAccount)
-	a.DELETE("/units/:id/accounts/:name", role(store.RoleOperator), s.deleteAccount)
+	a.GET("/units/:id/diagnose", role(store.RoleDeveloper), s.diagnose)
+	a.GET("/units/:id/keys", role(store.RoleDeveloper), s.browseKeys)
+	a.GET("/units/:id/backups", role(store.RoleOperator), s.listBackups)
+	a.GET("/units/:id/backup-policy", role(store.RoleOperator), s.getBackupPolicy)
+	a.PUT("/units/:id/backup-policy", role(store.RoleOperator), s.writable, s.stepUp, s.saveBackupPolicy)
+	a.POST("/units/:id/backups", role(store.RoleOperator), s.writable, s.stepUp, s.createBackup)
+	a.POST("/units/:id/backups/:backup_id/restore", role(store.RoleOperator), s.writable, s.stepUp, s.restoreBackup)
+	a.GET("/units/:id/migrations", role(store.RoleOperator), s.listMigrations)
+	a.POST("/units/:id/migrations", role(store.RoleOperator), s.writable, s.stepUp, s.createMigration)
+	a.POST("/units/:id/migrations/:migration_id/cutover", role(store.RoleOperator), s.writable, s.stepUp, s.cutoverMigration)
+	a.POST("/units/:id/reshard", role(store.RoleReleaser), s.writable, s.stepUp, s.reshard)
+	a.GET("/units/:id/accounts", role(store.RoleOperator), s.listAccounts)
+	a.POST("/units/:id/accounts", role(store.RoleOperator), s.writable, s.stepUp, s.saveAccount)
+	a.DELETE("/units/:id/accounts/:name", role(store.RoleOperator), s.writable, s.stepUp, s.deleteAccount)
 	a.GET("/operations", s.listOperations)
 	a.GET("/operations/:id", s.getOperation)
+	a.POST("/operations/:id/approve", role(store.RoleReleaser), s.stepUp, s.approveOperation)
+	a.POST("/operations/:id/resume", role(store.RoleReleaser), s.stepUp, s.resumeOperation)
 
 	a.GET("/audit", role(store.RoleViewer), s.listAudit)
 	a.GET("/audit/verify", role(store.RoleAdmin), s.verifyAudit)
@@ -163,8 +188,10 @@ func (s *Server) Handler() (http.Handler, error) {
 	a.POST("/sso/ldap/test", role(store.RoleAdmin), s.testLDAP)
 	a.GET("/security-policy", role(store.RoleAdmin), s.getPolicy)
 	a.PUT("/security-policy", role(store.RoleAdmin), s.putPolicy)
-	a.PUT("/users/:id", role(store.RoleAdmin), s.updateUser)
-	a.DELETE("/users/:id", role(store.RoleAdmin), s.deleteUser)
+	a.GET("/approval-policy", role(store.RoleAdmin), s.getApprovalPolicy)
+	a.PUT("/approval-policy", role(store.RoleAdmin), s.putApprovalPolicy)
+	a.PUT("/users/:id", role(store.RoleAdmin), s.stepUp, s.updateUser)
+	a.DELETE("/users/:id", role(store.RoleAdmin), s.stepUp, s.deleteUser)
 	a.GET("/users", role(store.RoleAdmin), s.listUsers)
 	a.POST("/users", role(store.RoleAdmin), s.writable, s.createUser)
 

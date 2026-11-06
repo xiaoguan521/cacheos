@@ -6,6 +6,7 @@ package instance
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -38,7 +39,17 @@ func fakeWrapper(t *testing.T, bin string, l Layout) Runner {
 	}
 	start := func(port string) (string, error) {
 		conf := filepath.Join(l.Root, "instances", port, "sycache.conf")
-		out, err := exec.Command(filepath.Join(bin, "sycache-server"), conf, "--daemonize", "yes").CombinedOutput()
+		binary := "sycache-server"
+		if _, err := os.Stat(filepath.Join(l.Root, "instances", port, "sycache-sentinel.conf")); err == nil {
+			conf = filepath.Join(l.Root, "instances", port, "sycache-sentinel.conf")
+			binary = "sycache-sentinel"
+		}
+		out, err := exec.Command(filepath.Join(bin, binary), conf, "--daemonize", "yes").CombinedOutput()
+		if err != nil {
+			t.Logf("start %s failed: %v output=%s", port, err, out)
+		} else if len(out) > 0 {
+			t.Logf("start %s output=%s", port, out)
+		}
 		return string(out), err
 	}
 	return func(ctx context.Context, args ...string) (string, error) {
@@ -231,6 +242,375 @@ func TestIntegrationLifecycleAndParams(t *testing.T) {
 	}
 	if _, err := os.Stat(l.InstanceDir(replica)); !os.IsNotExist(err) {
 		t.Fatal("instance dir still present")
+	}
+}
+
+func TestIntegrationNativeMigrationCutover(t *testing.T) {
+	bin := os.Getenv("SYCACHE_BIN")
+	if bin == "" {
+		t.Skip("SYCACHE_BIN not set")
+	}
+	base, err := os.MkdirTemp("/tmp", "sc-migrate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := Layout{Root: base + "/opt", RunDir: base + "/run", LogDir: base + "/log", StateDir: base + "/state"}
+	for _, d := range []string{l.Root + "/instances", l.RunDir, l.LogDir} {
+		_ = os.MkdirAll(d, 0o755)
+	}
+	m := &Manager{L: l}
+	m.Run = fakeWrapper(t, bin, l)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	sourcePort := freePort(t)
+	targetPort := freePort(t)
+	for targetPort == sourcePort {
+		targetPort = freePort(t)
+	}
+	t.Cleanup(func() {
+		for _, p := range []uint32{sourcePort, targetPort} {
+			_, _ = m.Run(context.Background(), "stop", strconv.Itoa(int(p)))
+		}
+		os.RemoveAll(base)
+	})
+	appHash := sha("app-pass")
+	params := map[string]string{"maxmemory": "64mb", "maxmemory-policy": "allkeys-lru", "save": "", "appendonly": "no"}
+	create := func(port uint32) {
+		t.Helper()
+		if _, err := m.Create(ctx, &agentv1.CreateInstance{
+			Port:       port,
+			Params:     params,
+			RevisionId: "p00000001",
+			Masterauth: "repl-secret",
+			AclUsers:   []*agentv1.AclUser{{Name: "app", PasswordSha256: []string{appHash}, Rules: []string{"~*", "+@read", "+@write", "+ping"}, Enabled: true}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	create(sourcePort)
+	create(targetPort)
+
+	source, err := resp.Dial(ctx, l.Socket(sourcePort), "app", "app-pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Do(ctx, "SET", "migration:first", "one"); err != nil {
+		source.Close()
+		t.Fatal(err)
+	}
+
+	address := fmt.Sprintf("127.0.0.1:%d", sourcePort)
+	initial, err := m.Migrate(ctx, &agentv1.Migrate{
+		Port:           targetPort,
+		JobId:          "integration-native-migration",
+		Mode:           agentv1.Migrate_FULL_INCREMENTAL,
+		Pattern:        "*",
+		SourceAddress:  address,
+		SourceUser:     UserRepl,
+		SourcePassword: "repl-secret",
+		SourceQuiesced: false,
+	})
+	if err != nil {
+		source.Close()
+		t.Fatal(err)
+	}
+	var initialReport migrateReport
+	if err := json.Unmarshal(initial, &initialReport); err != nil {
+		source.Close()
+		t.Fatal(err)
+	}
+	if !initialReport.AwaitingCutover || !initialReport.FullSyncDone || initialReport.Strategy != "replication" {
+		source.Close()
+		t.Fatalf("initial migration report %+v", initialReport)
+	}
+
+	if _, err := source.Do(ctx, "SET", "migration:second", "two"); err != nil {
+		source.Close()
+		t.Fatal(err)
+	}
+	target, err := resp.Dial(ctx, l.Socket(targetPort), "app", "app-pass")
+	if err != nil {
+		source.Close()
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		v, err := target.Do(ctx, "GET", "migration:second")
+		return err == nil && v.Text() == "two"
+	})
+
+	final, err := m.Migrate(ctx, &agentv1.Migrate{
+		Port:           targetPort,
+		JobId:          "integration-native-migration",
+		Mode:           agentv1.Migrate_FULL_INCREMENTAL,
+		Pattern:        "*",
+		SourceAddress:  address,
+		SourceUser:     UserRepl,
+		SourcePassword: "repl-secret",
+		SourceQuiesced: true,
+		Finalize:       true,
+	})
+	source.Close()
+	target.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var finalReport migrateReport
+	if err := json.Unmarshal(final, &finalReport); err != nil {
+		t.Fatal(err)
+	}
+	if !finalReport.CutoverReady || finalReport.Strategy != "replication" {
+		t.Fatalf("final migration report %+v", finalReport)
+	}
+	waitFor(t, func() bool { return m.Status(ctx, targetPort).Role == "master" })
+	reader, err := resp.Dial(ctx, l.Socket(targetPort), "app", "app-pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	v, err := reader.Do(ctx, "GET", "migration:first")
+	if err != nil || v.Text() != "one" {
+		t.Fatalf("promoted target lost data: value=%q err=%v", v.Text(), err)
+	}
+	v, err = reader.Do(ctx, "GET", "migration:second")
+	if err != nil || v.Text() != "two" {
+		t.Fatalf("promoted target lost streamed data: value=%q err=%v", v.Text(), err)
+	}
+	conf, err := os.ReadFile(l.ConfPath(targetPort, agentv1.Kind_KIND_SERVER))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(conf), "masterauth repl-secret") || strings.Contains(string(conf), "masteruser sycache-repl") {
+		t.Fatalf("temporary replication credentials remained in target config:\n%s", conf)
+	}
+}
+
+func TestIntegrationSentinelAuthAgainstDataNode(t *testing.T) {
+	bin := os.Getenv("SYCACHE_BIN")
+	if bin == "" {
+		t.Skip("SYCACHE_BIN not set")
+	}
+	base, err := os.MkdirTemp("/tmp", "sc-sentinel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := Layout{Root: base + "/opt", RunDir: base + "/run", LogDir: base + "/log", StateDir: base + "/state"}
+	for _, d := range []string{l.Root + "/instances", l.RunDir, l.LogDir} {
+		_ = os.MkdirAll(d, 0o755)
+	}
+	m := &Manager{L: l}
+	m.Run = fakeWrapper(t, bin, l)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	masterPort, sentinelPort := freePort(t), freePort(t)
+	for sentinelPort == masterPort {
+		sentinelPort = freePort(t)
+	}
+	t.Cleanup(func() {
+		for _, p := range []uint32{masterPort, sentinelPort} {
+			_, _ = m.Run(context.Background(), "stop", strconv.Itoa(int(p)))
+		}
+		os.RemoveAll(base)
+	})
+	params := map[string]string{"maxmemory": "64mb", "save": "", "appendonly": "no"}
+	if _, err := m.Create(ctx, &agentv1.CreateInstance{Port: masterPort, Params: params, RevisionId: "p00000001", Masterauth: "repl-secret"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Create(ctx, &agentv1.CreateInstance{
+		Port:                sentinelPort,
+		Kind:                agentv1.Kind_KIND_SENTINEL,
+		RevisionId:          "p00000001",
+		Masterauth:          "repl-secret",
+		SentinelMonitorName: "mymaster",
+		SentinelMasterHost:  "127.0.0.1",
+		SentinelMasterPort:  masterPort,
+		SentinelQuorum:      1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	c, err := m.Dial(ctx, &State{Port: sentinelPort, Kind: agentv1.Kind_KIND_SENTINEL, AdminPassword: func() string {
+		st, loadErr := m.Load(sentinelPort)
+		if loadErr != nil {
+			t.Fatal(loadErr)
+		}
+		return st.AdminPassword
+	}()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	waitFor(t, func() bool {
+		v, err := c.Do(ctx, "SENTINEL", "GET-MASTER-ADDR-BY-NAME", "mymaster")
+		return err == nil && len(v.Array) == 2 && v.Array[0].Text() == "127.0.0.1" && uint32(atoi(v.Array[1].Text())) == masterPort
+	})
+	if role := m.Status(ctx, sentinelPort).Role; role != "sentinel" {
+		t.Fatalf("sentinel role=%q", role)
+	}
+}
+
+func TestIntegrationClusterMigrateAuthentication(t *testing.T) {
+	bin := os.Getenv("SYCACHE_BIN")
+	if bin == "" {
+		t.Skip("SYCACHE_BIN not set")
+	}
+	base, err := os.MkdirTemp("/tmp", "sc-cluster")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := Layout{Root: base + "/opt", RunDir: base + "/run", LogDir: base + "/log", StateDir: base + "/state"}
+	for _, d := range []string{l.Root + "/instances", l.RunDir, l.LogDir} {
+		_ = os.MkdirAll(d, 0o755)
+	}
+	m := &Manager{L: l}
+	m.Run = fakeWrapper(t, bin, l)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	sourcePort, targetPort := freePort(t), freePort(t)
+	for sourcePort > 55535 {
+		sourcePort = freePort(t)
+	}
+	for targetPort == sourcePort || targetPort > 55535 {
+		targetPort = freePort(t)
+	}
+	t.Cleanup(func() {
+		for _, p := range []uint32{sourcePort, targetPort} {
+			_, _ = m.Run(context.Background(), "stop", strconv.Itoa(int(p)))
+		}
+		os.RemoveAll(base)
+	})
+	appHash := sha("app-pass")
+	params := map[string]string{"maxmemory": "64mb", "save": "", "appendonly": "no"}
+	for _, port := range []uint32{sourcePort, targetPort} {
+		if _, err := m.Create(ctx, &agentv1.CreateInstance{
+			Port:           port,
+			Params:         params,
+			RevisionId:     "p00000001",
+			Masterauth:     "repl-secret",
+			ClusterEnabled: true,
+			AclUsers:       []*agentv1.AclUser{{Name: "app", PasswordSha256: []string{appHash}, Rules: []string{"~*", "+@read", "+@write", "+ping"}, Enabled: true}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	nodeID := func(raw []byte, port uint32) string {
+		for _, line := range strings.Split(string(raw), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 && strings.HasPrefix(fields[1], fmt.Sprintf("127.0.0.1:%d@", port)) {
+				return fields[0]
+			}
+		}
+		return ""
+	}
+	targetNodes, _, err := m.ClusterOp(ctx, &agentv1.ClusterOp{Port: targetPort, Op: agentv1.ClusterOp_NODES})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceID := ""
+	targetID := nodeID(targetNodes, targetPort)
+	if targetID == "" {
+		t.Fatalf("target node ID missing: %s", targetNodes)
+	}
+	if _, _, err := m.ClusterOp(ctx, &agentv1.ClusterOp{Port: sourcePort, Op: agentv1.ClusterOp_MEET, PeerHost: "127.0.0.1", PeerPort: targetPort}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		raw, _, err := m.ClusterOp(ctx, &agentv1.ClusterOp{Port: sourcePort, Op: agentv1.ClusterOp_NODES})
+		if err != nil {
+			return false
+		}
+		sourceID = nodeID(raw, sourcePort)
+		return sourceID != "" && strings.Contains(string(raw), targetID)
+	})
+	if _, _, err := m.ClusterOp(ctx, &agentv1.ClusterOp{Port: sourcePort, Op: agentv1.ClusterOp_ADD_SLOTS, Slots: []*agentv1.SlotRange{{Start: 0, End: 8191}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.ClusterOp(ctx, &agentv1.ClusterOp{Port: targetPort, Op: agentv1.ClusterOp_ADD_SLOTS, Slots: []*agentv1.SlotRange{{Start: 8192, End: 16383}}}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		for _, port := range []uint32{sourcePort, targetPort} {
+			st, err := m.Load(port)
+			if err != nil {
+				return false
+			}
+			c, err := m.Dial(ctx, st)
+			if err != nil {
+				return false
+			}
+			v, err := c.Do(ctx, "CLUSTER", "INFO")
+			c.Close()
+			if err != nil || resp.ParseInfo(v.Text())["cluster_state"] != "ok" {
+				return false
+			}
+		}
+		return true
+	})
+	st, err := m.Load(sourcePort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin, err := m.Dial(ctx, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := ""
+	for i := 0; i < 100000; i++ {
+		candidate := fmt.Sprintf("migrate:%d", i)
+		v, err := admin.Do(ctx, "CLUSTER", "KEYSLOT", candidate)
+		if err == nil && v.Int == 0 {
+			key = candidate
+			break
+		}
+	}
+	admin.Close()
+	if key == "" {
+		t.Fatal("could not find a test key in slot 0")
+	}
+	source, err := resp.Dial(ctx, l.Socket(sourcePort), "app", "app-pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Do(ctx, "SET", key, "moved"); err != nil {
+		source.Close()
+		t.Fatal(err)
+	}
+	source.Close()
+	if _, _, err := m.ClusterOp(ctx, &agentv1.ClusterOp{Port: targetPort, Op: agentv1.ClusterOp_SETSLOT_IMPORTING, Slot: 0, NodeId: sourceID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.ClusterOp(ctx, &agentv1.ClusterOp{Port: sourcePort, Op: agentv1.ClusterOp_SETSLOT_MIGRATING, Slot: 0, NodeId: targetID}); err != nil {
+		t.Fatal(err)
+	}
+	payload, _, err := m.ClusterOp(ctx, &agentv1.ClusterOp{
+		Port:         sourcePort,
+		Op:           agentv1.ClusterOp_MIGRATE_SLOT,
+		PeerHost:     "127.0.0.1",
+		PeerPort:     targetPort,
+		PeerUser:     UserCluster,
+		PeerPassword: "repl-secret",
+		Slot:         0,
+		Batch:        100,
+		TimeoutMs:    10000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(payload), "\"migrated\":1") {
+		t.Fatalf("unexpected migrate result: %s", payload)
+	}
+	if _, _, err := m.ClusterOp(ctx, &agentv1.ClusterOp{Port: targetPort, Op: agentv1.ClusterOp_SETSLOT_NODE, Slot: 0, NodeId: targetID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.ClusterOp(ctx, &agentv1.ClusterOp{Port: sourcePort, Op: agentv1.ClusterOp_SETSLOT_NODE, Slot: 0, NodeId: targetID}); err != nil {
+		t.Fatal(err)
+	}
+	target, err := resp.Dial(ctx, l.Socket(targetPort), "app", "app-pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	v, err := target.Do(ctx, "GET", key)
+	if err != nil || v.Text() != "moved" {
+		t.Fatalf("target did not receive migrated key: value=%q err=%v", v.Text(), err)
 	}
 }
 

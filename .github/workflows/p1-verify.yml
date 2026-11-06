@@ -1,12 +1,12 @@
 name: p1-verify
 
-# P1 收尾验证，只手动触发：兼容构建（x86_64 / aarch64）→ 各发行版容器安装冒烟 → 上游 Tcl 测试集 → 客户端矩阵（含 Java）。
+# P1 收尾验证，只手动触发：兼容构建（x86_64 / aarch64）→ 各发行版容器安装冒烟 → 上游 Tcl 功能测试集 → 客户端矩阵（Java、Node、.NET）。
 # 结果以注解（annotations）汇总，可在 Actions 页面查看，也可通过 API 读取。
 on:
   workflow_dispatch:
     inputs:
       upstream_suite:
-        description: "运行上游 Tcl 测试集（约 40 分钟；已有结果时可关闭）"
+        description: "运行上游 Tcl 功能测试集（约 40 分钟；已有结果时可关闭）"
         type: boolean
         default: true
 
@@ -26,12 +26,23 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { arch: x86_64, runner: ubuntu-24.04, java: "1" }
-          - { arch: aarch64, runner: ubuntu-24.04-arm, java: "0" }
+          - { arch: x86_64, runner: ubuntu-24.04, java: "1", node: "1", dotnet: "1" }
+          - { arch: aarch64, runner: ubuntu-24.04-arm, java: "0", node: "1", dotnet: "0" }
     env:
       JAVA_CLIENTS: ${{ matrix.java }}
+      NODE_CLIENTS: ${{ matrix.node }}
+      DOTNET_CLIENTS: ${{ matrix.dotnet }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: test/clients/node/package-lock.json
+      - uses: actions/setup-dotnet@v4
+        if: matrix.dotnet == '1'
+        with:
+          dotnet-version: 8.0.x
       - name: Fetch upstream
         run: |
           source dataplane/UPSTREAM
@@ -44,11 +55,13 @@ jobs:
         run: |
           [ -f dist/BUILDINFO ] || exit 0
           echo "::notice title=BUILDINFO ${{ matrix.arch }}::$(tr '\n' ' ' < dist/BUILDINFO)"
-          echo "::notice title=artifacts ${{ matrix.arch }}::$(cd dist && ls | tr '\n' ' ')"
+          echo "::notice title=artifacts ${{ matrix.arch }}::$(find dist -maxdepth 1 -type f -printf '%f\n' | sort | tr '\n' ' ')"
       - name: Golden rename
         run: scripts/ci-run.sh "golden ${{ matrix.arch }}" scripts/golden-rename.sh dist/sycache-[0-9]*-${{ matrix.arch }}.tar.gz
       - name: Version consistency
         run: scripts/ci-run.sh "versions ${{ matrix.arch }}" scripts/check-versions.sh dist/sycache-[0-9]*-${{ matrix.arch }}.tar.gz
+      - name: VEX consistency
+        run: scripts/ci-run.sh "vex ${{ matrix.arch }}" scripts/check-vex.sh
       - name: Compat and interop with upstream
         run: scripts/ci-run.sh "compat ${{ matrix.arch }}" make compat-interop UPSTREAM_SRC=upstream DIST=dist
       - name: Client matrix

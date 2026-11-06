@@ -208,6 +208,7 @@ message ServerMessage {
     SwitchVersion switch_version = 23;
     UpgradeAgent upgrade_agent = 24;
     Probe probe = 25;
+    Migrate migrate = 26;
   }
 }
 
@@ -228,6 +229,7 @@ message CreateInstance {
   uint32 sentinel_quorum = 11;
   bool cluster_enabled = 12;
   TlsMaterial tls = 13;
+  string bind_address = 14;         // 业务监听地址，只允许主机内网地址或具体主机名
 }
 
 message ReplicaOf {
@@ -297,6 +299,8 @@ message ClusterOp {
   uint32 slot = 7;              // SETSLOT / MIGRATE_SLOT 的槽
   uint32 batch = 8;             // MIGRATE_SLOT 每批键数
   uint32 timeout_ms = 9;
+  string peer_user = 10;        // MIGRATE 目标认证账号；仅允许内置 sycache-cluster
+  string peer_password = 11;    // MIGRATE 目标认证口令，走 mTLS 指令，不写日志
   enum Op {
     OP_UNSPECIFIED = 0;
     MEET = 1;
@@ -353,6 +357,7 @@ message Backup {
   uint32 port = 1;
   string backup_id = 2;
   bool upload = 3;
+  bool delete = 4;             // 只删除 agent 本机已保存的备份，不触发 BGSAVE
 }
 
 message Restore {
@@ -375,6 +380,29 @@ message Diagnose {
     BIGKEYS = 4;                // SCAN + MEMORY USAGE 抽样，只返回键名、类型、大小
     CLIENTS = 5;
     RDB_ANALYZE = 6;            // 离线解析最近一次 RDB（不访问实例）
+  }
+}
+
+// 在线数据迁移（P5 M9）：FULL 使用源端 SCAN + DUMP，在本机目标实例 RESTORE；
+// FULL_INCREMENTAL 让目标实例直接从源端执行原生复制流同步，最终由 agent 提升目标。
+// 源端口令只经 mTLS 指令下发；复制期间由目标数据面本地保存 masterauth，提升后立即清除，
+// 控制台保存的任务凭据必须加密。
+message Migrate {
+  uint32 port = 1;
+  string job_id = 2;
+  string source_address = 3; // host:port，只允许 TCP 地址，不接受 URL 或命令
+  string source_user = 4;
+  string source_password = 5;
+  string pattern = 6;         // 前缀匹配（例如 app:*）或 *
+  Mode mode = 7;
+  uint32 batch = 8;
+  uint32 max_passes = 9;      // 兼容旧控制台字段；复制流模式不使用
+  bool source_quiesced = 10;  // 操作员确认最终轮次前源端已停止写入
+  bool finalize = 11;         // 结束临时复制并将目标提升为主节点；不再重新做全量同步
+  enum Mode {
+    MODE_UNSPECIFIED = 0;
+    FULL = 1;
+    FULL_INCREMENTAL = 2;
   }
 }
 

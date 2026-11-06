@@ -2,14 +2,17 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/csv"
 	"fmt"
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/pquerna/otp/totp"
 	"gorm.io/gen/field"
 
 	"github.com/xiaoguan521/cacheos/internal/console/store"
@@ -81,6 +84,54 @@ func (s *Server) setupStatus(c *gin.Context) {
 type credentials struct {
 	Username string `json:"username" binding:"required"`
 	Password string `json:"password" binding:"required"`
+	OTP      string `json:"otp,omitempty"`
+}
+
+func (s *Server) totpKey(uid uint) string        { return fmt.Sprintf("totp.secret.%d", uid) }
+func (s *Server) totpEnabledKey(uid uint) string { return fmt.Sprintf("totp.enabled.%d", uid) }
+
+func (s *Server) saveTOTP(uid uint, secret string) error {
+	stored := secret
+	if s.Box != nil {
+		var err error
+		stored, err = s.Box.Seal(secret)
+		if err != nil {
+			return err
+		}
+	}
+	if err := s.Store.SetKV(s.totpKey(uid), stored); err != nil {
+		return err
+	}
+	return s.Store.SetKV(s.totpEnabledKey(uid), "1")
+}
+
+func (s *Server) loadTOTP(uid uint) (string, bool) {
+	stored, err := s.Store.GetKV(s.totpKey(uid))
+	if err != nil || stored == "" {
+		return "", false
+	}
+	if s.Box != nil && strings.HasPrefix(stored, "v1:") {
+		stored, err = s.Box.Open(stored)
+		if err != nil {
+			return "", false
+		}
+	}
+	enabled, _ := s.Store.GetKV(s.totpEnabledKey(uid))
+	return stored, enabled == "1"
+}
+
+func newTOTP(username string) (string, string, error) {
+	// Explicit entropy keeps provisioning secrets independent of the default
+	// library size and makes the key size visible to security review.
+	buf := make([]byte, 20)
+	if _, err := rand.Read(buf); err != nil {
+		return "", "", err
+	}
+	key, err := totp.Generate(totp.GenerateOpts{Issuer: "CacheOS", AccountName: username, Secret: buf})
+	if err != nil {
+		return "", "", err
+	}
+	return key.Secret(), key.URL(), nil
 }
 
 func (s *Server) setup(c *gin.Context) {
@@ -113,10 +164,21 @@ func (s *Server) setup(c *gin.Context) {
 		failErr(c, err)
 		return
 	}
+	secret, uri, err := newTOTP(u.Username)
+	if err != nil {
+		_, _ = q.User.WithContext(ctx).Where(q.User.ID.Eq(u.ID)).Delete(u)
+		fail(c, http.StatusInternalServerError, "TOTP_SETUP_FAILED", "无法初始化双因素认证")
+		return
+	}
+	if err := s.saveTOTP(u.ID, secret); err != nil {
+		_, _ = q.User.WithContext(ctx).Where(q.User.ID.Eq(u.ID)).Delete(u)
+		fail(c, http.StatusInternalServerError, "TOTP_SETUP_FAILED", "无法初始化双因素认证")
+		return
+	}
 	c.Set("user", u.Username)
 	s.audit(c, "system.setup", "user", u.Username, nil)
 	_ = s.issue(c, u)
-	c.JSON(http.StatusOK, gin.H{"username": u.Username, "role": u.Role})
+	c.JSON(http.StatusOK, gin.H{"username": u.Username, "role": u.Role, "totp_required": true, "totp_secret": secret, "totp_uri": uri})
 }
 
 func (s *Server) login(c *gin.Context) {
@@ -178,6 +240,16 @@ func (s *Server) login(c *gin.Context) {
 		fail(c, http.StatusUnauthorized, "BAD_CREDENTIALS", "用户名或密码错误")
 		return
 	}
+	if secret, enabled := s.loadTOTP(u.ID); enabled && !totp.Validate(req.OTP, secret) {
+		c.Set("user", req.Username)
+		_ = s.Audit.Write(auditEntry(c, "auth.login", "user", req.Username, "totp_failure"))
+		code := "TOTP_REQUIRED"
+		if req.OTP != "" {
+			code = "TOTP_INVALID"
+		}
+		fail(c, http.StatusUnauthorized, code, "请输入有效的身份验证器验证码")
+		return
+	}
 	lf.mu.Lock()
 	lf.n = 0
 	lf.mu.Unlock()
@@ -190,6 +262,52 @@ func (s *Server) login(c *gin.Context) {
 	}
 	mustChange := u.MustChangePassword || (isLocal(u) && pol.Expired(u.PasswordChangedAt, u.CreatedAt, time.Now()))
 	c.JSON(http.StatusOK, gin.H{"username": u.Username, "role": u.Role, "must_change_password": mustChange})
+}
+
+// setupTOTP 为已登录账号重新生成身份验证器密钥；密钥只在本次响应中返回。
+func (s *Server) setupTOTP(c *gin.Context) {
+	u, err := store.First[store.User](s.Store, c.GetUint("uid"))
+	if err != nil {
+		failErr(c, err)
+		return
+	}
+	secret, uri, err := newTOTP(u.Username)
+	if err != nil {
+		failErr(c, err)
+		return
+	}
+	if err := s.saveTOTP(u.ID, secret); err != nil {
+		failErr(c, err)
+		return
+	}
+	s.audit(c, "auth.totp_setup", "user", u.Username, nil)
+	c.JSON(http.StatusOK, gin.H{"enabled": true, "secret": secret, "uri": uri})
+}
+
+func (s *Server) totpStatus(c *gin.Context) {
+	_, enabled := s.loadTOTP(c.GetUint("uid"))
+	c.JSON(http.StatusOK, gin.H{"enabled": enabled})
+}
+
+// stepUp protects high-impact writes with a fresh authenticator code.  The
+// code is intentionally supplied in a header so it never becomes part of an
+// operation request, audit detail, or database record.
+func (s *Server) stepUp(c *gin.Context) {
+	secret, enabled := s.loadTOTP(c.GetUint("uid"))
+	if !enabled {
+		c.Next()
+		return
+	}
+	code := strings.TrimSpace(c.GetHeader("X-TOTP-Code"))
+	if code == "" {
+		fail(c, http.StatusUnauthorized, "TOTP_STEP_UP_REQUIRED", "高风险操作需要新的身份验证器验证码")
+		return
+	}
+	if !totp.Validate(code, secret) {
+		fail(c, http.StatusUnauthorized, "TOTP_STEP_UP_INVALID", "身份验证器验证码无效或已过期")
+		return
+	}
+	c.Next()
 }
 
 func (s *Server) logout(c *gin.Context) {

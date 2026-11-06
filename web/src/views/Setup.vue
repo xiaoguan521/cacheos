@@ -10,6 +10,7 @@ const router = useRouter()
 const session = useSession()
 const step = ref(0)
 const form = reactive({ username: 'admin', password: '', confirm: '' })
+const totp = ref<any>(null)
 const loading = ref(false)
 const error = ref('')
 
@@ -29,7 +30,7 @@ async function createAdmin() {
   }
   loading.value = true
   try {
-    await api.post('/setup', { username: form.username, password: form.password })
+    totp.value = await api.post('/setup', { username: form.username, password: form.password })
     await session.loadMe()
     await session.loadLicense()
     step.value = 1
@@ -63,6 +64,14 @@ async function done() {
       <a-button type="primary" html-type="submit" size="large" block :loading="loading">创建管理员</a-button>
     </a-form>
     <template v-else>
+      <a-alert v-if="totp" type="warning" show-icon style="margin-bottom: 16px">
+        <template #message>已启用双因素认证</template>
+        <template #description>
+          请把下面的密钥导入身份验证器；后续登录必须输入 6 位验证码。<br />
+          <span class="code">{{ totp.totp_secret }}</span><br />
+          <a :href="totp.totp_uri">打开 otpauth 链接</a>
+        </template>
+      </a-alert>
       <LicenseImport @imported="done" />
       <a-button type="link" block style="margin-top: 8px" @click="done">稍后导入，先进入控制台</a-button>
     </template>

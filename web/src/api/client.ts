@@ -19,6 +19,16 @@ http.interceptors.response.use(
   (err: AxiosError<ApiError>) => {
     const status = err.response?.status
     const data = err.response?.data
+    const cfg: any = err.config
+    if (status === 401 && (data?.code === 'TOTP_STEP_UP_REQUIRED' || data?.code === 'TOTP_STEP_UP_INVALID') && cfg && !cfg._totpRetried && typeof window !== 'undefined') {
+      const code = window.prompt('请输入新的身份验证器验证码（6 位）')?.trim()
+      if (code) {
+        cfg._totpRetried = true
+        cfg.headers = cfg.headers || {}
+        cfg.headers['X-TOTP-Code'] = code
+        return http.request(cfg)
+      }
+    }
     if (status === 401 && router.currentRoute.value.name !== 'login' && router.currentRoute.value.name !== 'setup') {
       router.push({ name: 'login', query: { next: router.currentRoute.value.fullPath } })
     } else if (status === 403 && data?.code === 'PASSWORD_CHANGE_REQUIRED') {
@@ -40,6 +50,7 @@ export function errMsg(e: unknown): string {
 export const api = {
   get: <T = any>(url: string, params?: any) => http.get<T>(url, { params }).then((r) => r.data),
   post: <T = any>(url: string, body?: any) => http.post<T>(url, body).then((r) => r.data),
+  upload: <T = any>(url: string, body: FormData) => http.post<T>(url, body).then((r) => r.data),
   put: <T = any>(url: string, body?: any) => http.put<T>(url, body).then((r) => r.data),
   del: <T = any>(url: string) => http.delete<T>(url).then((r) => r.data),
 }

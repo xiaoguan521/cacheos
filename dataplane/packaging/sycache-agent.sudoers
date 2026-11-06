@@ -1,4 +1,6 @@
 # The wrapper has the only privileged interface available to sycache-agent.
 # It validates the verb, port/version grammar and all filesystem targets itself.
-Cmnd_Alias SYCACHE_AGENT_WRAPPER = /usr/libexec/sycache/sycache-wrapper
-sycache-agent ALL=(root) NOPASSWD: SYCACHE_AGENT_WRAPPER
+sycache-agent ALL=(root) NOPASSWD: /usr/libexec/sycache/sycache-wrapper start *
+sycache-agent ALL=(root) NOPASSWD: /usr/libexec/sycache/sycache-wrapper stop *
+sycache-agent ALL=(root) NOPASSWD: /usr/libexec/sycache/sycache-wrapper restart *
+sycache-agent ALL=(root) NOPASSWD: /usr/libexec/sycache/sycache-wrapper switch-version *

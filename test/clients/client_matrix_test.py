@@ -127,6 +127,37 @@ class ClientMatrix(unittest.TestCase):
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
+    @unittest.skipUnless(os.environ.get("NODE_CLIENTS") == "1" and shutil.which("node") and shutil.which("npm"),
+                         "set NODE_CLIENTS=1 (needs node and npm)")
+    def test_node_clients(self):
+        work = tempfile.mkdtemp(prefix="sycache-nodeclient-")
+        try:
+            source = os.path.join(HERE, "node")
+            for name in ("package.json", "matrix.mjs"):
+                shutil.copy(os.path.join(source, name), work)
+            shutil.copy(os.path.join(source, "package-lock.json"), work)
+            install = subprocess.run(["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"],
+                                     cwd=work, capture_output=True, text=True, timeout=600)
+            self.assertEqual(install.returncode, 0, (install.stdout + install.stderr)[-6000:])
+            self.run_client(["node", os.path.join(work, "matrix.mjs")], {})
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+    @unittest.skipUnless(os.environ.get("DOTNET_CLIENTS") == "1" and shutil.which("dotnet"),
+                         "set DOTNET_CLIENTS=1 (needs .NET SDK 8)")
+    def test_stackexchange_redis(self):
+        work = tempfile.mkdtemp(prefix="sycache-dotnetclient-")
+        try:
+            source = os.path.join(HERE, "dotnet")
+            for name in ("ClientMatrix.csproj", "Program.cs"):
+                shutil.copy(os.path.join(source, name), work)
+            b = subprocess.run(["dotnet", "build", "--configuration", "Release", "--nologo"],
+                               cwd=work, capture_output=True, text=True, timeout=900)
+            self.assertEqual(b.returncode, 0, (b.stdout + b.stderr)[-6000:])
+            self.run_client(["dotnet", "run", "--configuration", "Release", "--no-build", "--nologo"], {}, cwd=work)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

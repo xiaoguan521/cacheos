@@ -18,6 +18,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -388,6 +389,49 @@ func result(cmdID string, s *agentv1.InstanceStatus, err error) *agentv1.Command
 	return r
 }
 
+func (a *Agent) uploadBackup(ctx context.Context, client agentv1.AgentGatewayClient, id string, port uint32) error {
+	f, err := os.Open(a.C.Layout.BackupPath(id))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return err
+	}
+	want := hex.EncodeToString(h.Sum(nil))
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	stream, err := client.UploadBackup(ctx)
+	if err != nil {
+		return err
+	}
+	buf := make([]byte, 256<<10)
+	first := true
+	for {
+		n, readErr := f.Read(buf)
+		if readErr != nil && readErr != io.EOF {
+			return readErr
+		}
+		last := readErr == io.EOF
+		if n > 0 || first {
+			chunk := &agentv1.BackupChunk{BackupId: id, Port: port, Data: append([]byte(nil), buf[:n]...), Last: last}
+			if last {
+				chunk.Sha256 = want
+			}
+			if err := stream.Send(chunk); err != nil {
+				return err
+			}
+		}
+		first = false
+		if last {
+			_, err := stream.CloseAndRecv()
+			return err
+		}
+	}
+}
+
 func (a *Agent) handle(ctx context.Context, client agentv1.AgentGatewayClient, m *agentv1.ServerMessage, send func(*agentv1.AgentMessage)) {
 	sendResult := func(r *agentv1.CommandResult) {
 		r.CmdId = m.CmdId
@@ -452,6 +496,62 @@ func (a *Agent) handle(ctx context.Context, client agentv1.AgentGatewayClient, m
 		s, err := a.M.Failover(ctx, b.Failover)
 		a.logResult("failover", b.Failover.Port, err)
 		sendResult(result(m.CmdId, s, err))
+	case *agentv1.ServerMessage_Cluster:
+		payload, st, err := a.M.ClusterOp(ctx, b.Cluster)
+		a.logResult("cluster", b.Cluster.Port, err)
+		r := result(m.CmdId, st, err)
+		r.Payload = payload
+		sendResult(r)
+	case *agentv1.ServerMessage_Sentinel:
+		st, err := a.M.SentinelOp(ctx, b.Sentinel)
+		a.logResult("sentinel", b.Sentinel.Port, err)
+		sendResult(result(m.CmdId, st, err))
+	case *agentv1.ServerMessage_Diagnose:
+		payload, err := a.M.Diagnose(ctx, b.Diagnose)
+		a.logResult("diagnose", b.Diagnose.Port, err)
+		r := result(m.CmdId, a.M.Status(ctx, b.Diagnose.Port), err)
+		r.Payload = payload
+		sendResult(r)
+	case *agentv1.ServerMessage_Migrate:
+		payload, err := a.M.Migrate(ctx, b.Migrate)
+		a.logResult("migrate", b.Migrate.Port, err)
+		r := result(m.CmdId, a.M.Status(ctx, b.Migrate.Port), err)
+		r.Payload = payload
+		sendResult(r)
+	case *agentv1.ServerMessage_Keys:
+		payload, err := a.M.BrowseKeys(ctx, b.Keys)
+		a.logResult("browse-keys", b.Keys.Port, err)
+		r := result(m.CmdId, a.M.Status(ctx, b.Keys.Port), err)
+		r.Payload = payload
+		sendResult(r)
+	case *agentv1.ServerMessage_Backup:
+		var payload []byte
+		var err error
+		if b.Backup.Delete {
+			err = a.M.DeleteBackup(ctx, b.Backup)
+		} else {
+			payload, err = a.M.Backup(ctx, b.Backup)
+			if err == nil && b.Backup.Upload {
+				err = a.uploadBackup(ctx, client, b.Backup.BackupId, b.Backup.Port)
+			}
+		}
+		a.logResult("backup", b.Backup.Port, err)
+		r := result(m.CmdId, a.M.Status(ctx, b.Backup.Port), err)
+		r.Payload = payload
+		sendResult(r)
+	case *agentv1.ServerMessage_Restore:
+		err := error(nil)
+		if b.Restore.FromConsole {
+			err = a.M.StoreBackupStream(ctx, b.Restore.BackupId, b.Restore.Sha256, func(w io.Writer) error {
+				_, err := fetchPackageTo(ctx, client, &agentv1.FetchPackageRequest{Kind: "backup", Name: b.Restore.BackupId}, w, 0)
+				return err
+			})
+		}
+		if err == nil {
+			err = a.M.Restore(ctx, b.Restore)
+		}
+		a.logResult("restore", b.Restore.Port, err)
+		sendResult(result(m.CmdId, a.M.Status(ctx, b.Restore.Port), err))
 	case *agentv1.ServerMessage_Acl:
 		d, err := a.M.SyncACL(ctx, b.Acl)
 		a.logResult("acl", b.Acl.Port, err)
@@ -474,6 +574,10 @@ func (a *Agent) handle(ctx context.Context, client agentv1.AgentGatewayClient, m
 		}
 		sendResult(r)
 	case *agentv1.ServerMessage_SwitchVersion:
+		if len(b.SwitchVersion.VendorSignature) > 0 {
+			a.handleEngineUpgrade(ctx, client, b.SwitchVersion, sendResult)
+			return
+		}
 		out, err := a.M.Run(ctx, "switch-version", b.SwitchVersion.Version)
 		if err != nil {
 			fail("INVALID", "switch-version failed: "+strings.TrimSpace(out))

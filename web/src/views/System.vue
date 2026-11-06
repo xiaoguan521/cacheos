@@ -10,11 +10,64 @@ const session = useSession()
 const lic = computed(() => session.license)
 const users = ref<any[]>([])
 const version = ref<any>({})
+const packages = ref<any[]>([])
+const packageOpen = ref(false)
+const packageFile = ref<File | null>(null)
+const signatureFile = ref<File | null>(null)
 
 onMounted(async () => {
   await session.loadLicense()
-  if (session.can('admin')) users.value = await api.get('/users')
+  if (session.can('admin')) {
+    users.value = await api.get('/users')
+    version.value = await api.get('/system/about').catch(() => ({}))
+    await loadPackages()
+  }
 })
+
+async function loadPackages() {
+  packages.value = await api.get('/engine-packages').catch(() => [])
+}
+function choosePackage(e: Event) {
+  packageFile.value = (e.target as HTMLInputElement).files?.[0] || null
+}
+function chooseSignature(e: Event) {
+  signatureFile.value = (e.target as HTMLInputElement).files?.[0] || null
+}
+function openPackageImport() {
+  packageFile.value = null
+  signatureFile.value = null
+  packageOpen.value = true
+}
+function packageSize(n: number) {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`
+  return `${(n / 1024 / 1024).toFixed(1)} MiB`
+}
+async function importPackage() {
+  if (!packageFile.value || !signatureFile.value) {
+    message.error('请同时选择二进制包和对应的 .sig 签名文件')
+    return
+  }
+  const body = new FormData()
+  body.append('package', packageFile.value)
+  body.append('signature', signatureFile.value)
+  try {
+    await api.upload('/engine-packages', body)
+    message.success('版本包已验签并导入')
+    packageOpen.value = false
+    await loadPackages()
+  } catch (e) {
+    message.error(errMsg(e))
+  }
+}
+async function removePackage(p: any) {
+  try {
+    await api.del(`/engine-packages/${p.id}`)
+    await loadPackages()
+  } catch (e) {
+    message.error(errMsg(e))
+  }
+}
 const tokens = ref<any[]>([])
 const tkOpen = ref(false)
 const tkForm = reactive({ name: '', role: 'operator', expire_days: 90 })
@@ -49,8 +102,17 @@ const featureName: Record<string, string> = {
   sso: 'LDAP / OIDC 单点登录',
   audit_export: '审计导出',
   alert_im: '企业微信 / 钉钉告警',
+  ha: '控制台高可用',
   sentinel: '哨兵部署',
   cluster: '集群部署',
+  tls: '业务链路 TLS',
+  tls_internal: '复制 / 集群总线 TLS',
+  online_reshard: '在线迁槽',
+  migrate: '在线数据迁移',
+  rdb_analyze: 'RDB 离线分析',
+  remote_backup: '远端备份',
+  change_approval: '变更审批',
+  gm_tls: '国密 TLS',
 }
 const allFeatures = Object.keys(featureName)
 const tone = computed(() => (lic.value?.writable ? (lic.value.state === 'VALID' ? 'ok' : 'warn') : 'bad'))
@@ -71,12 +133,32 @@ const pol = ref<any>(null)
 const ldap = ref<any>(null)
 const ldapTestOpen = ref(false)
 const ldapTest = reactive({ username: '', password: '' })
+const totp = ref<any>({ enabled: false })
+const newTotp = ref<any>(null)
+const approval = ref<any>({ required: false })
 onMounted(async () => {
   if (!session.can('admin')) return
   pol.value = await api.get('/security-policy')
   ldap.value = await api.get('/sso/ldap')
   ldap.value.config.role_map ||= []
 })
+onMounted(async () => {
+  if (session.username) totp.value = await api.get('/auth/totp/status').catch(() => ({ enabled: false }))
+  if (session.can('admin')) approval.value = await api.get('/approval-policy').catch(() => ({ required: false }))
+})
+async function setupTotp() {
+  try {
+    newTotp.value = await api.post('/auth/totp/setup')
+    totp.value.enabled = true
+    message.success('身份验证器密钥已更新，请立即保存')
+  } catch (e) { message.error(errMsg(e)) }
+}
+async function saveApproval() {
+  try {
+    approval.value = await api.put('/approval-policy', approval.value)
+    message.success('变更审批策略已保存')
+  } catch (e) { message.error(errMsg(e)) }
+}
 async function reloadUsers() {
   users.value = await api.get('/users')
 }
@@ -241,6 +323,58 @@ const roleName: Record<string, string> = { admin: '管理员', operator: '运维
 
     <section class="panel" v-if="session.can('admin')">
       <div class="uhead">
+        <h2>变更审批</h2>
+        <a-button size="small" :disabled="!session.writable" @click="saveApproval">保存</a-button>
+      </div>
+      <p class="muted">启用后，部署创建、参数、启停、切换与备份等变更先停在 PRECHECKED；审批人必须与申请人不同，审批后才会 APPLYING。</p>
+      <a-switch v-model:checked="approval.required" /> <span style="margin-left: 8px">{{ approval.required ? '需要审批' : '直接执行' }}</span>
+    </section>
+
+    <section class="panel" v-if="session.can('admin')">
+      <div class="uhead">
+        <h2>数据面版本库</h2>
+        <a-button size="small" :disabled="!session.writable" @click="openPackageImport">导入签名包</a-button>
+      </div>
+      <p class="muted">仅接受厂商签名通过的 sycache / sycache-agent 包；agent 下载前会再次校验签名。删除包不会影响已安装版本。</p>
+      <a-table v-if="packages.length" :data-source="packages" row-key="id" :pagination="false" size="small"
+        :columns="[
+          { title: '包', key: 'name' }, { title: '版本', key: 'version' }, { title: '架构', key: 'arch' },
+          { title: '变体', key: 'variant' }, { title: '大小', key: 'size' }, { title: '签名 KID', key: 'kid' },
+          { title: '导入人 / 时间', key: 'created' }, { title: '', key: 'op', width: 70 },
+        ]">
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'name'"><span class="code">{{ record.name }}</span></template>
+          <template v-else-if="column.key === 'version'"><span class="code">{{ record.version }}</span></template>
+          <template v-else-if="column.key === 'arch'">{{ record.arch }}</template>
+          <template v-else-if="column.key === 'variant'">{{ record.variant }}</template>
+          <template v-else-if="column.key === 'size'">{{ packageSize(record.size) }}</template>
+          <template v-else-if="column.key === 'kid'"><span class="code">{{ record.kid }}</span></template>
+          <template v-else-if="column.key === 'created'">{{ record.uploaded_by }} · {{ dayjs(record.created_at).format('YYYY-MM-DD HH:mm') }}</template>
+          <template v-else-if="column.key === 'op'">
+            <a-popconfirm v-if="session.writable" title="删除这个版本包？已安装的主机不受影响。" @confirm="removePackage(record)">
+              <a class="danger">删除</a>
+            </a-popconfirm>
+            <span v-else class="danger disabled">删除</span>
+          </template>
+        </template>
+      </a-table>
+      <p v-else class="muted">版本库为空。</p>
+      <a-modal v-model:open="packageOpen" title="导入数据面签名包" ok-text="验签并导入" :ok-button-props="{ disabled: !session.writable }" @ok="importPackage">
+        <a-form layout="vertical">
+          <a-form-item label="二进制包">
+            <input class="file-input" type="file" @change="choosePackage" />
+            <div class="sub">{{ packageFile?.name || '支持 sycache / sycache-agent 发布包，最大 128 MiB' }}</div>
+          </a-form-item>
+          <a-form-item label="厂商签名文件（.sig）">
+            <input class="file-input" type="file" accept=".sig,.json,application/json" @change="chooseSignature" />
+            <div class="sub">{{ signatureFile?.name || '签名文件中的名称、版本、架构必须与包内容一致' }}</div>
+          </a-form-item>
+        </a-form>
+      </a-modal>
+    </section>
+
+    <section class="panel" v-if="session.can('admin')">
+      <div class="uhead">
         <h2>用户</h2>
         <a-button size="small" :disabled="!session.writable" @click="uOpen = true">新建用户</a-button>
       </div>
@@ -261,6 +395,7 @@ const roleName: Record<string, string> = { admin: '管理员', operator: '运维
           <template v-else-if="column.key === 'op' && record.username !== session.username">
             <a-space :size="4">
               <a v-if="record.locked_until && dayjs(record.locked_until).isAfter(dayjs())" @click="updUser(record, { unlock: true })">解锁</a>
+              <a v-if="record.role === 'developer' || record.role === 'admin'" @click="updUser(record, { key_reveal: !record.key_reveal })">{{ record.key_reveal ? '取消明文授权' : '授权看值' }}</a>
               <a @click="updUser(record, { disabled: !record.disabled })">{{ record.disabled ? '启用' : '停用' }}</a>
               <a v-if="!record.source || record.source === 'local'" @click="resetPw(record)">重置口令</a>
               <a-popconfirm :title="`删除用户 ${record.username}？其 API 令牌一并撤销`" @confirm="delUser(record)"><a class="danger">删除</a></a-popconfirm>
@@ -286,6 +421,18 @@ const roleName: Record<string, string> = { admin: '管理员', operator: '运维
         <label>会话空闲超时（分钟）<a-input-number v-model:value="pol.idle_minutes" :min="5" :max="480" /></label>
         <label>会话最长有效期（小时）<a-input-number v-model:value="pol.max_hours" :min="1" :max="24" /></label>
       </div>
+    </section>
+
+    <section class="panel">
+      <div class="uhead">
+        <h2>身份验证器</h2>
+        <a-button size="small" :disabled="!session.writable" @click="setupTotp">{{ totp.enabled ? '重新生成密钥' : '启用 TOTP' }}</a-button>
+      </div>
+      <p class="muted">登录与高风险操作使用 TOTP 二次校验。重新生成后旧密钥立即失效，密钥只显示一次。</p>
+      <a-tag :color="totp.enabled ? 'green' : 'orange'">{{ totp.enabled ? '已启用' : '未启用' }}</a-tag>
+      <a-alert v-if="newTotp" type="warning" show-icon style="margin-top: 12px" message="请保存新的身份验证器密钥">
+        <template #description><div class="code">Secret: {{ newTotp.secret }}</div><div class="code">{{ newTotp.uri }}</div></template>
+      </a-alert>
     </section>
 
     <section class="panel" v-if="session.can('admin') && oidcCfg">
@@ -349,8 +496,12 @@ const roleName: Record<string, string> = { admin: '管理员', operator: '运维
 
     <section class="panel about">
       <h2>关于</h2>
-      <p>CacheOS 控制台与 agent。</p>
-      <p class="sub">数据面第三方许可与归因信息见安装目录的 NOTICE 文件。</p>
+      <p>{{ version.product || 'CacheOS' }} {{ version.version || '—' }} · 控制台 {{ version.commit || '—' }}</p>
+      <p class="sub">构建日期 {{ version.build_date || '—' }} · 基于 {{ version.based_on || 'Valkey (BSD-3-Clause)' }}</p>
+      <p class="sub">数据面第三方许可与归因信息见 {{ version.notice || '安装目录的 NOTICE 文件' }}。</p>
+      <a-table v-if="version.release_mappings?.length" :data-source="version.release_mappings" row-key="product" size="small" :pagination="false" :columns="[{ title: '产品版本', dataIndex: 'product' }, { title: '上游版本', dataIndex: 'upstream' }, { title: '上游提交', dataIndex: 'upstream_commit' }, { title: '补丁', key: 'patches' }]">
+        <template #bodyCell="{ column, record }"><template v-if="column.key === 'patches'"><span class="code">{{ record.patches?.join(', ') || '—' }}</span></template><template v-else-if="column.dataIndex === 'upstream_commit'"><span class="code">{{ record.upstream_commit }}</span></template></template>
+      </a-table>
     </section>
 
     <a-modal v-model:open="uOpen" title="新建用户" ok-text="创建" @ok="addUser">
@@ -497,6 +648,14 @@ h3 {
 }
 .danger {
   color: #a3332d;
+}
+.danger.disabled {
+  color: #a7b3b5;
+  cursor: not-allowed;
+}
+.file-input {
+  display: block;
+  max-width: 100%;
 }
 .pol {
   display: grid;

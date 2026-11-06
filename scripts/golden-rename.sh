@@ -7,12 +7,20 @@ set -euo pipefail
 PKG="${1:?usage: golden-rename.sh <package.tar.gz> [base-port]}"
 PORT="${2:-17001}"
 [[ "$PORT" =~ ^[0-9]+$ ]] || { echo "base port must be a number: $PORT" >&2; exit 2; }
+command -v strings >/dev/null 2>&1 || {
+  echo "golden-rename requires the strings utility (install binutils)" >&2
+  exit 2
+}
 SPORT=$((PORT + 1))
 ROOT_DIR="$(mktemp -d)"; RUN="$ROOT_DIR/run"; mkdir -p "$RUN"
 tar -C "$ROOT_DIR" -xzf "$PKG"
 P="$ROOT_DIR/opt/sycache"; B="$P/bin"
+# macOS Bash 3.2 does not reliably preserve assignments sourced from a
+# /dev/fd process substitution; use a file so the same gate works locally.
+BI_FILE="$ROOT_DIR/buildinfo.vars"
+sed 's/^/BI_/' "$P/share/BUILDINFO" > "$BI_FILE"
 # shellcheck disable=SC1091
-source <(sed 's/^/BI_/' "$P/share/BUILDINFO")
+source "$BI_FILE"
 VER="$BI_product_version"
 
 cleanup() {
@@ -31,6 +39,22 @@ expect_has()  { grep -qF -- "$3" <<<"$2" && ok "$1" || fail "$1: missing '$3'"; 
 no_brand()    { if grep -qE '(^|[^A-Za-z0-9_])[Vv]alkey([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_])VALKEY([^A-Za-z0-9_]|$)' <<<"$2"; then
                   fail "$1: contains valkey: $(grep -oE '.{0,30}[Vv][Aa][Ll][Kk][Ee][Yy].{0,30}' <<<"$2" | head -3 | tr '\n' '|')"
                 else ok "$1"; fi; }
+proc_comm() {
+  local pid="$1"
+  if [[ -r "/proc/$pid/comm" ]]; then
+    cat "/proc/$pid/comm"
+  else
+    ps -p "$pid" -o comm= | awk '{n=$1; sub(/^.*\//, "", n); print n}'
+  fi
+}
+proc_cmdline() {
+  local pid="$1"
+  if [[ -r "/proc/$pid/cmdline" ]]; then
+    tr '\0' ' ' <"/proc/$pid/cmdline"
+  else
+    ps -p "$pid" -o command=
+  fi
+}
 
 echo "== 安装包内容"
 expect_eq "bin 目录只有 6 个 sycache 程序" "$(ls "$B" | tr '\n' ' ')" \
@@ -64,13 +88,19 @@ echo "== 单机实例"
   --pidfile "$RUN/server.pid" --save "" --appendonly no
 for _ in $(seq 50); do "$B/sycache-cli" -p "$PORT" ping >/dev/null 2>&1 && break; sleep 0.1; done
 pid="$(cat "$RUN/server.pid")"
-expect_eq "进程名 comm" "$(cat /proc/"$pid"/comm)" "sycache-server"
-expect_has "进程标题" "$(tr '\0' ' ' </proc/"$pid"/cmdline)" "sycache-server *:$PORT"
+expect_eq "进程名 comm" "$(proc_comm "$pid")" "sycache-server"
+expect_has "进程标题" "$(proc_cmdline "$pid")" "sycache-server *:$PORT"
 info="$("$B/sycache-cli" -p "$PORT" info server | tr -d '\r')"
 expect_has "INFO server_name" "$info" "server_name:sycache"
 expect_has "INFO sycache_version 为产品版本" "$info" "sycache_version:$VER"
 expect_has "INFO sycache_engine_version 为上游版本" "$info" "sycache_engine_version:$BI_upstream_version"
 expect_has "INFO redis_version 保持兼容值" "$info" "redis_version:7.2.4"
+expect_has "INFO server_mode 保持产品字段" "$info" "server_mode:standalone"
+if grep -qF "redis_mode:" <<<"$info"; then
+  fail "INFO standalone 不应泄漏 redis_mode"
+else
+  ok "INFO standalone 保持上游字段形状"
+fi
 no_brand "INFO all" "$("$B/sycache-cli" -p "$PORT" info all | grep -v '^executable:')"
 hello="$("$B/sycache-cli" -p "$PORT" -3 hello 3)"
 expect_has "HELLO server" "$hello" "server sycache"
@@ -96,7 +126,7 @@ printf 'port %s\ndir %s\nsentinel monitor golden 127.0.0.1 %s 1\n' "$SPORT" "$RU
 "$B/sycache-sentinel" "$RUN/sentinel.conf" --daemonize yes --logfile "$RUN/sentinel.log" --pidfile "$RUN/sentinel.pid"
 for _ in $(seq 50); do "$B/sycache-cli" -p "$SPORT" ping >/dev/null 2>&1 && break; sleep 0.1; done
 spid="$(cat "$RUN/sentinel.pid")"
-expect_has "哨兵进程标题" "$(tr '\0' ' ' </proc/"$spid"/cmdline)" "[sentinel]"
+expect_has "哨兵进程标题" "$(proc_cmdline "$spid")" "[sentinel]"
 expect_has "哨兵模式" "$("$B/sycache-cli" -p "$SPORT" info server | tr -d '\r')" "server_mode:sentinel"
 no_brand "哨兵日志" "$(cat "$RUN/sentinel.log")"
 

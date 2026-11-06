@@ -35,6 +35,30 @@ func (s *Server) putPolicy(c *gin.Context) {
 	c.JSON(http.StatusOK, p)
 }
 
+func (s *Server) getApprovalPolicy(c *gin.Context) {
+	required := s.Orch != nil && s.Orch.RequireApproval
+	c.JSON(http.StatusOK, gin.H{"required": required})
+}
+
+func (s *Server) putApprovalPolicy(c *gin.Context) {
+	var req struct {
+		Required bool `json:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		failErr(c, err)
+		return
+	}
+	if err := s.Store.SetKV("approval_required", map[bool]string{true: "1", false: "0"}[req.Required]); err != nil {
+		failErr(c, err)
+		return
+	}
+	if s.Orch != nil {
+		s.Orch.RequireApproval = req.Required
+	}
+	s.audit(c, "settings.approval_policy", "settings", "approval_required", req)
+	c.JSON(http.StatusOK, gin.H{"required": req.Required})
+}
+
 // changePassword：本地账号修改自己的口令（首次登录或过期时强制）。
 func (s *Server) changePassword(c *gin.Context) {
 	var req struct {
@@ -95,6 +119,7 @@ func (s *Server) updateUser(c *gin.Context) {
 	var req struct {
 		Role          *string `json:"role"`
 		Disabled      *bool   `json:"disabled"`
+		KeyReveal     *bool   `json:"key_reveal"`
 		Unlock        bool    `json:"unlock"`
 		ResetPassword string  `json:"reset_password"`
 	}
@@ -132,6 +157,13 @@ func (s *Server) updateUser(c *gin.Context) {
 		}
 		u.Disabled = *req.Disabled
 	}
+	if req.KeyReveal != nil {
+		if u.Role != store.RoleDeveloper && u.Role != store.RoleAdmin {
+			fail(c, http.StatusBadRequest, "KEY_REVEAL_ROLE", "只有开发者或管理员可以获得 Key 明文查看授权")
+			return
+		}
+		u.KeyReveal = *req.KeyReveal
+	}
 	if req.Unlock {
 		u.LockedUntil, u.FailedLogins = nil, 0
 	}
@@ -156,7 +188,7 @@ func (s *Server) updateUser(c *gin.Context) {
 		failErr(c, err)
 		return
 	}
-	s.audit(c, "user.update", "user", u.Username, map[string]any{"role": req.Role, "disabled": req.Disabled, "unlock": req.Unlock, "password_reset": req.ResetPassword != ""})
+	s.audit(c, "user.update", "user", u.Username, map[string]any{"role": req.Role, "disabled": req.Disabled, "key_reveal": req.KeyReveal, "unlock": req.Unlock, "password_reset": req.ResetPassword != ""})
 	c.JSON(http.StatusOK, u)
 }
 

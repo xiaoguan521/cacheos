@@ -10,7 +10,7 @@ const templates = ref<any[]>([])
 const loading = ref(false)
 const modalOpen = ref(false)
 const busy = ref<number | null>(null)
-const form = reactive({ name: '', mode: 'standalone', description: '', memory_mb: 512, replicas: 0, template_id: 0 })
+const form = reactive({ name: '', mode: 'standalone', description: '', memory_mb: 512, shards: 3, replicas: 1, tls: false, sentinel_name: '', quorum: 2, template_id: 0 })
 
 const modeName: Record<string, string> = { standalone: '单机', replication: '主从', sentinel: '哨兵', cluster: '集群' }
 const statusColor: Record<string, string> = { running: 'green', creating: 'gold', changing: 'gold', degraded: 'orange', stopped: 'default', failed: 'red', deleting: 'volcano' }
@@ -29,13 +29,13 @@ async function load() {
 }
 
 function openCreate() {
-  Object.assign(form, { name: '', mode: 'standalone', description: '', memory_mb: 512, replicas: 0, template_id: templates.value.find((x) => x.builtin)?.id || 0 })
+  Object.assign(form, { name: '', mode: 'standalone', description: '', memory_mb: 512, shards: 3, replicas: 1, tls: false, sentinel_name: '', quorum: 2, template_id: templates.value.find((x) => x.builtin)?.id || 0 })
   modalOpen.value = true
 }
 
 async function create() {
   try {
-    const r = await api.post('/units', { ...form, memory_mb: Number(form.memory_mb), replicas: form.mode === 'replication' ? Number(form.replicas) : 0, template_id: Number(form.template_id), params: {}, host_ids: [] })
+    const r = await api.post('/units', { ...form, memory_mb: Number(form.memory_mb), shards: form.mode === 'cluster' ? Number(form.shards) : 1, replicas: ['replication', 'sentinel', 'cluster'].includes(form.mode) ? Number(form.replicas) : 0, quorum: form.mode === 'sentinel' ? Number(form.quorum) : 0, template_id: Number(form.template_id), params: {}, host_ids: [] })
     modalOpen.value = false
     message.success(`已创建操作 #${r.operation?.id || '—'}，正在部署`)
     await load()
@@ -124,10 +124,15 @@ onMounted(load)
     <a-modal v-model:open="modalOpen" title="创建部署单元" ok-text="创建" @ok="create">
       <a-form layout="vertical">
         <a-form-item label="名称"><a-input v-model:value="form.name" placeholder="例如 session-cache" /></a-form-item>
-        <a-form-item label="形态"><a-select v-model:value="form.mode" :options="Object.entries(modeName).map(([value, label]) => ({ value, label, disabled: value === 'sentinel' || value === 'cluster' }))" /></a-form-item>
+        <a-form-item label="形态"><a-select v-model:value="form.mode" :options="Object.entries(modeName).map(([value, label]) => ({ value, label }))" /></a-form-item>
         <a-form-item label="说明"><a-input v-model:value="form.description" /></a-form-item>
         <a-form-item label="每个数据实例内存（MiB）"><a-input-number v-model:value="form.memory_mb" :min="64" :max="1048576" style="width: 100%" /></a-form-item>
         <a-form-item v-if="form.mode === 'replication'" label="每个分片的从节点数"><a-input-number v-model:value="form.replicas" :min="1" :max="5" style="width: 100%" /></a-form-item>
+        <a-form-item v-if="form.mode === 'sentinel'" label="哨兵监控名"><a-input v-model:value="form.sentinel_name" placeholder="例如 cache-main" /></a-form-item>
+        <a-form-item v-if="form.mode === 'sentinel'" label="哨兵 quorum"><a-input-number v-model:value="form.quorum" :min="1" :max="5" style="width: 100%" /></a-form-item>
+        <a-form-item v-if="form.mode === 'cluster'" label="分片数"><a-input-number v-model:value="form.shards" :min="3" :max="1024" style="width: 100%" /></a-form-item>
+        <a-form-item v-if="form.mode === 'cluster'" label="每个分片的从节点数"><a-input-number v-model:value="form.replicas" :min="1" :max="5" style="width: 100%" /></a-form-item>
+        <a-form-item label="数据面 TLS"><a-switch v-model:checked="form.tls" /></a-form-item>
         <a-form-item label="参数模板"><a-select v-model:value="form.template_id" :options="templates.map((t: any) => ({ value: t.id, label: `${t.name}${t.builtin ? '（内置）' : ''}` }))" /></a-form-item>
       </a-form>
       <a-alert type="info" show-icon message="创建后会生成后台操作；主机由编排器从在线主机中自动选择。" />

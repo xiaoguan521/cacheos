@@ -11,7 +11,9 @@ WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 R="$WORK/root"; mkdir -p "$R"
 tar -C "$R" -xzf "$TAR"
 # shellcheck disable=SC1091
-source <(sed 's/^/BI_/' "$R/opt/sycache/share/BUILDINFO")
+BI_FILE="$WORK/buildinfo.vars"
+sed 's/^/BI_/' "$R/opt/sycache/share/BUILDINFO" > "$BI_FILE"
+source "$BI_FILE"
 
 # 版本：1.0.0 → Version 1.0.0 Release 1；1.0.0-rc.1 → Version 1.0.0 Release 0.rc.1（预发布排在正式版之前）
 V="${BI_product_version%%-*}"

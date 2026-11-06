@@ -9,8 +9,10 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -23,6 +25,7 @@ import (
 
 	agentv1 "github.com/xiaoguan521/cacheos/api/gen/agent/v1"
 	"github.com/xiaoguan521/cacheos/internal/agent/instance"
+	"github.com/xiaoguan521/cacheos/internal/console/pki"
 	"github.com/xiaoguan521/cacheos/internal/console/store"
 	"github.com/xiaoguan521/cacheos/internal/console/store/query"
 	"github.com/xiaoguan521/cacheos/internal/license"
@@ -43,11 +46,18 @@ type Service struct {
 	Box     *secretbox.Box
 	Log     *slog.Logger
 	License func() license.Snapshot
-	PortMin uint32 // 默认 7000
-	PortMax uint32 // 默认 7999
+	CA      *pki.CA // 用于为启用数据面 TLS 的实例签发短期服务证书
+	PortMin uint32  // 默认 7000
+	PortMax uint32  // 默认 7999
 	Timeout time.Duration
+	// RequireApproval enables the optional DRAFT/PRECHECKED/APPROVED gate.
+	// It is deliberately explicit so existing installations can roll it out
+	// without changing the behavior of already scripted operations.
+	RequireApproval bool
 
-	wg sync.WaitGroup
+	wg        sync.WaitGroup
+	pendingMu sync.Mutex
+	pending   map[uint]func(context.Context, *opRun) error
 }
 
 // 错误。
@@ -77,14 +87,18 @@ var nameRe = regexp.MustCompile(`^[a-z][a-z0-9-]{1,40}$`)
 
 // UnitSpec 是创建部署单元的请求。
 type UnitSpec struct {
-	Name        string            `json:"name"`
-	Mode        string            `json:"mode"`
-	Description string            `json:"description"`
-	MemoryMB    uint32            `json:"memory_mb"`
-	Replicas    uint32            `json:"replicas"`
-	TemplateID  uint              `json:"template_id"`
-	Params      map[string]string `json:"params"`   // 在模板之上的覆盖
-	HostIDs     []uint            `json:"host_ids"` // 可选：指定主机（第一台放主节点）
+	Name         string            `json:"name"`
+	Mode         string            `json:"mode"`
+	Description  string            `json:"description"`
+	MemoryMB     uint32            `json:"memory_mb"`
+	Shards       uint32            `json:"shards"`
+	Replicas     uint32            `json:"replicas"`
+	TLS          bool              `json:"tls"`
+	SentinelName string            `json:"sentinel_name"`
+	Quorum       uint32            `json:"quorum"`
+	TemplateID   uint              `json:"template_id"`
+	Params       map[string]string `json:"params"`   // 在模板之上的覆盖
+	HostIDs      []uint            `json:"host_ids"` // 可选：指定主机（第一台放主节点）
 }
 
 // Step 是变更中的一步。
@@ -111,6 +125,33 @@ func (r *opRun) step(name string, inst uint, status, msg string) {
 	_, _ = op.WithContext(context.Background()).Where(op.ID.Eq(r.op.ID)).Update(op.Steps, string(b))
 }
 
+func (r *opRun) hasSuccessfulStep(name string, inst uint) bool {
+	for _, step := range r.steps {
+		if step.Name == name && step.InstanceID == inst && step.Status == "ok" {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *opRun) hasSuccessfulStepPrefix(prefix string) bool {
+	for _, step := range r.steps {
+		if strings.HasPrefix(step.Name, prefix) && step.Status == "ok" {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *opRun) hasStepPrefix(prefix string) bool {
+	for _, step := range r.steps {
+		if strings.HasPrefix(step.Name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *opRun) finish(status, errMsg string) {
 	now := time.Now()
 	op := r.s.q().Operation
@@ -122,7 +163,7 @@ func (r *opRun) finish(status, errMsg string) {
 func (s *Service) start(tx *query.Query, unitID uint, kind string, req any, by string) (*opRun, error) {
 	b, _ := json.Marshal(req)
 	now := time.Now()
-	op := &store.Operation{UnitID: unitID, Kind: kind, Status: store.OpApplying, Request: string(b), CreatedBy: by, StartedAt: &now}
+	op := &store.Operation{UnitID: unitID, Kind: kind, Status: store.OpPrechecked, Request: string(b), CreatedBy: by, CreatedAt: now}
 	if err := tx.Operation.WithContext(context.Background()).Create(op); err != nil {
 		return nil, err
 	}
@@ -134,6 +175,26 @@ func (s *Service) start(tx *query.Query, unitID uint, kind string, req any, by s
 }
 
 func (s *Service) background(r *opRun, f func(ctx context.Context, r *opRun) error) {
+	if s.RequireApproval {
+		s.pendingMu.Lock()
+		if s.pending == nil {
+			s.pending = map[uint]func(context.Context, *opRun) error{}
+		}
+		s.pending[r.op.ID] = f
+		s.pendingMu.Unlock()
+		return
+	}
+	s.runBackground(r, f)
+}
+
+func (s *Service) runBackground(r *opRun, f func(ctx context.Context, r *opRun) error) {
+	now := time.Now()
+	op := s.q().Operation
+	if r.op.Steps != "" {
+		_ = json.Unmarshal([]byte(r.op.Steps), &r.steps)
+	}
+	_, _ = op.WithContext(context.Background()).Where(op.ID.Eq(r.op.ID), op.Status.In(store.OpPrechecked, store.OpApproved)).UpdateSimple(op.Status.Value(store.OpApplying), op.StartedAt.Value(now))
+	r.op.Status = store.OpApplying
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -147,6 +208,95 @@ func (s *Service) background(r *opRun, f func(ctx context.Context, r *opRun) err
 			s.Log.Warn("operation failed", "op", r.op.ID, "kind", r.op.Kind, "err", err)
 		}
 	}()
+}
+
+// ApproveOperation releases an operation waiting in PRECHECKED. The requester
+// and approver must be different identities, and the same unit lock remains in
+// place until the approved operation finishes.
+func (s *Service) ApproveOperation(id uint, by string) (*store.Operation, error) {
+	op, err := store.First[store.Operation](s.Store, id)
+	if err != nil {
+		return nil, err
+	}
+	if op.Status != store.OpPrechecked {
+		return nil, invalid("operation %d is %s, not PRECHECKED", id, op.Status)
+	}
+	if strings.TrimSpace(by) == "" || by == op.CreatedBy {
+		return nil, invalid("the requester and approver must be different")
+	}
+	s.pendingMu.Lock()
+	f := s.pending[id]
+	s.pendingMu.Unlock()
+	if f == nil {
+		f, err = s.rebuildPending(op)
+		if err != nil {
+			return nil, err
+		}
+	}
+	now := time.Now()
+	q := s.q().Operation
+	result, err := q.WithContext(context.Background()).Where(q.ID.Eq(id), q.Status.Eq(store.OpPrechecked)).UpdateSimple(q.Status.Value(store.OpApproved), q.ApprovedBy.Value(by), q.StartedAt.Value(now))
+	if err != nil {
+		return nil, err
+	}
+	if result.RowsAffected == 0 {
+		return nil, invalid("operation %d is no longer PRECHECKED", id)
+	}
+	s.pendingMu.Lock()
+	delete(s.pending, id)
+	s.pendingMu.Unlock()
+	s.runBackground(&opRun{s: s, op: op}, f)
+	op.Status, op.ApprovedBy, op.StartedAt = store.OpApplying, by, &now
+	return op, nil
+}
+
+// ResumeOperation rehydrates a paused operation from its durable request and
+// steps.  The unit lock is reacquired before the worker starts; the runner
+// skips already successful steps so a process restart or a timeout resumes at
+// the last durable boundary instead of replaying the whole plan blindly.
+func (s *Service) ResumeOperation(id uint, by string) (*store.Operation, error) {
+	op, err := store.First[store.Operation](s.Store, id)
+	if err != nil {
+		return nil, err
+	}
+	if op.Status != store.OpPaused {
+		return nil, invalid("operation %d is %s, not PAUSED", id, op.Status)
+	}
+	if strings.TrimSpace(by) == "" || by == op.CreatedBy {
+		return nil, invalid("the requester and approver must be different")
+	}
+	switch op.Kind {
+	case "params", "restart", "reshard", "upgrade", "scale", "sentinel":
+	default:
+		return nil, fmt.Errorf("%w: paused operation kind %q cannot be resumed", ErrUnsupported, op.Kind)
+	}
+	f, err := s.rebuildPending(op)
+	if err != nil {
+		return nil, err
+	}
+	if owner, lockErr := s.Store.UnitLockOwner(op.UnitID); lockErr != nil {
+		return nil, lockErr
+	} else if owner == 0 {
+		if err := s.Store.LockUnit(op.UnitID, op.ID); err != nil {
+			return nil, err
+		}
+	} else if owner != op.ID {
+		return nil, store.ErrUnitBusy
+	}
+	now := time.Now()
+	q := s.q().Operation
+	result, err := q.WithContext(context.Background()).Where(q.ID.Eq(id), q.Status.Eq(store.OpPaused)).UpdateSimple(q.Status.Value(store.OpApproved), q.ApprovedBy.Value(by), q.StartedAt.Value(now), q.Error.Value(""))
+	if err != nil {
+		_ = s.Store.UnlockUnit(op.UnitID, op.ID)
+		return nil, err
+	}
+	if result.RowsAffected == 0 {
+		_ = s.Store.UnlockUnit(op.UnitID, op.ID)
+		return nil, invalid("operation %d is no longer PAUSED", id)
+	}
+	s.runBackground(&opRun{s: s, op: op}, f)
+	op.Status, op.ApprovedBy, op.StartedAt = store.OpApplying, by, &now
+	return op, nil
 }
 
 func secret() string {
@@ -231,9 +381,10 @@ func (s *Service) licenseCheck(addInstances int, addMemoryMB uint64) error {
 }
 
 type hostLoad struct {
-	h       store.Host
-	allocMB uint64
-	ports   map[uint32]bool
+	h        store.Host
+	allocMB  uint64
+	ports    map[uint32]bool
+	lastPort uint32
 }
 
 // place 为一个分片的 n 个数据实例选择主机：只选在线主机，同一分片不放同一台主机，尽量分散到不同 zone，
@@ -344,15 +495,114 @@ func contains(ls []*hostLoad, l *hostLoad) bool {
 	return false
 }
 
+// placeCluster applies anti-affinity per shard rather than globally: a
+// three-shard cluster can run on three hosts with each host carrying a
+// different shard's replica, while a master and its own replica never share a
+// host. This matches the commercial plan's failure-domain rule.
+func (s *Service) placeCluster(shards, replicas int, memMB uint32, diskNeed uint64, explicit []uint) ([]*hostLoad, error) {
+	hq := s.q().Host
+	hosts, err := hq.WithContext(context.Background()).Where(hq.Status.Eq("online")).Find()
+	if err != nil {
+		return nil, err
+	}
+	insts, err := s.q().Instance.WithContext(context.Background()).Find()
+	if err != nil {
+		return nil, err
+	}
+	units, err := s.q().Unit.WithContext(context.Background()).Find()
+	if err != nil {
+		return nil, err
+	}
+	unitMem := map[uint]uint32{}
+	for _, u := range units {
+		unitMem[u.ID] = u.MemoryMB
+	}
+	loads := map[uint]*hostLoad{}
+	var cands []*hostLoad
+	for _, h := range hosts {
+		if s.GW != nil && !s.GW.Online(h.ID) {
+			continue
+		}
+		l := &hostLoad{h: *h, ports: map[uint32]bool{}}
+		loads[h.ID] = l
+		cands = append(cands, l)
+	}
+	for _, in := range insts {
+		if l := loads[in.HostID]; l != nil {
+			l.ports[in.Port] = true
+			if in.Kind == "server" {
+				l.allocMB += uint64(unitMem[in.UnitID])
+			}
+		}
+	}
+	fits := func(l *hostLoad) bool {
+		return (l.h.MemTotalBytes == 0 || (l.allocMB+uint64(memMB))<<20 <= l.h.MemTotalBytes*8/10) && (diskNeed == 0 || l.h.DiskFreeBytes >= diskNeed)
+	}
+	sort.Slice(cands, func(i, j int) bool {
+		if cands[i].allocMB != cands[j].allocMB {
+			return cands[i].allocMB < cands[j].allocMB
+		}
+		return cands[i].h.ID < cands[j].h.ID
+	})
+	total := shards * (1 + replicas)
+	if len(explicit) > 0 && len(explicit) != total {
+		return nil, invalid("host_ids must list %d hosts", total)
+	}
+	var out []*hostLoad
+	for shard := 0; shard < shards; shard++ {
+		if len(explicit) > 0 {
+			continue
+		}
+		used := map[uint]bool{}
+		zones := map[string]bool{}
+		for pass := 0; pass < 2 && len(used) < 1+replicas; pass++ {
+			for _, l := range cands {
+				if len(used) == 1+replicas {
+					break
+				}
+				if used[l.h.ID] || !fits(l) || (pass == 0 && zones[l.h.Zone]) {
+					continue
+				}
+				used[l.h.ID] = true
+				zones[l.h.Zone] = true
+				l.allocMB += uint64(memMB)
+				out = append(out, l)
+			}
+		}
+		if len(used) != 1+replicas {
+			return nil, fmt.Errorf("%w: shard %d needs %d different hosts", ErrNoHosts, shard, 1+replicas)
+		}
+	}
+	if len(explicit) > 0 {
+		out = out[:0]
+		for shard := 0; shard < shards; shard++ {
+			used := map[uint]bool{}
+			for i := 0; i < 1+replicas; i++ {
+				l := loads[explicit[shard*(1+replicas)+i]]
+				if l == nil || used[l.h.ID] || !fits(l) {
+					return nil, fmt.Errorf("%w: explicit host placement violates shard anti-affinity", ErrNoHosts)
+				}
+				used[l.h.ID] = true
+				l.allocMB += uint64(memMB)
+				out = append(out, l)
+			}
+		}
+	}
+	return out, nil
+}
+
 func (s *Service) freePort(l *hostLoad) (uint32, error) {
 	lo, hi := s.PortMin, s.PortMax
 	if lo == 0 {
 		lo, hi = 7000, 7999
 	}
-	for p := lo; p <= hi; p++ {
+	for p := lo; ; p++ {
 		if !l.ports[p] {
 			l.ports[p] = true
 			return p, nil
+		}
+		if p == hi {
+			break
 		}
 	}
 	return 0, fmt.Errorf("%w: no free port on host %s", ErrNoHosts, l.h.Name)
@@ -363,21 +613,53 @@ func (s *Service) CreateUnit(spec UnitSpec, by string) (*store.Unit, *store.Oper
 	if !nameRe.MatchString(spec.Name) {
 		return nil, nil, invalid("name must match %s", nameRe)
 	}
+	if spec.Shards == 0 {
+		spec.Shards = 1
+	}
+	dataN := 1
+	extraN := 0
 	switch spec.Mode {
 	case store.ModeStandalone:
+		spec.Shards = 1
 		spec.Replicas = 0
 	case store.ModeReplication:
+		spec.Shards = 1
 		if spec.Replicas == 0 {
 			spec.Replicas = 1
 		}
 		if spec.Replicas > 5 {
 			return nil, nil, invalid("at most 5 replicas")
 		}
-	case store.ModeSentinel, store.ModeCluster:
-		return nil, nil, fmt.Errorf("%w: mode %s is delivered in P3", ErrUnsupported, spec.Mode)
+	case store.ModeSentinel:
+		spec.Shards = 1
+		if spec.Replicas == 0 {
+			spec.Replicas = 1
+		}
+		if spec.Replicas > 5 {
+			return nil, nil, invalid("at most 5 replicas")
+		}
+		extraN = 3 // sentinel quorum is deliberately odd and independently placed
+		if spec.SentinelName == "" {
+			spec.SentinelName = spec.Name
+		}
+		if spec.Quorum == 0 {
+			spec.Quorum = 2
+		}
+	case store.ModeCluster:
+		if spec.Shards < 3 || spec.Shards > 1024 {
+			return nil, nil, invalid("cluster shards must be between 3 and 1024")
+		}
+		if spec.Replicas == 0 {
+			spec.Replicas = 1
+		}
+		if spec.Replicas > 5 {
+			return nil, nil, invalid("at most 5 replicas per shard")
+		}
 	default:
 		return nil, nil, invalid("unknown mode %q", spec.Mode)
 	}
+	dataN = int(spec.Shards) * (1 + int(spec.Replicas))
+	n := dataN + extraN
 	if spec.MemoryMB < 64 || spec.MemoryMB > 1<<20 {
 		return nil, nil, invalid("memory_mb must be between 64 and 1048576")
 	}
@@ -396,8 +678,9 @@ func (s *Service) CreateUnit(spec UnitSpec, by string) (*store.Unit, *store.Oper
 	if err != nil {
 		return nil, nil, invalid("%v", err)
 	}
-	n := 1 + int(spec.Replicas)
-	if err := s.licenseCheck(n, uint64(spec.MemoryMB)*uint64(n)); err != nil {
+	// Instance limits count every managed process, including the three
+	// sentinels; memory limits count only data-plane servers.
+	if err := s.licenseCheck(n, uint64(spec.MemoryMB)*uint64(dataN)); err != nil {
 		return nil, nil, err
 	}
 	diskNeed := uint64(0)
@@ -408,7 +691,12 @@ func (s *Service) CreateUnit(spec UnitSpec, by string) (*store.Unit, *store.Oper
 		}
 		diskNeed = instance.PersistenceRequiredBytes(maxMemory, 0)
 	}
-	hosts, err := s.place(n, spec.MemoryMB, diskNeed, spec.HostIDs)
+	var hosts []*hostLoad
+	if spec.Mode == store.ModeCluster {
+		hosts, err = s.placeCluster(int(spec.Shards), int(spec.Replicas), spec.MemoryMB, diskNeed, spec.HostIDs)
+	} else {
+		hosts, err = s.place(n, spec.MemoryMB, diskNeed, spec.HostIDs)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -416,8 +704,8 @@ func (s *Service) CreateUnit(spec UnitSpec, by string) (*store.Unit, *store.Oper
 	if err != nil {
 		return nil, nil, err
 	}
-	unit := &store.Unit{Name: spec.Name, Mode: spec.Mode, Description: spec.Description, MemoryMB: spec.MemoryMB, Shards: 1, Replicas: spec.Replicas,
-		TemplateID: spec.TemplateID, Status: "creating", MasterAuth: sealed, CreatedBy: by}
+	unit := &store.Unit{Name: spec.Name, Mode: spec.Mode, Description: spec.Description, MemoryMB: spec.MemoryMB, Shards: spec.Shards, Replicas: spec.Replicas,
+		TemplateID: spec.TemplateID, TLS: spec.TLS, SentinelName: spec.SentinelName, Quorum: spec.Quorum, Status: "creating", MasterAuth: sealed, CreatedBy: by}
 	var run *opRun
 	var insts []*store.Instance
 	err = s.q().Transaction(func(tx *query.Query) error {
@@ -440,11 +728,20 @@ func (s *Service) CreateUnit(spec UnitSpec, by string) (*store.Unit, *store.Oper
 			if err != nil {
 				return err
 			}
-			role := "replica"
-			if i == 0 {
-				role = "master"
+			kind, role, shard := "server", "replica", uint32(0)
+			if spec.Mode == store.ModeSentinel && i >= dataN {
+				kind, role = "sentinel", "sentinel"
+			} else {
+				dataIndex := i
+				if spec.Mode == store.ModeSentinel {
+					dataIndex = i
+				}
+				shard = uint32(dataIndex / (1 + int(spec.Replicas)))
+				if dataIndex%(1+int(spec.Replicas)) == 0 {
+					role = "master"
+				}
 			}
-			in := &store.Instance{UnitID: unit.ID, HostID: l.h.ID, Port: port, Kind: "server", Desired: role, State: "creating"}
+			in := &store.Instance{UnitID: unit.ID, HostID: l.h.ID, Port: port, Kind: kind, Shard: shard, Desired: role, State: "creating"}
 			if err := tx.Instance.WithContext(context.Background()).Create(in); err != nil {
 				return err
 			}
@@ -503,6 +800,10 @@ func (s *Service) send(ctx context.Context, hostID uint, body any) (*agentv1.Com
 		m.Body = &agentv1.ServerMessage_Action{Action: b}
 	case *agentv1.Failover:
 		m.Body = &agentv1.ServerMessage_Failover{Failover: b}
+	case *agentv1.ClusterOp:
+		m.Body = &agentv1.ServerMessage_Cluster{Cluster: b}
+	case *agentv1.SentinelOp:
+		m.Body = &agentv1.ServerMessage_Sentinel{Sentinel: b}
 	case *agentv1.SyncAcl:
 		m.Body = &agentv1.ServerMessage_Acl{Acl: b}
 	case *agentv1.SetReplication:
@@ -599,8 +900,8 @@ func (s *Service) runCreate(ctx context.Context, r *opRun, unit *store.Unit, par
 		return err
 	}
 	users, _ := s.aclUsers(unit.ID)
-	var master *store.Instance
-	var masterHost *store.Host
+	masters := map[uint32]*store.Instance{}
+	masterHosts := map[uint32]*store.Host{}
 	failed := ""
 	for _, in := range insts {
 		h, err := s.host(in.HostID)
@@ -608,9 +909,71 @@ func (s *Service) runCreate(ctx context.Context, r *opRun, unit *store.Unit, par
 			failed = err.Error()
 			break
 		}
-		req := &agentv1.CreateInstance{Port: in.Port, Kind: agentv1.Kind_KIND_SERVER, Params: params, RevisionId: unit.RevisionID, Masterauth: auth, AclUsers: users}
-		if in.Desired == "replica" && master != nil {
-			req.ReplicaOf = &agentv1.ReplicaOf{Host: masterHost.Address, Port: master.Port}
+		agentParams := map[string]string{}
+		for k, v := range params {
+			agentParams[k] = v
+		}
+		// The business listener must bind to the host's internal address.  The
+		// address is a typed field in CreateInstance and is independently checked
+		// again by the agent before writing the data-plane configuration.
+		bind := h.Address
+		if bind == "" {
+			bind = h.Hostname
+		}
+		kind := agentv1.Kind_KIND_SERVER
+		if in.Kind == "sentinel" {
+			kind = agentv1.Kind_KIND_SENTINEL
+		}
+		req := &agentv1.CreateInstance{Port: in.Port, Kind: kind, Params: agentParams, RevisionId: unit.RevisionID, Masterauth: auth, AclUsers: users,
+			ClusterEnabled: unit.Mode == store.ModeCluster, BindAddress: bind}
+		if unit.TLS && in.Kind == "server" {
+			if s.CA == nil {
+				failed = "data-plane TLS is enabled but the console CA is unavailable"
+				break
+			}
+			cert, err := s.CA.ServerCert([]string{h.Address, h.Hostname, "localhost"})
+			if err != nil {
+				failed = "issue data-plane TLS certificate: " + err.Error()
+				break
+			}
+			keyDER, err := x509.MarshalPKCS8PrivateKey(cert.PrivateKey)
+			if err != nil {
+				failed = "encode data-plane TLS key: " + err.Error()
+				break
+			}
+			req.Tls = &agentv1.TlsMaterial{
+				CertPem:        pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]}),
+				KeyPem:         pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}),
+				CaPem:          append([]byte(nil), s.CA.PEM...),
+				TlsReplication: s.License != nil && s.License().Feature(license.FeatureTLSInternal),
+				TlsCluster:     unit.Mode == store.ModeCluster && s.License != nil && s.License().Feature(license.FeatureTLSInternal),
+				AuthClients:    false,
+			}
+		}
+		if in.Kind == "sentinel" {
+			master := masters[0]
+			host := masterHosts[0]
+			if master == nil || host == nil {
+				failed = "sentinel master is not ready"
+				break
+			}
+			req.SentinelMonitorName = unit.SentinelName
+			req.SentinelMasterHost = host.Address
+			if req.SentinelMasterHost == "" {
+				req.SentinelMasterHost = host.Hostname
+			}
+			req.SentinelMasterPort = master.Port
+			req.SentinelQuorum = unit.Quorum
+		} else if in.Desired == "replica" && unit.Mode != store.ModeCluster {
+			master := masters[in.Shard]
+			host := masterHosts[in.Shard]
+			if master != nil && host != nil {
+				hostAddr := host.Address
+				if hostAddr == "" {
+					hostAddr = host.Hostname
+				}
+				req.ReplicaOf = &agentv1.ReplicaOf{Host: hostAddr, Port: master.Port}
+			}
 		}
 		name := fmt.Sprintf("创建%s %s:%d", roleName(in.Desired), h.Name, in.Port)
 		res, err := s.send(ctx, in.HostID, req)
@@ -625,8 +988,8 @@ func (s *Service) runCreate(ctx context.Context, r *opRun, unit *store.Unit, par
 		_, _ = iq.WithContext(ctx).Where(iq.ID.Eq(in.ID)).Update(iq.AppliedRev, unit.RevisionID)
 		s.saveStatus(in, res.GetInstance())
 		r.step(name, in.ID, "ok", "")
-		if in.Desired == "master" {
-			master, masterHost = in, h
+		if in.Kind == "server" && in.Desired == "master" {
+			masters[in.Shard], masterHosts[in.Shard] = in, h
 		}
 	}
 	if failed != "" {
@@ -635,9 +998,123 @@ func (s *Service) runCreate(ctx context.Context, r *opRun, unit *store.Unit, par
 		r.finish(store.OpFailed, failed)
 		return errors.New(failed)
 	}
+	if unit.Mode == store.ModeCluster {
+		if err := s.bootstrapCluster(ctx, r, unit, insts); err != nil {
+			uq := s.q().Unit
+			_, _ = uq.WithContext(ctx).Where(uq.ID.Eq(unit.ID)).Update(uq.Status, "failed")
+			r.finish(store.OpFailed, err.Error())
+			return err
+		}
+	}
 	uq := s.q().Unit
 	_, _ = uq.WithContext(ctx).Where(uq.ID.Eq(unit.ID)).Update(uq.Status, "running")
 	r.finish(store.OpApplied, "")
+	return nil
+}
+
+func clusterAddress(h *store.Host, port uint32) string {
+	addr := h.Address
+	if addr == "" {
+		addr = h.Hostname
+	}
+	return fmt.Sprintf("%s:%d", addr, port)
+}
+
+func clusterNodeIDs(raw []byte) map[string]string {
+	out := map[string]string{}
+	for _, line := range strings.Split(string(raw), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 || len(f[0]) != 40 {
+			continue
+		}
+		addr := strings.Split(f[1], "@")[0]
+		out[addr] = f[0]
+	}
+	return out
+}
+
+func (s *Service) bootstrapCluster(ctx context.Context, r *opRun, unit *store.Unit, insts []*store.Instance) error {
+	var servers []*store.Instance
+	masters := map[uint32]*store.Instance{}
+	replicas := map[uint32][]*store.Instance{}
+	for _, in := range insts {
+		if in.Kind != "server" {
+			continue
+		}
+		servers = append(servers, in)
+		if in.Desired == "master" {
+			masters[in.Shard] = in
+		} else {
+			replicas[in.Shard] = append(replicas[in.Shard], in)
+		}
+	}
+	if len(masters) != int(unit.Shards) {
+		return fmt.Errorf("cluster needs %d masters, found %d", unit.Shards, len(masters))
+	}
+	anchor := masters[0]
+	if anchor == nil {
+		return errors.New("cluster has no anchor master")
+	}
+	for _, in := range servers {
+		if in.ID == anchor.ID {
+			continue
+		}
+		h, err := s.host(in.HostID)
+		if err != nil {
+			return err
+		}
+		if _, err := s.send(ctx, anchor.HostID, &agentv1.ClusterOp{Port: anchor.Port, Op: agentv1.ClusterOp_MEET, PeerHost: func() string {
+			if h.Address != "" {
+				return h.Address
+			}
+			return h.Hostname
+		}(), PeerPort: in.Port}); err != nil {
+			return fmt.Errorf("meet %s: %w", s.instName(in), err)
+		}
+	}
+	var nodes map[string]string
+	for i := 0; i < 20; i++ {
+		res, err := s.send(ctx, anchor.HostID, &agentv1.ClusterOp{Port: anchor.Port, Op: agentv1.ClusterOp_NODES})
+		if err == nil {
+			nodes = clusterNodeIDs(res.Payload)
+			if len(nodes) >= len(servers) {
+				break
+			}
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if len(nodes) < len(servers) {
+		return fmt.Errorf("cluster nodes did not converge: found %d of %d", len(nodes), len(servers))
+	}
+	nodeID := func(in *store.Instance) (string, error) {
+		h, err := s.host(in.HostID)
+		if err != nil {
+			return "", err
+		}
+		id := nodes[clusterAddress(h, in.Port)]
+		if id == "" {
+			return "", fmt.Errorf("node id missing for %s", s.instName(in))
+		}
+		return id, nil
+	}
+	for shard := uint32(0); shard < unit.Shards; shard++ {
+		master := masters[shard]
+		start := uint32((uint64(16384) * uint64(shard)) / uint64(unit.Shards))
+		end := uint32((uint64(16384)*uint64(shard+1))/uint64(unit.Shards) - 1)
+		if _, err := s.send(ctx, master.HostID, &agentv1.ClusterOp{Port: master.Port, Op: agentv1.ClusterOp_ADD_SLOTS, Slots: []*agentv1.SlotRange{{Start: start, End: end}}}); err != nil {
+			return fmt.Errorf("assign slots for shard %d: %w", shard, err)
+		}
+		mid, err := nodeID(master)
+		if err != nil {
+			return err
+		}
+		for _, replica := range replicas[shard] {
+			if _, err := s.send(ctx, replica.HostID, &agentv1.ClusterOp{Port: replica.Port, Op: agentv1.ClusterOp_REPLICATE, NodeId: mid}); err != nil {
+				return fmt.Errorf("replicate shard %d: %w", shard, err)
+			}
+		}
+	}
+	r.step("集群拓扑初始化", 0, "ok", fmt.Sprintf("%d shards, %d servers", unit.Shards, len(servers)))
 	return nil
 }
 

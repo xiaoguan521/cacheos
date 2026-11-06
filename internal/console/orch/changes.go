@@ -251,7 +251,10 @@ func (s *Service) runParams(ctx context.Context, r *opRun, unitID uint, pv *Prev
 	_, _ = uq.WithContext(ctx).Where(uq.ID.Eq(unitID)).UpdateSimple(uq.RevisionID.Value(rev.ID), uq.MemoryMB.Value(targetMemoryMB))
 	if pending && ch.Restart {
 		if err := s.rollingRestart(ctx, r, unitID, ch.Switchover); err != nil {
-			r.finish(store.OpPartial, "parameters applied, rolling restart stopped: "+err.Error())
+			// A rolling restart timeout is deliberately resumable by an operator,
+			// but never auto-continued.  The parameter writes remain applied and
+			// the operation records the exact stopping point in its steps.
+			r.finish(store.OpPaused, "parameters applied, rolling restart paused: "+err.Error())
 			return err
 		}
 	}
@@ -284,28 +287,42 @@ func (s *Service) instName(in *store.Instance) string {
 
 // rollingRestart 逐个重启：从节点在前，每个重启后等复制链路恢复；主节点可先协调切换再重启。
 func (s *Service) rollingRestart(ctx context.Context, r *opRun, unitID uint, switchover bool) error {
+	return s.rollingRestartNamed(ctx, r, unitID, switchover, "重启 ", "等待复制恢复 ")
+}
+
+// rollingRestartNamed is also used by an engine-upgrade rollback. Distinct
+// durable step names are required so rollback can restart instances that were
+// already successfully restarted during the failed forward rollout.
+func (s *Service) rollingRestartNamed(ctx context.Context, r *opRun, unitID uint, switchover bool, restartPrefix, linkPrefix string) error {
 	insts, err := s.unitInstances(unitID)
 	if err != nil {
 		return err
 	}
 	order := rollingOrder(insts)
 	for _, in := range order {
-		if isMaster(in) && switchover && len(order) > 1 {
+		if isMaster(in) && switchover && len(order) > 1 && !r.hasSuccessfulStepPrefix("协调切换") && !r.hasSuccessfulStepPrefix("集群故障切换") && !r.hasSuccessfulStepPrefix("哨兵故障切换") {
 			if err := s.failover(ctx, r, unitID); err != nil {
 				return err
 			}
 			// 切换后旧主节点已是从节点，最后重启它
 		}
-		res, err := s.send(ctx, in.HostID, &agentv1.InstanceAction{Port: in.Port, Action: agentv1.InstanceAction_RESTART})
-		if err != nil {
-			r.step("重启 "+s.instName(in), in.ID, "failed", err.Error())
-			return err
+		restartName := restartPrefix + s.instName(in)
+		if !r.hasSuccessfulStep(restartName, in.ID) {
+			res, err := s.send(ctx, in.HostID, &agentv1.InstanceAction{Port: in.Port, Action: agentv1.InstanceAction_RESTART})
+			if err != nil {
+				r.step(restartName, in.ID, "failed", err.Error())
+				return err
+			}
+			s.saveStatus(in, res.GetInstance())
+			r.step(restartName, in.ID, "ok", "")
 		}
-		s.saveStatus(in, res.GetInstance())
-		r.step("重启 "+s.instName(in), in.ID, "ok", "")
-		if err := s.waitLink(ctx, unitID, in); err != nil {
-			r.step("等待复制恢复 "+s.instName(in), in.ID, "failed", err.Error())
-			return err
+		linkName := linkPrefix + s.instName(in)
+		if !r.hasSuccessfulStep(linkName, in.ID) {
+			if err := s.waitLink(ctx, unitID, in); err != nil {
+				r.step(linkName, in.ID, "failed", err.Error())
+				return err
+			}
+			r.step(linkName, in.ID, "ok", "")
 		}
 	}
 	return nil
@@ -431,28 +448,36 @@ func (s *Service) Action(unitID uint, action string, switchover bool, by string)
 		return nil, err
 	}
 	s.background(run, func(ctx context.Context, r *opRun) error {
-		var err error
-		if a == agentv1.InstanceAction_RESTART {
-			err = s.rollingRestart(ctx, r, unitID, switchover)
-		} else {
-			err = s.simpleAction(ctx, r, unitID, a)
-		}
-		status := "running"
-		if a == agentv1.InstanceAction_STOP {
-			status = "stopped"
-		}
-		if err != nil {
-			uq := s.q().Unit
-			_, _ = uq.WithContext(ctx).Where(uq.ID.Eq(unitID)).Update(uq.Status, "degraded")
-			r.finish(store.OpFailed, err.Error())
-			return err
-		}
-		uq := s.q().Unit
-		_, _ = uq.WithContext(ctx).Where(uq.ID.Eq(unitID)).Update(uq.Status, status)
-		r.finish(store.OpApplied, "")
-		return nil
+		return s.runAction(ctx, r, unitID, a, switchover)
 	})
 	return run.op, nil
+}
+
+func (s *Service) runAction(ctx context.Context, r *opRun, unitID uint, a agentv1.InstanceAction_Action, switchover bool) error {
+	var err error
+	if a == agentv1.InstanceAction_RESTART {
+		err = s.rollingRestart(ctx, r, unitID, switchover)
+	} else {
+		err = s.simpleAction(ctx, r, unitID, a)
+	}
+	status := "running"
+	if a == agentv1.InstanceAction_STOP {
+		status = "stopped"
+	}
+	if err != nil {
+		uq := s.q().Unit
+		_, _ = uq.WithContext(ctx).Where(uq.ID.Eq(unitID)).Update(uq.Status, "degraded")
+		if a == agentv1.InstanceAction_RESTART {
+			r.finish(store.OpPaused, "rolling restart paused: "+err.Error())
+		} else {
+			r.finish(store.OpFailed, err.Error())
+		}
+		return err
+	}
+	uq := s.q().Unit
+	_, _ = uq.WithContext(ctx).Where(uq.ID.Eq(unitID)).Update(uq.Status, status)
+	r.finish(store.OpApplied, "")
+	return nil
 }
 
 func (s *Service) simpleAction(ctx context.Context, r *opRun, unitID uint, a agentv1.InstanceAction_Action) error {
@@ -485,8 +510,8 @@ func (s *Service) Failover(unitID uint, by string) (*store.Operation, error) {
 	if err != nil {
 		return nil, err
 	}
-	if u.Mode != store.ModeReplication {
-		return nil, invalid("switchover is only available for replication units (sentinel / cluster in P3)")
+	if u.Mode != store.ModeReplication && u.Mode != store.ModeSentinel && u.Mode != store.ModeCluster {
+		return nil, invalid("switchover is only available for replication, sentinel or cluster units")
 	}
 	var run *opRun
 	err = s.q().Transaction(func(tx *query.Query) error {
@@ -509,9 +534,37 @@ func (s *Service) Failover(unitID uint, by string) (*store.Operation, error) {
 }
 
 func (s *Service) failover(ctx context.Context, r *opRun, unitID uint) error {
+	u, err := store.First[store.Unit](s.Store, unitID)
+	if err != nil {
+		return err
+	}
 	insts, err := s.unitInstances(unitID)
 	if err != nil {
 		return err
+	}
+	if u.Mode == store.ModeCluster {
+		for _, in := range insts {
+			if in.Kind == "server" && in.Desired == "replica" {
+				if _, err := s.send(ctx, in.HostID, &agentv1.Failover{Port: in.Port, Mode: agentv1.Failover_CLUSTER, TimeoutMs: 10000}); err != nil {
+					return err
+				}
+				r.step("集群故障切换 "+s.instName(in), in.ID, "ok", "")
+				return nil
+			}
+		}
+		return errors.New("cluster has no replica to fail over")
+	}
+	if u.Mode == store.ModeSentinel {
+		for _, in := range insts {
+			if in.Kind == "sentinel" {
+				if _, err := s.send(ctx, in.HostID, &agentv1.Failover{Port: in.Port, Mode: agentv1.Failover_SENTINEL, SentinelMasterName: u.SentinelName, TimeoutMs: 10000}); err != nil {
+					return err
+				}
+				r.step("哨兵故障切换 "+s.instName(in), in.ID, "ok", "")
+				return nil
+			}
+		}
+		return errors.New("sentinel unit has no sentinel instance")
 	}
 	var master *store.Instance
 	for _, in := range insts {
@@ -561,30 +614,32 @@ func (s *Service) DeleteUnit(unitID uint, by string) (*store.Operation, error) {
 	}
 	uq := s.q().Unit
 	_, _ = uq.WithContext(context.Background()).Where(uq.ID.Eq(unitID)).Update(uq.Status, "deleting")
-	s.background(run, func(ctx context.Context, r *opRun) error {
-		insts, _ := s.unitInstances(unitID)
-		for _, in := range insts {
-			for _, a := range []agentv1.InstanceAction_Action{agentv1.InstanceAction_STOP, agentv1.InstanceAction_DELETE} {
-				if _, err := s.send(ctx, in.HostID, &agentv1.InstanceAction{Port: in.Port, Action: a}); err != nil && !strings.Contains(err.Error(), "NOT_FOUND") {
-					r.step("删除 "+s.instName(in), in.ID, "failed", err.Error())
-					uq := s.q().Unit
-					_, _ = uq.WithContext(ctx).Where(uq.ID.Eq(unitID)).Update(uq.Status, "failed")
-					r.finish(store.OpFailed, err.Error())
-					return err
-				}
-			}
-			iq := s.q().Instance
-			_, _ = iq.WithContext(ctx).Where(iq.ID.Eq(in.ID)).Delete(in)
-			r.step("删除 "+s.instName(in), in.ID, "ok", "")
-		}
-		aq := s.q().AclAccount
-		_, _ = aq.WithContext(ctx).Where(aq.UnitID.Eq(unitID)).Delete()
-		r.finish(store.OpApplied, "")
-		uq := s.q().Unit
-		_, _ = uq.WithContext(ctx).Where(uq.ID.Eq(unitID)).Delete(&store.Unit{ID: unitID})
-		return nil
-	})
+	s.background(run, func(ctx context.Context, r *opRun) error { return s.runDelete(ctx, r, unitID) })
 	return run.op, nil
+}
+
+func (s *Service) runDelete(ctx context.Context, r *opRun, unitID uint) error {
+	insts, _ := s.unitInstances(unitID)
+	for _, in := range insts {
+		for _, a := range []agentv1.InstanceAction_Action{agentv1.InstanceAction_STOP, agentv1.InstanceAction_DELETE} {
+			if _, err := s.send(ctx, in.HostID, &agentv1.InstanceAction{Port: in.Port, Action: a}); err != nil && !strings.Contains(err.Error(), "NOT_FOUND") {
+				r.step("删除 "+s.instName(in), in.ID, "failed", err.Error())
+				uq := s.q().Unit
+				_, _ = uq.WithContext(ctx).Where(uq.ID.Eq(unitID)).Update(uq.Status, "failed")
+				r.finish(store.OpFailed, err.Error())
+				return err
+			}
+		}
+		iq := s.q().Instance
+		_, _ = iq.WithContext(ctx).Where(iq.ID.Eq(in.ID)).Delete(in)
+		r.step("删除 "+s.instName(in), in.ID, "ok", "")
+	}
+	aq := s.q().AclAccount
+	_, _ = aq.WithContext(ctx).Where(aq.UnitID.Eq(unitID)).Delete()
+	r.finish(store.OpApplied, "")
+	uq := s.q().Unit
+	_, _ = uq.WithContext(ctx).Where(uq.ID.Eq(unitID)).Delete(&store.Unit{ID: unitID})
+	return nil
 }
 
 // AccountSpec 是业务账号请求。口令只在请求中出现一次，库中只存 sha256。
@@ -595,6 +650,11 @@ type AccountSpec struct {
 	Categories  []string `json:"categories"`
 	Enabled     bool     `json:"enabled"`
 	KeepOld     bool     `json:"keep_old_password"` // 轮换：新旧口令同时有效，直到下次修改
+}
+
+func safeAccountCategories(categories []string) []string {
+	out := append([]string(nil), categories...)
+	return append(out, "-@dangerous", "-flushall", "-flushdb", "-keys", "-debug", "-config")
 }
 
 // SaveAccount 新建或修改业务账号并同步到单元的全部实例；返回自动生成的口令（只此一次）。
@@ -626,6 +686,13 @@ func (s *Service) SaveAccount(ctx context.Context, unitID uint, spec AccountSpec
 			hashes = []string{nh}
 		}
 	}
+	if len(spec.Categories) == 0 {
+		spec.Categories = []string{"+@read", "+@write"}
+	}
+	// Dangerous commands are always denied last.  A caller may submit +@all
+	// (or put -@dangerous before it); appending the explicit deny list here
+	// keeps CONFIG/DEBUG/FLUSHALL/FLUSHDB/KEYS unavailable by construction.
+	spec.Categories = safeAccountCategories(spec.Categories)
 	a.UnitID, a.Name, a.Enabled, a.UpdatedBy, a.UpdatedAt = unitID, spec.Name, spec.Enabled, by, time.Now()
 	a.PassHashes = strings.Join(hashes, ",")
 	a.KeyPatterns = strings.Join(spec.KeyPatterns, ",")

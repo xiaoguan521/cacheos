@@ -15,6 +15,7 @@
 | 按可执行文件名判断运行模式（server.c） | `"valkey-sentinel"`、`"valkey-check-rdb"`、`"valkey-check-aof"` | `"sycache-…"`；redis-* 兼容名保留 |
 | 子进程标题（ps 可见） | valkey-rdb-bgsave、valkey-aof-rewrite 等 | sycache-… |
 | `SERVER_NAME` / `SERVER_TITLE` | valkey / Valkey | sycache / SyCache（INFO `server_name`、HELLO `server`、日志） |
+| INFO 运行模式字段 | 默认 `server_mode` | 保留品牌字段；仅在集群模式补充标准 `redis_mode` 别名，便于 StackExchange.Redis 等客户端发现集群 |
 | 日志、帮助、错误文案、LATENCY/MEMORY DOCTOR、COMMAND DOCS | Valkey | SyCache |
 | cli 环境变量与配置文件 | VALKEYCLI_*、~/.valkeyclirc | SYCACHECLI_*、~/.sycacheclirc |
 | cli / benchmark 的 `-u` 帮助文本 | valkey://… | 展示 redis:// / rediss://（两者本来就支持） |
@@ -28,6 +29,7 @@
 | 复制握手 `REPLCONF version` 的值 | 主从按版本号协商特性，必须是真实引擎版本（compat_test 已验证与上游混合复制） |
 | HELLO 的 `version`、Lua 的 `VALKEY_VERSION` / `VALKEY_VERSION_NUM`、`REDIS_VERSION` | 客户端与用户脚本按它判断能力 |
 | INFO `redis_version:7.2.4` | 客户端靠它判断支持哪些命令 |
+| INFO `redis_mode` | StackExchange.Redis 等客户端在集群模式用它判断拓扑；单机 INFO 形状保持上游，`server_mode` 继续保留品牌展示 |
 | 模块 API 符号 `ValkeyModule_*`、头文件 valkeymodule.h / redismodule.h | 第三方模块按名字链接 |
 | ldb 调试命令 `valkey` | 用户在调试会话中输入的命令名 |
 | `-u` 参数可解析的 URI 协议名 valkey://、valkeys:// | 已有连接串与迁移脚本依赖它；首轮上游测试集中 URI 用例因改成 sycache:// 而失败，已改回 |

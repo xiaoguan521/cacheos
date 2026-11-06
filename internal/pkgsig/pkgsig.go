@@ -25,7 +25,7 @@ const Format = "cacheos-pkg-sig-1"
 const domain = "CACHEOS-PKG-v1\n"
 
 var (
-	VersionRe = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(-[0-9]+)?$`)
+	VersionRe = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.]+)?$`)
 	KIDRe     = regexp.MustCompile(`^cacheos-pkg-[0-9]{4}(-[0-9a-z]{1,8})?$`)
 	kidAnyRe  = regexp.MustCompile(`^cacheos-(pkg|demo-pkg|ci-pkg)-[0-9a-z-]{1,20}$`)
 

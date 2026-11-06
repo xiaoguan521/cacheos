@@ -1,6 +1,19 @@
 package orch
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+
+	"github.com/xiaoguan521/cacheos/internal/console/store"
+)
+
+func TestSafeAccountCategoriesDenyDangerousCommandsLast(t *testing.T) {
+	got := safeAccountCategories([]string{"+@all", "-@dangerous"})
+	want := []string{"+@all", "-@dangerous", "-@dangerous", "-flushall", "-flushdb", "-keys", "-debug", "-config"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("dangerous deny rules = %v, want %v", got, want)
+	}
+}
 
 func TestReplicaCaughtUpComparesAgainstMasterSnapshot(t *testing.T) {
 	const target = 1000 // 主节点 repl_offset 快照
@@ -19,5 +32,17 @@ func TestReplicaCaughtUpComparesAgainstMasterSnapshot(t *testing.T) {
 	}
 	if replicaCaughtUp(nil, target) || replicaCaughtUp(map[string]string{"replica_offset": "x"}, target) {
 		t.Fatal("missing or malformed offset was accepted")
+	}
+}
+
+func TestRebuildPendingOperationAfterProcessRestart(t *testing.T) {
+	s := &Service{}
+	op := &store.Operation{ID: 42, UnitID: 7, Kind: "failover", Request: `{}`}
+	f, err := s.rebuildPending(op)
+	if err != nil {
+		t.Fatalf("rebuild pending operation: %v", err)
+	}
+	if f == nil {
+		t.Fatal("rebuild returned a nil operation")
 	}
 }

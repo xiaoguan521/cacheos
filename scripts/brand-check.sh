@@ -14,7 +14,8 @@ for d in cmd internal web/src deploy api/proto \
   [[ -e "$d" ]] && SCOPE+=("$d")
 done
 hits=$(grep -rniI 'valkey' "${SCOPE[@]}" 2>/dev/null \
-  | grep -v 'Valkey (BSD-3-Clause)' || true)
+  | grep -v 'Valkey (BSD-3-Clause)' \
+  | grep -vE 'Upstream:[[:space:]]*"valkey[[:space:]]' || true)
 if [[ -n "$hits" ]]; then
   echo "brand-check FAILED: 'valkey' found in product scope:"
   echo "$hits"

@@ -220,7 +220,7 @@ type Backup struct {
 	UnitID     uint       `gorm:"index" json:"unit_id"`
 	InstanceID uint       `json:"instance_id"`
 	Shard      uint32     `json:"shard"`
-	Location   string     `gorm:"size:16" json:"location"` // local | console
+	Location   string     `gorm:"size:16" json:"location"` // local | console | s3
 	Path       string     `json:"-"`                       // 控制台存储路径（location=console）
 	Size       int64      `json:"size"`
 	SHA256     string     `gorm:"column:sha256;size:64" json:"sha256"`
@@ -249,10 +249,10 @@ type MigrationJob struct {
 	ID         uint       `gorm:"primaryKey" json:"id"`
 	UnitID     uint       `gorm:"index" json:"unit_id"`
 	SourceAddr string     `gorm:"size:255" json:"source_addr"`
-	SourceAuth string     `json:"-"`                   // 加密
-	Mode       string     `gorm:"size:16" json:"mode"` // full | full_incr
-	Status     string     `gorm:"size:16" json:"status"`
-	Progress   string     `json:"progress"` // JSON：已迁移键数、增量偏移、校验结果
+	SourceAuth string     `json:"-"`                     // 加密
+	Mode       string     `gorm:"size:16" json:"mode"`   // full | full_incr
+	Status     string     `gorm:"size:16" json:"status"` // queued | running | awaiting_cutover | done | partial | failed
+	Progress   string     `json:"progress"`              // JSON：已迁移键数、增量偏移、校验结果
 	Error      string     `json:"error"`
 	CreatedBy  string     `gorm:"size:64" json:"created_by"`
 	CreatedAt  time.Time  `json:"created_at"`

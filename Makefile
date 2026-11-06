@@ -2,17 +2,21 @@
 UPSTREAM_SRC ?=
 DIST         ?= dist
 SRC_OPT      := $(if $(UPSTREAM_SRC),-s $(UPSTREAM_SRC),)
+JOBS         ?= $(shell if command -v nproc >/dev/null 2>&1; then nproc; elif command -v sysctl >/dev/null 2>&1; then sysctl -n hw.ncpu; else echo 2; fi)
 # 发布构建必须 USE_SYSTEMD=yes（sycache@.service 使用 Type=notify）
 export USE_SYSTEMD
 
-.PHONY: all patch patch-check sycache golden compat compat-interop compat-deps brand test ci versions compat-build deb clients upstream-suite clean
+.PHONY: all patch patch-check sycache golden compat compat-interop compat-deps brand test ci versions vex compat-build deb clients upstream-suite demo-local clean
 
 # 本地完整校验（与 CI 的 build-and-verify 相同），提交前执行，避免反复占用 GitHub Actions
-ci: patch-check brand sycache versions golden compat-interop clients
+ci: patch-check brand sycache versions vex golden compat-interop clients
 
 # versions.yaml、UPSTREAM、patches、BUILDINFO 与 SBOM 一致
 versions:
 	scripts/check-versions.sh $(firstword $(wildcard $(DIST)/sycache-[0-9]*.tar.gz))
+
+vex:
+	scripts/check-vex.sh
 
 # 兼容构建（glibc 2.17 容器 + 静态 OpenSSL）并打 RPM / DEB，需要 docker
 compat-build:
@@ -34,7 +38,7 @@ compat-deps:
 	rm -rf $(DIST)/valkey-upstream
 	@if [ -n "$(UPSTREAM_SRC)" ]; then cp -a $(UPSTREAM_SRC) $(DIST)/valkey-upstream; else \
 	  . dataplane/UPSTREAM && git -c advice.detachedHead=false clone -q --depth 1 --branch $$UPSTREAM_TAG $$UPSTREAM_GIT $(DIST)/valkey-upstream; fi
-	$(MAKE) -C $(DIST)/valkey-upstream -j$$(nproc) BUILD_TLS=no >/dev/null
+	$(MAKE) -C $(DIST)/valkey-upstream -j$(JOBS) BUILD_TLS=no >/dev/null
 
 all: patch-check sycache golden
 
@@ -59,9 +63,13 @@ compat:
 	rm -rf $(DIST)/pkg && mkdir -p $(DIST)/pkg && tar -C $(DIST)/pkg -xzf $(firstword $(wildcard $(DIST)/sycache-[0-9]*.tar.gz))
 	SYCACHE_BIN=$(abspath $(DIST))/pkg/opt/sycache/bin python3 test/compat/compat_test.py -v
 
-# 客户端兼容矩阵（redis-py、go-redis），源码按 test/clients/clients.lock 拉取
+# 客户端兼容矩阵（Python、Go；可选 Java、Node、.NET），源码按 test/clients/clients.lock 拉取
 clients:
 	SYCACHE_BIN=$(abspath $(DIST))/pkg/opt/sycache/bin python3 test/clients/client_matrix_test.py -v
+
+# P4 单机演示：需要先准备 sycache 二进制，默认从 /opt/sycache/bin 读取
+demo-local:
+	scripts/demo-local.sh
 
 brand:
 	scripts/brand-check.sh

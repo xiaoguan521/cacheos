@@ -15,9 +15,11 @@ import (
 
 // 保留账号（规格书 7 节 M11）：业务账号不得使用 sycache- 前缀与 default。
 const (
-	UserAgent    = "sycache-agent"
+	UserAgent    = "sycache-ops"
 	UserRepl     = "sycache-repl"
+	UserCluster  = "sycache-cluster"
 	UserSentinel = "sycache-sentinel"
+	UserReader   = "sycache-reader"
 )
 
 // AgentRules 是 agent 管理账号的权限：只有运维命令，不授予任何读取 value 的命令（CLAUDE.md「agent 与安全」）。
@@ -32,14 +34,31 @@ var AgentRules = []string{
 	"+acl|setuser", "+acl|deluser", "+acl|list", "+acl|users", "+acl|save", "+acl|whoami",
 	"+bgsave", "+bgrewriteaof", "+shutdown",
 	"+scan", "+type", "+ttl", "+pttl", "+object|encoding", "+object|freq", "+object|idletime",
+	"+restore", "+del", // migration writes and removes keys on the target; it never reads values
 }
 
 // ReplRules：从节点向主节点复制用的账号。
-var ReplRules = []string{"-@all", "+psync", "+sync", "+replconf", "+ping", "+auth"}
+var ReplRules = []string{"-@all", "+psync", "+sync", "+replconf", "+ping", "+auth", "+info"}
 
-// SentinelRules：哨兵监控与切换主节点所需的最小权限（上游 sentinel 文档列出的命令）。
-var SentinelRules = []string{"allchannels", "-@all", "+multi", "+exec", "+slaveof", "+replicaof", "+ping", "+info", "+role",
-	"+config|rewrite", "+client|setname", "+client|kill", "+subscribe", "+publish", "+script|kill", "+auth"}
+// ClusterRules：在线迁槽时由 MIGRATE 目标端认证使用；只允许写入已迁移
+// 的序列化键，不授予读取、配置或复制控制权限。
+var ClusterRules = []string{"~*", "&*", "-@all", "+restore", "+restore-asking", "+select", "+ping", "+auth"}
+
+// DataSentinelRules：数据节点上供 sycache-sentinel 监控和切换使用的最小权限。
+// SENTINEL 子命令只存在于哨兵进程，不能写入普通 server 的 ACL 文件。
+var DataSentinelRules = []string{"-@all", "+multi", "+exec", "+slaveof", "+replicaof", "+ping", "+info", "+role",
+	"+config|get", "+config|set", "+config|rewrite", "+client|setname", "+client|kill", "+subscribe", "+publish", "+script|kill", "+auth"}
+
+// SentinelRules：哨兵进程自身支持的监控与切换权限。普通 server 上的
+// CONFIG/REPLICAOF/MULTI 等命令属于 DataSentinelRules；sentinel 模式不会注册这些命令。
+var SentinelRules = []string{"allchannels", "-@all", "+ping", "+info", "+role", "+hello", "+client|setname", "+client|kill",
+	"+subscribe", "+psubscribe", "+publish", "+auth",
+	"+sentinel|get-master-addr-by-name", "+sentinel|masters", "+sentinel|master", "+sentinel|replicas", "+sentinel|sentinels", "+sentinel|myid",
+	"+sentinel|monitor", "+sentinel|remove", "+sentinel|set", "+sentinel|reset", "+sentinel|failover"}
+
+// ReaderRules 只在显式授权的 Key 查看请求中使用。它与 agent 管理账号分离，
+// 不包含 CONFIG、SCAN 或任意运维命令；默认不会把值返回给控制台。
+var ReaderRules = []string{"~*", "&*", "-@all", "+type", "+ttl", "+pttl", "+memory|usage", "+get", "+hget", "+hgetall", "+lrange", "+smembers", "+zrange", "+xrange"}
 
 var (
 	hostRe = regexp.MustCompile(`^[A-Za-z0-9.:-]{1,253}$`)
@@ -91,9 +110,13 @@ func ACLFile(st *State, masterauth string, users []*agentv1.AclUser) string {
 	var b strings.Builder
 	b.WriteString("user default off resetkeys resetchannels -@all\n")
 	fmt.Fprintf(&b, "user %s on #%s %s\n", UserAgent, sha(st.AdminPassword), strings.Join(AgentRules, " "))
+	if st.ReadPassword != "" {
+		fmt.Fprintf(&b, "user %s on #%s %s\n", UserReader, sha(st.ReadPassword), strings.Join(ReaderRules, " "))
+	}
 	if masterauth != "" {
 		fmt.Fprintf(&b, "user %s on #%s %s\n", UserRepl, sha(masterauth), strings.Join(ReplRules, " "))
-		fmt.Fprintf(&b, "user %s on #%s %s\n", UserSentinel, sha(masterauth), strings.Join(SentinelRules, " "))
+		fmt.Fprintf(&b, "user %s on #%s %s\n", UserCluster, sha(masterauth), strings.Join(ClusterRules, " "))
+		fmt.Fprintf(&b, "user %s on #%s %s\n", UserSentinel, sha(masterauth), strings.Join(DataSentinelRules, " "))
 	}
 	for _, u := range users {
 		fmt.Fprintf(&b, "user %s %s\n", u.GetName(), strings.Join(UserArgs(u)[1:], " "))
@@ -112,9 +135,13 @@ func quote(v string) string {
 // ServerConf 渲染 server 实例配置。编排字段（端口、目录、套接字、复制、集群、TLS）由 agent 生成，参数来自参数目录。
 func (l Layout) ServerConf(st *State, c *agentv1.CreateInstance) string {
 	p := st.Port
+	bind := st.BindAddress
+	if bind == "" {
+		bind = "127.0.0.1"
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "# 由 CacheOS 管理（参数版本 %s）。请在控制台修改参数；手工修改会被识别为配置漂移。\n", st.Revision)
-	fmt.Fprintf(&b, "port %d\nbind * -::*\nprotected-mode yes\n", p)
+	fmt.Fprintf(&b, "port %d\nbind %s\nprotected-mode yes\nenable-debug-command no\nenable-module-command no\n", p, bind)
 	fmt.Fprintf(&b, "unixsocket %s\nunixsocketperm 770\n", l.Socket(p))
 	fmt.Fprintf(&b, "dir %s\npidfile %s/sycache-%d.pid\nlogfile %s/sycache-%d.log\n", l.InstanceDir(p), l.RunDir, p, l.LogDir, p)
 	fmt.Fprintf(&b, "aclfile %s\n", l.ACLPath(p))
@@ -125,7 +152,7 @@ func (l Layout) ServerConf(st *State, c *agentv1.CreateInstance) string {
 		fmt.Fprintf(&b, "masteruser %s\nmasterauth %s\n", UserRepl, quote(c.GetMasterauth()))
 	}
 	if c.GetClusterEnabled() {
-		b.WriteString("cluster-enabled yes\ncluster-config-file nodes.conf\n")
+		fmt.Fprintf(&b, "cluster-enabled yes\ncluster-config-file nodes.conf\ncluster-announce-ip %s\ncluster-announce-port %d\ncluster-announce-bus-port %d\n", bind, p, p+10000)
 	}
 	if t := c.GetTls(); t != nil && len(t.GetCertPem()) > 0 {
 		d := l.InstanceDir(p)
@@ -140,15 +167,18 @@ func (l Layout) ServerConf(st *State, c *agentv1.CreateInstance) string {
 // SentinelConf 渲染哨兵配置。哨兵会自行改写此文件（记录发现的从节点与其他哨兵），之后由 SentinelOp 管理。
 func (l Layout) SentinelConf(st *State, c *agentv1.CreateInstance) string {
 	p := st.Port
+	bind := st.BindAddress
+	if bind == "" {
+		bind = "127.0.0.1"
+	}
 	var b strings.Builder
 	b.WriteString("# 由 CacheOS 管理。哨兵会改写本文件记录拓扑，请勿手工修改。\n")
-	fmt.Fprintf(&b, "port %d\nbind * -::*\nprotected-mode no\n", p)
+	fmt.Fprintf(&b, "port %d\nbind %s\nprotected-mode yes\nenable-debug-command no\nenable-module-command no\n", p, bind)
 	fmt.Fprintf(&b, "unixsocket %s\nunixsocketperm 770\n", l.Socket(p))
 	fmt.Fprintf(&b, "dir %s\npidfile %s/sycache-sentinel-%d.pid\nlogfile %s/sycache-sentinel-%d.log\n", l.InstanceDir(p), l.RunDir, p, l.LogDir, p)
 	// 哨兵不读 aclfile：账号直接写在配置中。客户端只能做服务发现；管理命令只给 agent 账号。
-	b.WriteString("user default on nopass allchannels -@all +ping +hello +auth +role +client|setname +subscribe" +
-		" +sentinel|get-master-addr-by-name +sentinel|masters +sentinel|master +sentinel|replicas +sentinel|sentinels +sentinel|myid\n")
-	fmt.Fprintf(&b, "user %s on #%s ~* &* +@all\n", UserAgent, sha(st.AdminPassword))
+	b.WriteString("user default off resetkeys resetchannels -@all\n")
+	fmt.Fprintf(&b, "user %s on #%s ~* &* %s\n", UserAgent, sha(st.AdminPassword), strings.Join(SentinelRules, " "))
 	if n := c.GetSentinelMonitorName(); n != "" {
 		fmt.Fprintf(&b, "sentinel monitor %s %s %d %d\n", n, c.GetSentinelMasterHost(), c.GetSentinelMasterPort(), c.GetSentinelQuorum())
 		if c.GetMasterauth() != "" {

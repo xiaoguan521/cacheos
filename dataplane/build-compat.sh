@@ -15,19 +15,26 @@ while getopts "o:s:" opt; do
   esac
 done
 mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
-ARCH="$(uname -m)"
+case "$(uname -m)" in
+  x86_64|amd64) ARCH=x86_64 ;;
+  aarch64|arm64) ARCH=aarch64 ;;
+  ppc64le) ARCH=ppc64le ;;
+  s390x) ARCH=s390x ;;
+  *) echo "unsupported host architecture: $(uname -m)" >&2; exit 2 ;;
+esac
 IMAGE="cacheos-build:el7-$ARCH"
 
 docker image inspect "$IMAGE" >/dev/null 2>&1 \
   || docker build -q -t "$IMAGE" --build-arg ARCH="$ARCH" "$ROOT/dataplane/build-env"
 
 MOUNTS=(-v "$ROOT:/repo:ro" -v "$OUT:/out")
-SRC_OPT=()
+BUILD_ARGS=(-S -o /out)
 if [[ -n "$SRC" ]]; then
-  MOUNTS+=(-v "$(cd "$SRC" && pwd):/upstream:ro"); SRC_OPT=(-s /upstream)
+  MOUNTS+=(-v "$(cd "$SRC" && pwd):/upstream:ro")
+  BUILD_ARGS+=(-s /upstream)
 fi
 docker run --rm "${MOUNTS[@]}" "$IMAGE" bash -euo pipefail -c "
-  /repo/dataplane/build-sycache.sh -S ${SRC_OPT[*]} -o /out
+  /repo/dataplane/build-sycache.sh ${BUILD_ARGS[*]}
   /repo/dataplane/packaging/build-rpm.sh /out/sycache-[0-9]*-$ARCH.tar.gz /out
   chown -R $(id -u):$(id -g) /out
 "

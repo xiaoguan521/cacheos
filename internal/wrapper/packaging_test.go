@@ -86,6 +86,17 @@ func TestAgentPackagingIsPresentAndHardened(t *testing.T) {
 			t.Errorf("sudoers missing %q", want)
 		}
 	}
+	for _, want := range []string{" start *", " stop *", " restart *", " switch-version *"} {
+		if !strings.Contains(sudoers, want) {
+			t.Errorf("sudoers must allow only validated wrapper verb %q", want)
+		}
+	}
+	for _, path := range []string{"dataplane/packaging/sycache-agent.sudoers", "deploy/sycache-agent.sudoers"} {
+		body := readPackaging(t, path)
+		if strings.Contains(body, "Cmnd_Alias") || strings.Contains(body, "sycache-wrapper\n") {
+			t.Errorf("%s grants the wrapper without an argument whitelist", path)
+		}
+	}
 
 	pre := readPackaging(t, "dataplane/packaging/agent-scripts/preinstall.sh")
 	for _, want := range []string{"groupadd", "useradd", "sycache-agent", "/var/lib/sycache-agent", "/opt/sycache"} {

@@ -14,7 +14,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,6 +32,7 @@ import (
 
 	agentv1 "github.com/xiaoguan521/cacheos/api/gen/agent/v1"
 	"github.com/xiaoguan521/cacheos/internal/cmdsig"
+	"github.com/xiaoguan521/cacheos/internal/console/backupstore"
 	"github.com/xiaoguan521/cacheos/internal/console/licsvc"
 	"github.com/xiaoguan521/cacheos/internal/console/pki"
 	"github.com/xiaoguan521/cacheos/internal/console/store"
@@ -42,12 +45,14 @@ import (
 type Server struct {
 	agentv1.UnimplementedAgentGatewayServer
 
-	Store  *store.Store
-	CA     *pki.CA
-	CmdKey ed25519.PrivateKey
-	Lic    *licsvc.Service
-	Audit  *audit.Logger
-	Log    *slog.Logger
+	Store       *store.Store
+	CA          *pki.CA
+	CmdKey      ed25519.PrivateKey
+	Lic         *licsvc.Service
+	Audit       *audit.Logger
+	Log         *slog.Logger
+	BackupDir   string            // 远端 RDB 备份的临时落盘目录
+	BackupStore backupstore.Store // 本地/NFS 或 S3-compatible 备份后端
 	// OnOnline 在主机上线（收到 Hello）后调用。
 	OnOnline func(hostID uint)
 	// Ready 为 false 时（高可用备控制台）拒绝所有 agent 请求，agent 会重连到 VIP 上的主控制台。
@@ -121,6 +126,16 @@ func (s *Server) NewEnrollToken(zone, by string) (string, time.Time, error) {
 var bg = context.Background()
 
 func (s *Server) q() *query.Query { return query.Use(s.Store.DB) }
+
+func (s *Server) backupStore() (backupstore.Store, error) {
+	if s.BackupStore != nil {
+		return s.BackupStore, nil
+	}
+	if s.BackupDir == "" {
+		return nil, errors.New("backup storage is not configured")
+	}
+	return backupstore.NewLocal(s.BackupDir)
+}
 
 func remoteAddr(ctx context.Context) string {
 	if p, ok := peer.FromContext(ctx); ok {
@@ -494,8 +509,53 @@ func (s *Server) FetchPackage(req *agentv1.FetchPackageRequest, stream agentv1.A
 	if s.standby() {
 		return errStandby
 	}
-	if _, err := s.hostFromPeer(stream.Context()); err != nil {
+	host, err := s.hostFromPeer(stream.Context())
+	if err != nil {
 		return err
+	}
+	if req.GetKind() == "backup" {
+		q := s.q()
+		b, err := q.Backup.WithContext(stream.Context()).Where(q.Backup.ID.Eq(req.GetName()), q.Backup.Location.Neq("local"), q.Backup.Status.Eq("done")).First()
+		if err != nil || b.Path == "" {
+			return status.Error(codes.NotFound, "backup not found")
+		}
+		// A host may download only backups belonging to a unit it is already
+		// enrolled to run; mTLS identity alone is not enough for cross-tenant
+		// backup access.
+		if n, err := q.Instance.WithContext(stream.Context()).Where(q.Instance.HostID.Eq(host.ID), q.Instance.UnitID.Eq(b.UnitID)).Count(); err != nil || n == 0 {
+			return status.Error(codes.PermissionDenied, "host is not part of the backup unit")
+		}
+		storage, err := s.backupStore()
+		if err != nil {
+			return status.Error(codes.FailedPrecondition, err.Error())
+		}
+		f, err := storage.Open(stream.Context(), b.Path)
+		if err != nil {
+			return status.Error(codes.NotFound, "backup file is unavailable")
+		}
+		defer f.Close()
+		const chunk = 256 << 10
+		buf := make([]byte, chunk)
+		var off int64
+		for {
+			n, readErr := f.Read(buf)
+			if n > 0 {
+				data := append([]byte(nil), buf[:n]...)
+				if err := stream.Send(&agentv1.PackageChunk{Data: data, Offset: off, Last: readErr == io.EOF}); err != nil {
+					return err
+				}
+				off += int64(n)
+			}
+			if readErr == io.EOF {
+				if off == 0 {
+					return stream.Send(&agentv1.PackageChunk{Offset: 0, Last: true})
+				}
+				return nil
+			}
+			if readErr != nil {
+				return readErr
+			}
+		}
 	}
 	p := s.q().EnginePackage
 	pkg, err := p.WithContext(stream.Context()).Where(p.Name.Eq(req.Name), p.Version.Eq(req.Version), p.Arch.Eq(req.Arch)).First()
@@ -512,4 +572,137 @@ func (s *Server) FetchPackage(req *agentv1.FetchPackageRequest, stream agentv1.A
 			return nil
 		}
 	}
+}
+
+// UploadBackup receives a bounded, agent-produced RDB stream.  The first
+// chunk carries the logical backup id and port; the final chunk carries the
+// whole-file hash.  The server never accepts a caller-provided filesystem path.
+func (s *Server) UploadBackup(stream agentv1.AgentGateway_UploadBackupServer) error {
+	if s.standby() {
+		return errStandby
+	}
+	host, err := s.hostFromPeer(stream.Context())
+	if err != nil {
+		return err
+	}
+	var id string
+	var port uint32
+	var tmp *os.File
+	var path string
+	var storage backupstore.Store
+	h := sha256.New()
+	var size int64
+	cleanup := func() {
+		if tmp != nil {
+			_ = tmp.Close()
+		}
+		if path != "" {
+			_ = os.Remove(path)
+		}
+	}
+	defer func() {
+		if tmp != nil {
+			_ = tmp.Close()
+		}
+	}()
+	for {
+		chunk, err := stream.Recv()
+		if err == io.EOF {
+			cleanup()
+			return status.Error(codes.InvalidArgument, "backup stream ended before the last chunk")
+		}
+		if err != nil {
+			cleanup()
+			return err
+		}
+		if tmp == nil {
+			id, port = chunk.GetBackupId(), chunk.GetPort()
+			if len(id) == 0 || len(id) > 64 || strings.ContainsAny(id, "/\\\r\n") || port < 1024 || port > 65535 {
+				return status.Error(codes.InvalidArgument, "invalid backup metadata")
+			}
+			storage, err = s.backupStore()
+			if err != nil {
+				return status.Error(codes.FailedPrecondition, "backup storage is not configured")
+			}
+			if err := os.MkdirAll(s.BackupDir, 0o700); err != nil {
+				return status.Error(codes.Internal, "create backup storage")
+			}
+			tmp, err = os.CreateTemp(s.BackupDir, ".upload-*.rdb")
+			if err != nil {
+				return status.Error(codes.Internal, "open backup storage")
+			}
+			path = tmp.Name()
+		}
+		if len(chunk.GetData()) > 512<<10 {
+			cleanup()
+			return status.Error(codes.InvalidArgument, "backup chunk is too large")
+		}
+		if _, err := tmp.Write(chunk.GetData()); err != nil {
+			cleanup()
+			return err
+		}
+		h.Write(chunk.GetData())
+		size += int64(len(chunk.GetData()))
+		if !chunk.GetLast() {
+			continue
+		}
+		got := hex.EncodeToString(h.Sum(nil))
+		if want := chunk.GetSha256(); want != "" && !strings.EqualFold(want, got) {
+			cleanup()
+			return status.Error(codes.DataLoss, "backup sha256 mismatch")
+		}
+		if err := tmp.Close(); err != nil {
+			cleanup()
+			return err
+		}
+		tmp = nil
+		q := s.q()
+		in, err := q.Instance.WithContext(stream.Context()).Where(q.Instance.HostID.Eq(host.ID), q.Instance.Port.Eq(port)).First()
+		if err != nil {
+			cleanup()
+			return status.Error(codes.NotFound, "instance for backup not found")
+		}
+		ref, err := storage.PutFile(stream.Context(), id, path, size, got)
+		if err != nil {
+			cleanup()
+			return status.Error(codes.Internal, "store backup: "+err.Error())
+		}
+		path = ""
+		b := &store.Backup{ID: id, UnitID: in.UnitID, InstanceID: in.ID, Location: storage.Kind(), Path: ref, Size: size, SHA256: got, Status: "done", Trigger: "manual", CreatedBy: "agent:" + host.Name, CreatedAt: time.Now()}
+		if err := q.Backup.WithContext(stream.Context()).Save(b); err != nil {
+			_ = storage.Delete(stream.Context(), ref)
+			return status.Error(codes.Internal, "record backup")
+		}
+		return stream.SendAndClose(&agentv1.UploadResult{Size: size, Sha256: got})
+	}
+}
+
+// RemoveBackup deletes the stored bytes for a retention-expired backup. Local
+// agent backups are removed through the typed command; remote console/S3
+// backups are removed through the configured storage backend.
+func (s *Server) RemoveBackup(ctx context.Context, b *store.Backup) error {
+	if b == nil {
+		return errors.New("backup is nil")
+	}
+	if b.Location != "local" {
+		storage, err := s.backupStore()
+		if err != nil {
+			return err
+		}
+		return storage.Delete(ctx, b.Path)
+	}
+	in, err := s.q().Instance.WithContext(ctx).Where(s.q().Instance.ID.Eq(b.InstanceID)).First()
+	if err != nil {
+		// The source instance may already have been deleted; the local file is
+		// then unreachable through the agent and the metadata can still expire.
+		return nil
+	}
+	r, err := s.Send(ctx, in.HostID, &agentv1.ServerMessage{Body: &agentv1.ServerMessage_Backup{Backup: &agentv1.Backup{Port: in.Port, BackupId: b.ID, Delete: true}}}, time.Minute)
+	if err != nil {
+		return err
+	}
+	if r.Status != agentv1.CommandResult_OK {
+		return fmt.Errorf("delete backup: %s", r.Message)
+	}
+	return nil
 }

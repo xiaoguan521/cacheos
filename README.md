@@ -1,7 +1,7 @@
 # CacheOS（缓存中间件）
 
-兼容 Redis 协议的国产化分布式缓存中间件：数据面 **sycache** 基于 Valkey 源码只改名、不改逻辑；
-控制面提供 Go + Vue 控制台、主机 agent 与安全 wrapper，把「建实例 → 改参数 → 主备切换 → 升级」变成产品能力。
+兼容 Redis 协议的国产化分布式缓存中间件：数据面 **sycache** 基于 Valkey 源码，保留协议与数据格式，仅做品牌改名并补充客户端发现兼容元数据；
+控制面提供 Go + Vue 控制台、主机 agent 与安全 wrapper，把「建实例 → 改参数 → 扩缩容 → 主备切换 → 备份恢复 → 升级」变成产品能力。
 业务方的 Jedis、Lettuce、redis-py、go-redis 等客户端不改代码即可接入。
 
 - 设计规格书：[CacheOS 缓存中间件商业方案 v1.0](https://claude.ai/artifact/EXSjwWRU3s5Dsyfh221yNV)（索引与进度见 [`docs/spec/`](docs/spec/README.md)）
@@ -47,14 +47,31 @@ make compat                                 # 行为等价测试；加 VALKEY_BI
 make ci          UPSTREAM_SRC=/tmp/valkey   # 提交前的完整校验（含版本一致性、上游互通、客户端矩阵）
 make compat-build                           # glibc 2.17 容器中兼容构建，产出 tar.gz / RPM / DEB（需要 docker）
 
+# GitHub Actions：标签 v* 或 Actions → binary-packages 手动触发，
+# 为 x86_64 / aarch64 生成可交付的 tar.gz、RPM、DEB、调试符号包、SBOM、BUILDINFO 与 SHA256SUMS
+# （工作流不需要本机执行，产物在 Actions Artifacts 中保留 90 天）
+
 # 控制面 / agent
 go test ./...
 cd web && pnpm install --offline && pnpm run build
 cd .. && node web/e2e/ui-acceptance.cjs       # 需要已初始化控制台与 Playwright
 
+# P4 单机数据面演示：6 个集群实例 + 3 个哨兵；仅清理脚本自己创建的临时目录
+SYCACHE_BIN=/opt/sycache/bin scripts/demo-local.sh
+
 # Linux 部署（需 root；agent 先 enroll，console 先配置 env）
 deploy/install-agent.sh <sycache-agent> <sycache-wrapper>
 deploy/install-console.sh <sycache-console> [console.env]
+
+# 备份存储：默认是控制台 data/backups；指定 NFS 挂载目录即可使用 NFS。
+CACHEOS_BACKUP_DIR=/mnt/nfs/cacheos-backups
+# S3-compatible（配置 endpoint 后启用，默认 path-style；密钥只从环境读取）
+CACHEOS_BACKUP_S3_ENDPOINT=https://s3.example.com
+CACHEOS_BACKUP_S3_BUCKET=cacheos-backups
+CACHEOS_BACKUP_S3_REGION=cn-east-1
+CACHEOS_BACKUP_S3_ACCESS_KEY=...
+CACHEOS_BACKUP_S3_SECRET_KEY=...
+CACHEOS_BACKUP_S3_PREFIX=cacheos
 ```
 
 修改改名规则后执行 `make patch UPSTREAM_SRC=…` 重新生成 patch，并把规则与 patch 一起提交。

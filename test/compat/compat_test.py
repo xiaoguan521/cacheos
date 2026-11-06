@@ -106,6 +106,7 @@ class Cluster:
     def __init__(self):
         self.dir = tempfile.mkdtemp(prefix="sycache-compat-")
         self.procs = []
+        self.logs = []
 
     def start(self, binary, port, *extra, conf_lines=()):
         d = os.path.join(self.dir, str(port))
@@ -116,6 +117,7 @@ class Cluster:
             for line in conf_lines:
                 f.write(line + "\n")
         log = open(os.path.join(d, "out.log"), "w")
+        self.logs.append(log)
         p = subprocess.Popen([binary, conf, *extra], stdout=log, stderr=subprocess.STDOUT, cwd=d)
         self.procs.append(p)
         wait_until(lambda: Conn(port).cmd("PING") == "PONG", timeout=10, what=f"{binary} on {port}")
@@ -129,6 +131,8 @@ class Cluster:
                 p.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 p.kill()
+        for log in self.logs:
+            log.close()
         shutil.rmtree(self.dir, ignore_errors=True)
 
 
@@ -261,6 +265,7 @@ def make_certs(d):
         subprocess.run(["openssl", *args], cwd=d, check=True, capture_output=True)
     run("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=CacheOS Test CA",
         "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+        "-addext", "subjectKeyIdentifier=hash",
         "-keyout", "ca.key", "-out", "ca.crt")
     for name in ("server", "client"):
         run("req", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=localhost", "-keyout", f"{name}.key",
@@ -268,6 +273,8 @@ def make_certs(d):
         with open(os.path.join(d, f"{name}.ext"), "w") as f:
             f.write("subjectAltName=DNS:localhost,IP:127.0.0.1\n"
                     "keyUsage=critical,digitalSignature,keyEncipherment\n"
+                    "authorityKeyIdentifier=keyid,issuer\n"
+                    "subjectKeyIdentifier=hash\n"
                     "extendedKeyUsage=serverAuth,clientAuth\n")
         run("x509", "-req", "-in", f"{name}.csr", "-CA", "ca.crt", "-CAkey", "ca.key", "-CAcreateserial",
             "-days", "1", "-extfile", f"{name}.ext", "-out", f"{name}.crt")
@@ -298,6 +305,7 @@ class TlsTest(CompatBase):
             for line in [*self.tls_conf(c, port), *extra]:
                 f.write(line + "\n")
         log = open(os.path.join(d, "out.log"), "w")
+        self.env.logs.append(log)
         self.env.procs.append(subprocess.Popen([sy("sycache-server"), conf], stdout=log, stderr=subprocess.STDOUT))
         wait_until(lambda: Conn(port, tls=self.client_ctx(c)).cmd("PING") == "PONG", timeout=10, what="tls server")
 

@@ -80,10 +80,29 @@ func Dial(ctx context.Context, socket, user, pass string) (*Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	cn := New(c)
+	return auth(New(c), ctx, user, pass)
+}
+
+// DialTCP 供受控的数据迁移任务访问外部 RESP 兼容源端。调用方
+// 必须先在控制台完成权限与二次认证；agent 仍只执行类型化的迁移命令，
+// 不接受任意命令或任意文件路径。
+func DialTCP(ctx context.Context, address, user, pass string) (*Conn, error) {
+	var d net.Dialer
+	c, err := d.DialContext(ctx, "tcp", address)
+	if err != nil {
+		return nil, err
+	}
+	return auth(New(c), ctx, user, pass)
+}
+
+func auth(cn *Conn, ctx context.Context, user, pass string) (*Conn, error) {
 	if pass != "" {
-		if _, err := cn.Do(ctx, "AUTH", user, pass); err != nil {
-			c.Close()
+		args := []string{"AUTH", pass}
+		if user != "" {
+			args = []string{"AUTH", user, pass}
+		}
+		if _, err := cn.Do(ctx, args...); err != nil {
+			cn.Close()
 			return nil, fmt.Errorf("auth: %w", err)
 		}
 	}

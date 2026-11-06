@@ -31,7 +31,9 @@ if [[ $# -ge 1 ]]; then
   W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
   tar -C "$W" -xzf "$1" ./opt/sycache/share/BUILDINFO ./opt/sycache/share/sbom.spdx.json
   # shellcheck disable=SC1091
-  source <(sed 's/^/BI_/' "$W/opt/sycache/share/BUILDINFO")
+  BI_FILE="$W/buildinfo.vars"
+  sed 's/^/BI_/' "$W/opt/sycache/share/BUILDINFO" > "$BI_FILE"
+  source "$BI_FILE"
   [[ "$BI_product_version" == "$current" ]] || fail "BUILDINFO product_version $BI_product_version != $current"
   [[ "$BI_upstream_version" == "$UPSTREAM_VERSION" ]] || fail "BUILDINFO upstream_version mismatch"
   [[ "$BI_upstream_commit" == "$UPSTREAM_COMMIT" ]] || fail "BUILDINFO upstream_commit mismatch"

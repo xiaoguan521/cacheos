@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"regexp"
 	"sort"
@@ -16,6 +18,7 @@ import (
 	agentv1 "github.com/xiaoguan521/cacheos/api/gen/agent/v1"
 	"github.com/xiaoguan521/cacheos/internal/console/orch"
 	"github.com/xiaoguan521/cacheos/internal/console/store"
+	"github.com/xiaoguan521/cacheos/internal/license"
 	"github.com/xiaoguan521/cacheos/internal/paramcat"
 )
 
@@ -202,6 +205,7 @@ func (s *Server) revokeHost(c *gin.Context) {
 }
 
 var versionRe = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.]+)?$`)
+var backupCronRe = regexp.MustCompile(`^(?:[01][0-9]|2[0-3]):[0-5][0-9]$`)
 
 // switchVersion 切换主机的数据面版本（current 软链）；实例在下次（滚动）重启时使用新版本（规格书 6.4）。
 func (s *Server) switchVersion(c *gin.Context) {
@@ -221,15 +225,29 @@ func (s *Server) switchVersion(c *gin.Context) {
 		failErr(c, err)
 		return
 	}
-	installed := false
+	installed := h.EngineCurrent == req.Version
 	for _, v := range strings.Split(h.EngineVersions, ",") {
-		installed = installed || v == req.Version
+		installed = installed || strings.TrimSpace(v) == req.Version
 	}
+	switchReq := &agentv1.SwitchVersion{Version: req.Version}
 	if !installed {
-		fail(c, http.StatusConflict, "NOT_INSTALLED", "该版本未安装在此主机上（先安装对应的 sycache 软件包）")
-		return
+		arch := h.Arch
+		if arch == "x86_64" {
+			arch = "amd64"
+		} else if arch == "aarch64" {
+			arch = "arm64"
+		}
+		pq := s.q().EnginePackage
+		pkg, pkgErr := pq.WithContext(c.Request.Context()).Where(pq.Name.Eq("sycache"), pq.Version.Eq(req.Version), pq.Arch.Eq(arch)).First()
+		if pkgErr != nil {
+			fail(c, http.StatusConflict, "NOT_INSTALLED", "该版本未安装在此主机上，且版本库没有匹配架构的签名包")
+			return
+		}
+		switchReq.Arch = pkg.Arch
+		switchReq.Sha256 = pkg.SHA256
+		switchReq.VendorSignature = []byte(pkg.Sig)
 	}
-	r, err := s.GW.Send(c.Request.Context(), id, &agentv1.ServerMessage{Body: &agentv1.ServerMessage_SwitchVersion{SwitchVersion: &agentv1.SwitchVersion{Version: req.Version}}}, time.Minute)
+	r, err := s.GW.Send(c.Request.Context(), id, &agentv1.ServerMessage{Body: &agentv1.ServerMessage_SwitchVersion{SwitchVersion: switchReq}}, time.Minute)
 	if err != nil {
 		failErr(c, err)
 		return
@@ -239,7 +257,18 @@ func (s *Server) switchVersion(c *gin.Context) {
 		return
 	}
 	hq := s.q().Host
-	if _, err := hq.WithContext(c.Request.Context()).Where(hq.ID.Eq(id)).Update(hq.EngineCurrent, req.Version); err != nil {
+	versions := h.EngineVersions
+	if !installed {
+		items := make([]string, 0, 4)
+		for _, v := range strings.Split(versions, ",") {
+			if v = strings.TrimSpace(v); v != "" {
+				items = append(items, v)
+			}
+		}
+		items = append(items, req.Version)
+		versions = strings.Join(items, ",")
+	}
+	if _, err := hq.WithContext(c.Request.Context()).Where(hq.ID.Eq(id)).UpdateSimple(hq.EngineCurrent.Value(req.Version), hq.EngineVersions.Value(versions)); err != nil {
 		failErr(c, err)
 		return
 	}
@@ -468,8 +497,12 @@ func (s *Server) createUnit(c *gin.Context) {
 		failErr(c, err)
 		return
 	}
-	if spec.Mode == "sentinel" && !s.Lic.Snapshot().Feature("sentinel") || spec.Mode == "cluster" && !s.Lic.Snapshot().Feature("cluster") {
+	if spec.Mode == "sentinel" && !s.Lic.Snapshot().Feature(license.FeatureSentinel) || spec.Mode == "cluster" && !s.Lic.Snapshot().Feature(license.FeatureCluster) {
 		fail(c, http.StatusPaymentRequired, "LICENSE_FEATURE_DENIED", "当前授权不包含 "+spec.Mode+" 形态")
+		return
+	}
+	if spec.TLS && !s.Lic.Snapshot().Feature(license.FeatureTLS) {
+		fail(c, http.StatusPaymentRequired, "LICENSE_FEATURE_DENIED", "当前授权不包含业务链路 TLS")
 		return
 	}
 	u, op, err := s.Orch.CreateUnit(spec, c.GetString("user"))
@@ -534,6 +567,95 @@ func (s *Server) failover(c *gin.Context) {
 		return
 	}
 	s.audit(c, "unit.failover", "unit", fmt.Sprint(id), gin.H{"operation": op.ID})
+	c.JSON(http.StatusAccepted, gin.H{"operation": op})
+}
+
+func (s *Server) upgradeUnit(c *gin.Context) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	var req orch.EngineUpgrade
+	if err := c.ShouldBindJSON(&req); err != nil {
+		failErr(c, err)
+		return
+	}
+	op, err := s.Orch.UpgradeUnit(id, req, c.GetString("user"))
+	if err != nil {
+		failErr(c, err)
+		return
+	}
+	s.audit(c, "unit.upgrade", "unit", fmt.Sprint(id), gin.H{"version": req.Version, "switchover": req.Switchover, "operation": op.ID})
+	c.JSON(http.StatusAccepted, gin.H{"operation": op})
+}
+
+func (s *Server) scaleUnit(c *gin.Context) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	var req orch.ScaleSpec
+	if err := c.ShouldBindJSON(&req); err != nil {
+		failErr(c, err)
+		return
+	}
+	u, err := store.First[store.Unit](s.Store, id)
+	if err != nil {
+		failErr(c, err)
+		return
+	}
+	if u.Mode == store.ModeCluster && !s.Lic.Snapshot().Feature(license.FeatureCluster) {
+		fail(c, http.StatusPaymentRequired, "LICENSE_FEATURE_DENIED", "当前授权不包含集群扩缩容")
+		return
+	}
+	op, err := s.Orch.ScaleUnit(id, req, c.GetString("user"))
+	if err != nil {
+		failErr(c, err)
+		return
+	}
+	audit := gin.H{"operation": op.ID}
+	if req.Replicas != nil {
+		audit["replicas"] = *req.Replicas
+	}
+	if req.Shards != nil {
+		audit["shards"] = *req.Shards
+	}
+	s.audit(c, "unit.scale", "unit", fmt.Sprint(id), audit)
+	c.JSON(http.StatusAccepted, gin.H{"operation": op})
+}
+
+func (s *Server) sentinelOperation(c *gin.Context) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	if !s.Lic.Snapshot().Feature(license.FeatureSentinel) {
+		fail(c, http.StatusPaymentRequired, "LICENSE_FEATURE_DENIED", "当前授权不包含哨兵管理")
+		return
+	}
+	var req orch.SentinelChange
+	if err := c.ShouldBindJSON(&req); err != nil {
+		failErr(c, err)
+		return
+	}
+	op, err := s.Orch.SentinelOp(id, req, c.GetString("user"))
+	if err != nil {
+		failErr(c, err)
+		return
+	}
+	audit := gin.H{"operation": op.ID, "operation_type": req.Operation, "master_name": req.MasterName}
+	if req.Options != nil {
+		masked := map[string]string{}
+		for key, value := range req.Options {
+			if key == "auth-pass" {
+				masked[key] = "[redacted]"
+			} else {
+				masked[key] = value
+			}
+		}
+		audit["options"] = masked
+	}
+	s.audit(c, "unit.sentinel", "unit", fmt.Sprint(id), audit)
 	c.JSON(http.StatusAccepted, gin.H{"operation": op})
 }
 
@@ -647,6 +769,741 @@ func (s *Server) unitMetrics(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"instances": out})
 }
 
+func (s *Server) unitInstance(c *gin.Context) (*store.Unit, *store.Instance, bool) {
+	id, ok := parseID(c)
+	if !ok {
+		return nil, nil, false
+	}
+	u, err := store.First[store.Unit](s.Store, id)
+	if err != nil {
+		failErr(c, err)
+		return nil, nil, false
+	}
+	iq := s.q().Instance
+	if raw := c.Query("instance_id"); raw != "" {
+		instanceID, err := strconv.ParseUint(raw, 10, 32)
+		if err != nil {
+			fail(c, http.StatusBadRequest, "BAD_INSTANCE", "invalid instance_id")
+			return nil, nil, false
+		}
+		in, err := iq.WithContext(c.Request.Context()).Where(iq.ID.Eq(uint(instanceID)), iq.UnitID.Eq(id)).First()
+		if err != nil {
+			failErr(c, err)
+			return nil, nil, false
+		}
+		return u, in, true
+	}
+	ins, err := iq.WithContext(c.Request.Context()).Where(iq.UnitID.Eq(id), iq.Kind.Eq("server")).Order(iq.ID).Find()
+	if err != nil || len(ins) == 0 {
+		failErr(c, store.ErrNotFound)
+		return nil, nil, false
+	}
+	for _, in := range ins {
+		if in.Role == "master" || (in.Role == "" && in.Desired == "master") {
+			return u, in, true
+		}
+	}
+	return u, ins[0], true
+}
+
+func (s *Server) diagnose(c *gin.Context) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	if _, err := store.First[store.Unit](s.Store, id); err != nil {
+		failErr(c, err)
+		return
+	}
+	kind := map[string]agentv1.Diagnose_Kind{"slowlog": agentv1.Diagnose_SLOWLOG, "latency": agentv1.Diagnose_LATENCY, "memory": agentv1.Diagnose_MEMORY, "bigkeys": agentv1.Diagnose_BIGKEYS, "clients": agentv1.Diagnose_CLIENTS, "rdb_analyze": agentv1.Diagnose_RDB_ANALYZE}[strings.ToLower(c.DefaultQuery("kind", "memory"))]
+	if kind == agentv1.Diagnose_KIND_UNSPECIFIED {
+		fail(c, http.StatusBadRequest, "BAD_DIAGNOSE", "kind must be slowlog, latency, memory, clients or rdb_analyze")
+		return
+	}
+	if kind == agentv1.Diagnose_RDB_ANALYZE && !s.Lic.Snapshot().Feature(license.FeatureRDBAnalyze) {
+		fail(c, http.StatusPaymentRequired, "LICENSE_FEATURE_DENIED", "当前授权不包含 RDB 离线分析")
+		return
+	}
+	sample, _ := strconv.Atoi(c.DefaultQuery("sample", "100"))
+	if sample <= 0 || sample > 1000 {
+		sample = 100
+	}
+
+	// An explicit instance_id preserves the single-instance response shape.
+	// Without it, M7 aggregates the diagnostic across every data instance in
+	// the deployment unit so slowlog/latency/client reports are not biased
+	// toward whichever master happens to be listed first.
+	iq := s.q().Instance
+	var instances []*store.Instance
+	if raw := c.Query("instance_id"); raw != "" {
+		instanceID, err := strconv.ParseUint(raw, 10, 32)
+		if err != nil {
+			fail(c, http.StatusBadRequest, "BAD_INSTANCE", "invalid instance_id")
+			return
+		}
+		in, err := iq.WithContext(c.Request.Context()).Where(iq.ID.Eq(uint(instanceID)), iq.UnitID.Eq(id), iq.Kind.Eq("server")).First()
+		if err != nil {
+			failErr(c, err)
+			return
+		}
+		instances = []*store.Instance{in}
+	} else {
+		var err error
+		instances, err = iq.WithContext(c.Request.Context()).Where(iq.UnitID.Eq(id), iq.Kind.Eq("server")).Order(iq.ID).Find()
+		if err != nil || len(instances) == 0 {
+			if err == nil {
+				err = store.ErrNotFound
+			}
+			failErr(c, err)
+			return
+		}
+	}
+
+	type instanceReport struct {
+		InstanceID uint   `json:"instance_id"`
+		HostID     uint   `json:"host_id"`
+		Port       uint32 `json:"port"`
+		Role       string `json:"role,omitempty"`
+		Report     any    `json:"report,omitempty"`
+		Error      string `json:"error,omitempty"`
+	}
+	reports := make([]instanceReport, 0, len(instances))
+	for _, in := range instances {
+		r, err := s.GW.Send(c.Request.Context(), in.HostID, &agentv1.ServerMessage{Body: &agentv1.ServerMessage_Diagnose{Diagnose: &agentv1.Diagnose{Port: in.Port, What: kind, Sample: uint32(sample)}}}, time.Minute)
+		item := instanceReport{InstanceID: in.ID, HostID: in.HostID, Port: in.Port, Role: in.Role}
+		if err != nil {
+			item.Error = err.Error()
+			reports = append(reports, item)
+			continue
+		}
+		if r.Status != agentv1.CommandResult_OK {
+			item.Error = r.Message
+			if item.Error == "" {
+				item.Error = r.ErrorCode
+			}
+			reports = append(reports, item)
+			continue
+		}
+		var payload struct {
+			Report any `json:"report"`
+		}
+		if len(r.Payload) > 0 && json.Unmarshal(r.Payload, &payload) == nil {
+			item.Report = payload.Report
+		} else {
+			item.Report = gin.H{"raw": string(r.Payload)}
+		}
+		reports = append(reports, item)
+	}
+
+	s.audit(c, "unit.diagnose", "unit", fmt.Sprint(id), map[string]any{"kind": kind.String(), "instances": len(instances)})
+	if c.Query("instance_id") != "" {
+		c.JSON(http.StatusOK, gin.H{"kind": kind.String(), "sample": sample, "report": reports[0].Report, "error": reports[0].Error})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"kind": kind.String(), "sample": sample, "instances": reports})
+}
+
+func (s *Server) browseKeys(c *gin.Context) {
+	u, in, ok := s.unitInstance(c)
+	if !ok {
+		return
+	}
+	reveal := c.Query("reveal") == "1" || strings.EqualFold(c.Query("reveal"), "true")
+	if reveal {
+		user, err := store.First[store.User](s.Store, c.GetUint("uid"))
+		if err != nil || !user.KeyReveal {
+			fail(c, http.StatusForbidden, "KEY_REVEAL_DENIED", "查看 Key 明文需要单独授权")
+			return
+		}
+	}
+	count, _ := strconv.Atoi(c.DefaultQuery("count", "100"))
+	if count <= 0 || count > 200 {
+		count = 100
+	}
+	r, err := s.GW.Send(c.Request.Context(), in.HostID, &agentv1.ServerMessage{Body: &agentv1.ServerMessage_Keys{Keys: &agentv1.BrowseKeys{Port: in.Port, Pattern: c.DefaultQuery("pattern", "app:*"), Cursor: c.DefaultQuery("cursor", "0"), Count: uint32(count), Key: c.Query("key"), Reveal: reveal}}}, time.Minute)
+	if err != nil {
+		failErr(c, err)
+		return
+	}
+	if r.Status != agentv1.CommandResult_OK {
+		fail(c, http.StatusConflict, r.ErrorCode, r.Message)
+		return
+	}
+	var payload any = gin.H{}
+	if len(r.Payload) > 0 && json.Unmarshal(r.Payload, &payload) != nil {
+		payload = gin.H{"raw": string(r.Payload)}
+	}
+	s.audit(c, "unit.keys.browse", "instance", fmt.Sprint(in.ID), map[string]any{"pattern": c.Query("pattern"), "reveal": reveal, "unit": u.ID})
+	c.JSON(http.StatusOK, payload)
+}
+
+func (s *Server) listBackups(c *gin.Context) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	bq := s.q().Backup
+	rows, err := bq.WithContext(c.Request.Context()).Where(bq.UnitID.Eq(id)).Order(bq.CreatedAt.Desc()).Limit(100).Find()
+	if err != nil {
+		failErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, rows)
+}
+
+func (s *Server) getBackupPolicy(c *gin.Context) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	p, err := store.First[store.BackupPolicy](s.Store, id)
+	if err == store.ErrNotFound {
+		c.JSON(http.StatusOK, store.BackupPolicy{UnitID: id, Enabled: false, Cron: "02:00", KeepDays: 7})
+		return
+	}
+	if err != nil {
+		failErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, p)
+}
+
+func (s *Server) saveBackupPolicy(c *gin.Context) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	var req store.BackupPolicy
+	if err := c.ShouldBindJSON(&req); err != nil {
+		failErr(c, err)
+		return
+	}
+	if !backupCronRe.MatchString(req.Cron) {
+		fail(c, http.StatusBadRequest, "BAD_CRON", "执行时间必须是 HH:MM（控制台时区）")
+		return
+	}
+	if req.KeepDays < 1 || req.KeepDays > 3650 {
+		fail(c, http.StatusBadRequest, "BAD_RETENTION", "保留天数必须在 1 到 3650 之间")
+		return
+	}
+	if req.Upload && !s.Lic.Snapshot().Feature(license.FeatureRemoteBkp) {
+		fail(c, http.StatusPaymentRequired, "LICENSE_FEATURE_DENIED", "当前授权不包含远端备份")
+		return
+	}
+	req.UnitID = id
+	req.UpdatedBy = c.GetString("user")
+	req.UpdatedAt = time.Now()
+	if err := s.q().BackupPolicy.WithContext(c.Request.Context()).Save(&req); err != nil {
+		failErr(c, err)
+		return
+	}
+	s.audit(c, "unit.backup_policy.save", "unit", fmt.Sprint(id), gin.H{"enabled": req.Enabled, "cron": req.Cron, "keep_days": req.KeepDays, "upload": req.Upload})
+	c.JSON(http.StatusOK, req)
+}
+
+func (s *Server) createBackup(c *gin.Context) {
+	var req struct {
+		Upload     bool `json:"upload"`
+		InstanceID uint `json:"instance_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil && err.Error() != "EOF" {
+		failErr(c, err)
+		return
+	}
+	var in *store.Instance
+	if req.InstanceID > 0 {
+		id, ok := parseID(c)
+		if !ok {
+			return
+		}
+		iq := s.q().Instance
+		var err error
+		in, err = iq.WithContext(c.Request.Context()).Where(iq.ID.Eq(req.InstanceID), iq.UnitID.Eq(id), iq.Kind.Eq("server")).First()
+		if err != nil {
+			failErr(c, err)
+			return
+		}
+	} else {
+		var ok bool
+		_, in, ok = s.unitInstance(c)
+		if !ok {
+			return
+		}
+	}
+	if req.Upload && !s.Lic.Snapshot().Feature(license.FeatureRemoteBkp) {
+		fail(c, http.StatusPaymentRequired, "LICENSE_FEATURE_DENIED", "当前授权不包含远端备份")
+		return
+	}
+	backupID := fmt.Sprintf("b-%d", time.Now().UnixNano())
+	r, err := s.GW.Send(c.Request.Context(), in.HostID, &agentv1.ServerMessage{Body: &agentv1.ServerMessage_Backup{Backup: &agentv1.Backup{Port: in.Port, BackupId: backupID, Upload: req.Upload}}}, 3*time.Minute)
+	if err != nil {
+		failErr(c, err)
+		return
+	}
+	if r.Status != agentv1.CommandResult_OK {
+		fail(c, http.StatusConflict, r.ErrorCode, r.Message)
+		return
+	}
+	var meta struct {
+		Size   int64  `json:"size"`
+		SHA256 string `json:"sha256"`
+	}
+	_ = json.Unmarshal(r.Payload, &meta)
+	if !req.Upload {
+		row := &store.Backup{ID: backupID, UnitID: in.UnitID, InstanceID: in.ID, Location: "local", Size: meta.Size, SHA256: meta.SHA256, Status: "done", Trigger: "manual", CreatedBy: c.GetString("user"), CreatedAt: time.Now()}
+		if err := s.q().Backup.WithContext(c.Request.Context()).Create(row); err != nil {
+			failErr(c, err)
+			return
+		}
+	}
+	s.audit(c, "unit.backup.create", "backup", backupID, map[string]any{"unit_id": in.UnitID, "instance_id": in.ID, "upload": req.Upload, "size": meta.Size, "sha256": meta.SHA256})
+	location := "local"
+	if req.Upload {
+		location = "console"
+		if s.GW.BackupStore != nil {
+			location = s.GW.BackupStore.Kind()
+		}
+	}
+	c.JSON(http.StatusAccepted, gin.H{"backup_id": backupID, "size": meta.Size, "sha256": meta.SHA256, "location": location})
+}
+
+func (s *Server) restoreBackup(c *gin.Context) {
+	backupID := c.Param("backup_id")
+	bq := s.q().Backup
+	b, err := bq.WithContext(c.Request.Context()).Where(bq.ID.Eq(backupID)).First()
+	if err != nil {
+		failErr(c, store.ErrNotFound)
+		return
+	}
+	var req struct {
+		InstanceID uint `json:"instance_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil && err.Error() != "EOF" {
+		failErr(c, err)
+		return
+	}
+	targetID := b.InstanceID
+	if req.InstanceID > 0 {
+		targetID = req.InstanceID
+	}
+	in, err := store.First[store.Instance](s.Store, targetID)
+	if err != nil {
+		failErr(c, err)
+		return
+	}
+	if in.UnitID != b.UnitID {
+		fail(c, http.StatusBadRequest, "BAD_INSTANCE", "目标实例不属于该部署单元")
+		return
+	}
+	fromConsole := b.Location != "local"
+	if !fromConsole {
+		source, sourceErr := store.First[store.Instance](s.Store, b.InstanceID)
+		if sourceErr != nil || source.HostID != in.HostID {
+			fail(c, http.StatusConflict, "LOCAL_BACKUP_HOST", "本地备份只能恢复到同一主机；请先将备份上传到控制台")
+			return
+		}
+	}
+	r, err := s.GW.Send(c.Request.Context(), in.HostID, &agentv1.ServerMessage{Body: &agentv1.ServerMessage_Restore{Restore: &agentv1.Restore{Port: in.Port, BackupId: backupID, FromConsole: fromConsole, Sha256: b.SHA256}}}, 3*time.Minute)
+	if err != nil {
+		failErr(c, err)
+		return
+	}
+	if r.Status != agentv1.CommandResult_OK {
+		fail(c, http.StatusConflict, r.ErrorCode, r.Message)
+		return
+	}
+	s.audit(c, "unit.backup.restore", "backup", backupID, map[string]any{"unit_id": b.UnitID, "instance_id": b.InstanceID})
+	c.JSON(http.StatusAccepted, gin.H{"backup_id": backupID, "restored": true})
+}
+
+// ---------- 在线迁移（M9） ----------
+
+var migrationPatternRe = regexp.MustCompile(`^(?:\*|[A-Za-z0-9:_.\/-]+\*)$`)
+
+type migrationRequest struct {
+	SourceAddress  string `json:"source_address"`
+	SourceUser     string `json:"source_user"`
+	SourcePassword string `json:"source_password"`
+	Pattern        string `json:"pattern"`
+	Mode           string `json:"mode"` // full | full_incremental
+	Batch          uint32 `json:"batch"`
+	MaxPasses      uint32 `json:"max_passes"`
+	SourceQuiesced bool   `json:"source_quiesced"`
+	InstanceID     uint   `json:"instance_id"`
+}
+
+type migrationMeta struct {
+	InstanceID     uint   `json:"instance_id"`
+	SourceUser     string `json:"source_user"`
+	Pattern        string `json:"pattern"`
+	Mode           string `json:"mode"`
+	Batch          uint32 `json:"batch"`
+	MaxPasses      uint32 `json:"max_passes"`
+	SourceQuiesced bool   `json:"source_quiesced"`
+}
+
+// mergeMigrationMeta keeps the durable request alongside the agent report.
+// The report is replaced after every run, so without this merge a console
+// restart would have no target instance or source ACL user with which to
+// perform the explicit cutover.
+func mergeMigrationMeta(progress string, meta migrationMeta) string {
+	payload := map[string]any{}
+	if strings.TrimSpace(progress) != "" {
+		_ = json.Unmarshal([]byte(progress), &payload)
+	}
+	payload["instance_id"] = meta.InstanceID
+	payload["source_user"] = meta.SourceUser
+	payload["pattern"] = meta.Pattern
+	payload["mode"] = meta.Mode
+	payload["batch"] = meta.Batch
+	payload["max_passes"] = meta.MaxPasses
+	payload["source_quiesced"] = meta.SourceQuiesced
+	return string(mustJSON(payload))
+}
+
+func (s *Server) listMigrations(c *gin.Context) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	mq := s.q().MigrationJob
+	rows, err := mq.WithContext(c.Request.Context()).Where(mq.UnitID.Eq(id)).Order(mq.ID.Desc()).Limit(100).Find()
+	if err != nil {
+		failErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, rows)
+}
+
+func (s *Server) createMigration(c *gin.Context) {
+	if !s.Lic.Snapshot().Feature(license.FeatureMigrate) {
+		fail(c, http.StatusPaymentRequired, "LICENSE_FEATURE_DENIED", "当前授权不包含在线数据迁移")
+		return
+	}
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	var req migrationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		failErr(c, err)
+		return
+	}
+	if _, _, err := net.SplitHostPort(req.SourceAddress); err != nil {
+		fail(c, http.StatusBadRequest, "BAD_SOURCE", "source_address 必须是 host:port")
+		return
+	}
+	if strings.ContainsAny(req.SourceAddress, "\r\n\"'\\") || len(req.SourceAddress) > 253 {
+		fail(c, http.StatusBadRequest, "BAD_SOURCE", "source_address 格式不安全")
+		return
+	}
+	if req.Pattern == "" {
+		req.Pattern = "*"
+	}
+	if !migrationPatternRe.MatchString(req.Pattern) {
+		fail(c, http.StatusBadRequest, "BAD_PATTERN", "pattern 只能是 * 或字面前缀加 *")
+		return
+	}
+	if req.Mode == "" {
+		req.Mode = "full"
+	}
+	if req.Mode != "full" && req.Mode != "full_incremental" {
+		fail(c, http.StatusBadRequest, "BAD_MODE", "mode 只能是 full 或 full_incremental")
+		return
+	}
+	if req.Mode == "full_incremental" && req.Pattern != "*" {
+		fail(c, http.StatusBadRequest, "BAD_PATTERN", "复制流增量会复制整个数据库，暂不支持前缀过滤；需要过滤时请选择全量模式")
+		return
+	}
+	if len(req.SourceUser) > 64 || len(req.SourcePassword) > 512 {
+		fail(c, http.StatusBadRequest, "BAD_AUTH", "源端账号或口令过长")
+		return
+	}
+	if s.Box == nil && req.SourcePassword != "" {
+		fail(c, http.StatusInternalServerError, "SECRETBOX_UNAVAILABLE", "控制台加密密钥不可用")
+		return
+	}
+	var in *store.Instance
+	if req.InstanceID > 0 {
+		iq := s.q().Instance
+		var err error
+		in, err = iq.WithContext(c.Request.Context()).Where(iq.ID.Eq(req.InstanceID), iq.UnitID.Eq(id), iq.Kind.Eq("server")).First()
+		if err != nil {
+			failErr(c, err)
+			return
+		}
+	} else {
+		_, in, ok = s.unitInstance(c)
+		if !ok {
+			return
+		}
+	}
+	sealed := ""
+	if req.SourcePassword != "" {
+		var err error
+		sealed, err = s.Box.Seal(req.SourcePassword)
+		if err != nil {
+			failErr(c, err)
+			return
+		}
+	}
+	meta, _ := json.Marshal(map[string]any{"phase": "queued", "instance_id": in.ID, "source_user": req.SourceUser, "pattern": req.Pattern, "mode": req.Mode, "batch": req.Batch, "max_passes": req.MaxPasses, "source_quiesced": req.SourceQuiesced})
+	job := &store.MigrationJob{UnitID: id, SourceAddr: req.SourceAddress, SourceAuth: sealed, Mode: req.Mode, Status: "queued", Progress: string(meta), CreatedBy: c.GetString("user"), CreatedAt: time.Now()}
+	if err := s.q().MigrationJob.WithContext(c.Request.Context()).Create(job); err != nil {
+		failErr(c, err)
+		return
+	}
+	if err := s.Store.LockUnit(id, job.ID); err != nil {
+		_, _ = s.q().MigrationJob.WithContext(c.Request.Context()).Where(s.q().MigrationJob.ID.Eq(job.ID)).UpdateSimple(s.q().MigrationJob.Status.Value("failed"), s.q().MigrationJob.Error.Value(err.Error()), s.q().MigrationJob.FinishedAt.Value(time.Now()))
+		failErr(c, err)
+		return
+	}
+	s.audit(c, "unit.migration.create", "migration", fmt.Sprint(job.ID), map[string]any{"unit_id": id, "instance_id": in.ID, "source_address": req.SourceAddress, "mode": req.Mode, "pattern": req.Pattern})
+	s.startMigration(job.ID, in.HostID, in.Port)
+	c.JSON(http.StatusAccepted, job)
+}
+
+func (s *Server) cutoverMigration(c *gin.Context) {
+	if !s.Lic.Snapshot().Feature(license.FeatureMigrate) {
+		fail(c, http.StatusPaymentRequired, "LICENSE_FEATURE_DENIED", "当前授权不包含在线数据迁移")
+		return
+	}
+	unitID, ok := parseID(c)
+	if !ok {
+		return
+	}
+	jobID, err := strconv.ParseUint(c.Param("migration_id"), 10, 64)
+	if err != nil || jobID == 0 {
+		fail(c, http.StatusBadRequest, "BAD_MIGRATION_ID", "invalid migration id")
+		return
+	}
+	job, err := s.q().MigrationJob.WithContext(c.Request.Context()).Where(s.q().MigrationJob.ID.Eq(uint(jobID)), s.q().MigrationJob.UnitID.Eq(unitID)).First()
+	if err != nil {
+		failErr(c, err)
+		return
+	}
+	if job.Status != "awaiting_cutover" {
+		fail(c, http.StatusConflict, "MIGRATION_NOT_READY", "迁移任务当前不在等待切换状态")
+		return
+	}
+	var req struct {
+		SourceQuiesced bool `json:"source_quiesced"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || !req.SourceQuiesced {
+		fail(c, http.StatusBadRequest, "SOURCE_NOT_QUIESCED", "必须明确确认源端已停止写入")
+		return
+	}
+	if owner, err := s.Store.UnitLockOwner(unitID); err != nil || owner != job.ID {
+		fail(c, http.StatusConflict, "MIGRATION_LOCK_LOST", "迁移任务不再持有部署单元锁")
+		return
+	}
+	var meta migrationMeta
+	if err := json.Unmarshal([]byte(job.Progress), &meta); err != nil || meta.InstanceID == 0 {
+		fail(c, http.StatusInternalServerError, "INVALID_MIGRATION_METADATA", "迁移任务元数据不可恢复")
+		return
+	}
+	in, err := store.First[store.Instance](s.Store, meta.InstanceID)
+	if err != nil || in.UnitID != unitID || in.Kind != "server" {
+		fail(c, http.StatusConflict, "MIGRATION_TARGET_MISSING", "迁移目标实例不存在")
+		return
+	}
+	password := ""
+	if job.SourceAuth != "" {
+		if s.Box == nil {
+			fail(c, http.StatusInternalServerError, "SECRETBOX_UNAVAILABLE", "控制台加密密钥不可用")
+			return
+		}
+		password, err = s.Box.Open(job.SourceAuth)
+		if err != nil {
+			fail(c, http.StatusInternalServerError, "SOURCE_AUTH_UNAVAILABLE", "源端凭据无法解密")
+			return
+		}
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Minute)
+	defer cancel()
+	r, err := s.GW.Send(ctx, in.HostID, &agentv1.ServerMessage{Body: &agentv1.ServerMessage_Migrate{Migrate: &agentv1.Migrate{
+		Port: in.Port, JobId: fmt.Sprint(job.ID), SourceAddress: job.SourceAddr, SourceUser: meta.SourceUser,
+		SourcePassword: password, Mode: agentv1.Migrate_FULL_INCREMENTAL, SourceQuiesced: true, Finalize: true,
+	}}}, 30*time.Minute)
+	if err != nil {
+		// Keep the task in awaiting_cutover so the operator can retry after
+		// fixing the source quiescence or connectivity condition.
+		_, _ = s.q().MigrationJob.WithContext(context.Background()).Where(s.q().MigrationJob.ID.Eq(job.ID)).UpdateSimple(s.q().MigrationJob.Error.Value(err.Error()))
+		failErr(c, err)
+		return
+	}
+	progress := string(r.Payload)
+	if progress == "" {
+		progress = job.Progress
+	}
+	meta.SourceQuiesced = true
+	progress = mergeMigrationMeta(progress, meta)
+	if r.Status != agentv1.CommandResult_OK {
+		msg := r.Message
+		if msg == "" {
+			msg = "agent cutover failed"
+		}
+		_, _ = s.q().MigrationJob.WithContext(context.Background()).Where(s.q().MigrationJob.ID.Eq(job.ID)).UpdateSimple(s.q().MigrationJob.Progress.Value(progress), s.q().MigrationJob.Error.Value(msg))
+		fail(c, http.StatusConflict, "MIGRATION_CUTOVER_FAILED", msg)
+		return
+	}
+	var report struct {
+		CutoverReady bool `json:"cutover_ready"`
+	}
+	if json.Unmarshal([]byte(progress), &report) != nil || !report.CutoverReady {
+		_, _ = s.q().MigrationJob.WithContext(context.Background()).Where(s.q().MigrationJob.ID.Eq(job.ID)).UpdateSimple(s.q().MigrationJob.Progress.Value(progress), s.q().MigrationJob.Error.Value("agent did not confirm cutover readiness"))
+		fail(c, http.StatusConflict, "MIGRATION_CUTOVER_FAILED", "agent 未确认切换完成")
+		return
+	}
+	s.finishMigration(job.ID, "done", progress, "")
+	s.audit(c, "unit.migration.cutover", "migration", fmt.Sprint(job.ID), map[string]any{"unit_id": unitID, "instance_id": in.ID})
+	c.JSON(http.StatusAccepted, gin.H{"migration_id": job.ID, "cutover": true, "status": "done"})
+}
+
+func (s *Server) reshard(c *gin.Context) {
+	if !s.Lic.Snapshot().Feature(license.FeatureReshard) {
+		fail(c, http.StatusPaymentRequired, "LICENSE_FEATURE_DENIED", "当前授权不包含在线迁槽")
+		return
+	}
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	var spec orch.ReshardSpec
+	if err := c.ShouldBindJSON(&spec); err != nil {
+		failErr(c, err)
+		return
+	}
+	op, err := s.Orch.Reshard(id, spec, c.GetString("user"))
+	if err != nil {
+		failErr(c, err)
+		return
+	}
+	s.audit(c, "unit.reshard", "unit", fmt.Sprint(id), map[string]any{"source_instance_id": spec.SourceInstanceID, "target_instance_id": spec.TargetInstanceID, "slots": spec.Slots, "operation": op.ID})
+	c.JSON(http.StatusAccepted, gin.H{"operation": op})
+}
+
+func (s *Server) runMigration(id, hostID uint, port uint32) {
+	q := s.q().MigrationJob
+	job, err := q.WithContext(context.Background()).Where(q.ID.Eq(id)).First()
+	if err != nil {
+		return
+	}
+	_, _ = q.WithContext(context.Background()).Where(q.ID.Eq(id)).Update(q.Status, "running")
+	var meta migrationMeta
+	if json.Unmarshal([]byte(job.Progress), &meta) != nil {
+		s.finishMigration(id, "failed", job.Progress, "invalid migration metadata")
+		return
+	}
+	password := ""
+	if job.SourceAuth != "" {
+		if s.Box == nil {
+			s.finishMigration(id, "failed", job.Progress, "secretbox unavailable")
+			return
+		}
+		password, err = s.Box.Open(job.SourceAuth)
+		if err != nil {
+			s.finishMigration(id, "failed", job.Progress, "source credentials cannot be decrypted")
+			return
+		}
+	}
+	mode := agentv1.Migrate_FULL
+	if meta.Mode == "full_incremental" {
+		mode = agentv1.Migrate_FULL_INCREMENTAL
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	r, err := s.GW.Send(ctx, hostID, &agentv1.ServerMessage{Body: &agentv1.ServerMessage_Migrate{Migrate: &agentv1.Migrate{Port: port, JobId: fmt.Sprint(id), SourceAddress: job.SourceAddr, SourceUser: meta.SourceUser, SourcePassword: password, Pattern: meta.Pattern, Mode: mode, Batch: meta.Batch, MaxPasses: meta.MaxPasses, SourceQuiesced: meta.SourceQuiesced}}}, 30*time.Minute)
+	if err != nil {
+		s.finishMigration(id, "failed", job.Progress, err.Error())
+		return
+	}
+	progress := string(r.Payload)
+	if progress == "" {
+		progress = job.Progress
+	}
+	progress = mergeMigrationMeta(progress, meta)
+	status := "done"
+	var summary struct {
+		KeysFailed      uint64 `json:"keys_failed"`
+		AwaitingCutover bool   `json:"awaiting_cutover"`
+	}
+	if json.Unmarshal([]byte(progress), &summary) == nil {
+		if summary.AwaitingCutover {
+			status = "awaiting_cutover"
+		} else if summary.KeysFailed > 0 {
+			status = "partial"
+		}
+	}
+	if r.Status != agentv1.CommandResult_OK {
+		status = "failed"
+		if r.Message != "" {
+			progress = string(mustJSON(map[string]any{"agent": json.RawMessage(progress), "error": r.Message}))
+		}
+	}
+	s.finishMigration(id, status, progress, "")
+}
+
+func (s *Server) startMigration(id, hostID uint, port uint32) {
+	if _, loaded := s.migrationRuns.LoadOrStore(id, struct{}{}); loaded {
+		return
+	}
+	go func() {
+		defer s.migrationRuns.Delete(id)
+		s.runMigration(id, hostID, port)
+	}()
+}
+
+// RecoverMigrations is called by the HA leader after a console restart. The
+// job request and the unit lock are durable; rerunning SCAN + DUMP/RESTORE is
+// safe because RESTORE uses REPLACE, so an interrupted job can continue
+// without exposing source credentials or values to the control plane.
+func (s *Server) RecoverMigrations() {
+	q := s.q().MigrationJob
+	jobs, err := q.WithContext(context.Background()).Where(q.Status.In("queued", "running")).Find()
+	if err != nil {
+		if s.Log != nil {
+			s.Log.Warn("recover migrations", "err", err)
+		}
+		return
+	}
+	for _, job := range jobs {
+		owner, err := s.Store.UnitLockOwner(job.UnitID)
+		if err != nil || owner != job.ID {
+			continue
+		}
+		var meta struct {
+			InstanceID uint `json:"instance_id"`
+		}
+		if json.Unmarshal([]byte(job.Progress), &meta) != nil || meta.InstanceID == 0 {
+			continue
+		}
+		in, err := store.First[store.Instance](s.Store, meta.InstanceID)
+		if err != nil || in.UnitID != job.UnitID || in.Kind != "server" {
+			continue
+		}
+		s.startMigration(job.ID, in.HostID, in.Port)
+	}
+}
+
+func (s *Server) finishMigration(id uint, status, progress, errMsg string) {
+	q := s.q().MigrationJob
+	job, _ := q.WithContext(context.Background()).Where(q.ID.Eq(id)).First()
+	if status == "awaiting_cutover" {
+		_, _ = q.WithContext(context.Background()).Where(q.ID.Eq(id)).UpdateSimple(q.Status.Value(status), q.Progress.Value(progress), q.Error.Value(errMsg))
+	} else {
+		_, _ = q.WithContext(context.Background()).Where(q.ID.Eq(id)).UpdateSimple(q.Status.Value(status), q.Progress.Value(progress), q.Error.Value(errMsg), q.FinishedAt.Value(time.Now()))
+	}
+	if job != nil && status != "awaiting_cutover" {
+		_ = s.Store.UnlockUnit(job.UnitID, id)
+	}
+}
+
+func mustJSON(v any) []byte {
+	b, _ := json.Marshal(v)
+	return b
+}
+
 func (s *Server) listAccounts(c *gin.Context) {
 	id, ok := parseID(c)
 	if !ok {
@@ -743,6 +1600,34 @@ func (s *Server) getOperation(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, s.opView(*op))
+}
+
+func (s *Server) approveOperation(c *gin.Context) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	op, err := s.Orch.ApproveOperation(id, c.GetString("user"))
+	if err != nil {
+		failErr(c, err)
+		return
+	}
+	s.audit(c, "operation.approve", "operation", fmt.Sprint(id), gin.H{"unit_id": op.UnitID, "requester": op.CreatedBy})
+	c.JSON(http.StatusAccepted, gin.H{"operation": s.opView(*op)})
+}
+
+func (s *Server) resumeOperation(c *gin.Context) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	op, err := s.Orch.ResumeOperation(id, c.GetString("user"))
+	if err != nil {
+		failErr(c, err)
+		return
+	}
+	s.audit(c, "operation.resume", "operation", fmt.Sprint(id), gin.H{"unit_id": op.UnitID, "requester": op.CreatedBy})
+	c.JSON(http.StatusAccepted, gin.H{"operation": s.opView(*op)})
 }
 
 // ---------- 总览 ----------

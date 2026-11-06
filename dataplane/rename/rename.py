@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """把 Valkey 源码树改名为 sycache（规格书 5.1）。
 
-只修改 C 字符串字面量与 version.h / asciilogo.h 中的宏值，不改任何判断、结构体、
-函数签名、命令语义、RDB/AOF 格式或模块 ABI。脚本是生成 dataplane/patches/0001-sycache-rename.patch
-的唯一来源：scripts/gen-patch.sh 在干净的上游源码上运行本脚本，再用 diff 得到 patch。
+只修改 C 字符串字面量与 version.h / asciilogo.h 中的宏值；另为标准 Redis 客户端补充
+集群 INFO 的 redis_mode 兼容别名。不改数据结构、函数签名、命令语义、RDB/AOF 格式或模块 ABI。
+脚本是生成 dataplane/patches/0001-sycache-rename.patch 的唯一来源：scripts/gen-patch.sh
+在干净的上游源码上运行本脚本，再用 diff 得到 patch。
 
 用法：rename.py <valkey 源码目录>
 
@@ -93,6 +94,25 @@ MACRO_ARGS = [
     ("src/sentinel.c", "FATAL CONFIG FILE ERROR (Version %s) ***\\n\", VALKEY_VERSION",
      "FATAL CONFIG FILE ERROR (Version %s) ***\\n\", SYCACHE_VERSION"),
     ("src/debug.c", 'si_code: %d", VALKEY_VERSION,', 'si_code: %d", SYCACHE_VERSION,'),
+]
+
+# Valkey emits `server_mode` in branded mode. Keep that product-facing field,
+# but also expose the Redis-compatible alias required by clients that discover
+# cluster mode through `redis_mode` (for example StackExchange.Redis). The
+# standalone INFO shape stays unchanged so the upstream compatibility contract
+# remains intact.
+SNIPPET_REPLACEMENTS = [
+    (
+        "src/server.c",
+        '                "availability_zone:%s\\r\\n", server.availability_zone));\n\n'
+        '        /* Conditional properties */',
+        '                "availability_zone:%s\\r\\n", server.availability_zone));\n'
+        '        /* Redis-compatible cluster mode alias in branded mode. */\n'
+        '        if (!server.extended_redis_compat && server.cluster_enabled) {\n'
+        '            info = sdscatfmt(info, "redis_mode:%s\\r\\n", mode);\n'
+        '        }\n'
+        '        /* Conditional properties */',
+    ),
 ]
 
 VERSION_H_APPEND = '''
@@ -204,6 +224,9 @@ def main():
         text = p.read_text(encoding="utf-8")
         new = rewrite_file(rel, text)
         for f, old, rep in MACRO_ARGS:
+            if f == rel:
+                new = must_replace(new, old, rep, rel)
+        for f, old, rep in SNIPPET_REPLACEMENTS:
             if f == rel:
                 new = must_replace(new, old, rep, rel)
         if rel == "src/version.h":

@@ -9,5 +9,8 @@ web/node_modules/
 web/.pnpm-store/
 web/dist/
 web/portal/dist/
+test/clients/node/node_modules/
+test/clients/dotnet/bin/
+test/clients/dotnet/obj/
 __pycache__/
 *.pyc

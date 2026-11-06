@@ -1,0 +1,154 @@
+name: binary-packages
+
+# 商业方案 5.3 的发布构建：在 glibc 2.17 兼容环境中生成
+# sycache 的 tar.gz、RPM、DEB、调试符号包、BUILDINFO、SBOM 与校验清单。
+#
+# 日常代码门禁由 dataplane.yml / p1-verify.yml 负责；本工作流只负责
+# 可交付的二进制包，避免把宿主机临时构建产物误当成发布包。
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_suite:
+        description: "构建后运行上游 Tcl 功能测试集（约 40 分钟）"
+        type: boolean
+        default: false
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: binary-packages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.arch }} packages
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare Docker builder
+        uses: docker/setup-buildx-action@v3
+
+      - name: Install host packaging tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq binutils dpkg-dev file
+          docker version
+
+      - name: Fetch and pin upstream source
+        shell: bash
+        run: |
+          set -euo pipefail
+          source dataplane/UPSTREAM
+          git -c advice.detachedHead=false clone -q --depth 1 --branch "$UPSTREAM_TAG" "$UPSTREAM_GIT" upstream
+          test "$(git -C upstream rev-parse HEAD)" = "$UPSTREAM_COMMIT"
+
+      - name: Validate release tag against product version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_version="${GITHUB_REF_NAME#v}"
+          product_version="$(awk '/^current:/{print $2}' dataplane/versions.yaml)"
+          test -n "$product_version"
+          test "$tag_version" = "$product_version" || {
+            echo "tag $GITHUB_REF_NAME does not match dataplane/versions.yaml current $product_version" >&2
+            exit 1
+          }
+
+      - name: Build compatibility packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          dataplane/build-compat.sh -s upstream -o dist
+          # build-compat.sh builds inside Docker; make the workspace readable by
+          # later Actions steps and by the runner cleanup hook.
+          sudo chown -R "$(id -u):$(id -g)" dist
+
+      - name: Verify package set
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          tars=(dist/sycache-[0-9]*-${{ matrix.arch }}.tar.gz)
+          debs=(dist/sycache_*.deb)
+          rpms=(dist/sycache-*.rpm)
+          debug=(dist/sycache-debuginfo-[0-9]*-${{ matrix.arch }}.tar.gz)
+          sbom=(dist/sycache-[0-9]*-${{ matrix.arch }}.spdx.json)
+          test "${#tars[@]}" -eq 1
+          test "${#debs[@]}" -eq 1
+          test "${#rpms[@]}" -ge 1
+          test "${#debug[@]}" -eq 1
+          test "${#sbom[@]}" -eq 1
+          test -s dist/BUILDINFO
+          file "${tars[0]}" "${debs[0]}" "${rpms[@]}"
+
+      - name: Run package provenance gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/check-vex.sh
+          scripts/golden-rename.sh dist/sycache-[0-9]*-${{ matrix.arch }}.tar.gz
+          scripts/check-versions.sh dist/sycache-[0-9]*-${{ matrix.arch }}.tar.gz
+
+      - name: Write checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd dist
+            find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 \
+              | sort -z \
+              | xargs -0 sha256sum
+          ) > dist/SHA256SUMS
+          (cd dist && sha256sum -c SHA256SUMS)
+
+      - name: Publish package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cacheos-sycache-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 90
+          path: |
+            dist/*.tar.gz
+            dist/*.rpm
+            dist/*.deb
+            dist/*.spdx.json
+            dist/BUILDINFO
+            dist/SHA256SUMS
+            security/vex/*.csaf.json
+
+  upstream-suite:
+    if: inputs.upstream_suite
+    name: upstream Tcl suite
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tcl tcl-tls libssl-dev pkg-config
+      - name: Fetch upstream source
+        shell: bash
+        run: |
+          set -euo pipefail
+          source dataplane/UPSTREAM
+          git -c advice.detachedHead=false clone -q --depth 1 --branch "$UPSTREAM_TAG" "$UPSTREAM_GIT" upstream
+          test "$(git -C upstream rev-parse HEAD)" = "$UPSTREAM_COMMIT"
+      - name: Run upstream suite
+        run: test/upstream/run-suite.sh -s upstream

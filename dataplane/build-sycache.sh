@@ -20,6 +20,16 @@ ROOT="$(cd "$HERE/.." && pwd)"
 # shellcheck disable=SC1091
 source "$HERE/UPSTREAM"
 
+cpu_jobs() {
+  if command -v nproc >/dev/null 2>&1; then
+    nproc
+  elif command -v sysctl >/dev/null 2>&1; then
+    sysctl -n hw.ncpu
+  else
+    echo 2
+  fi
+}
+
 SRC=""; OUT="$PWD/dist"; TLS_LIB="openssl"; STATIC=0
 VERSION="$(awk '/^current:/{print $2}' "$HERE/versions.yaml")"
 while getopts "s:o:t:V:S" opt; do
@@ -34,6 +44,16 @@ while getopts "s:o:t:V:S" opt; do
 done
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.]+)?$ ]] || { echo "bad product version: $VERSION" >&2; exit 2; }
 mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
+JOBS="${CACHEOS_JOBS:-$(cpu_jobs)}"
+[[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || { echo "CACHEOS_JOBS must be a positive integer" >&2; exit 2; }
+OBJCOPY="${OBJCOPY:-$(command -v objcopy || command -v llvm-objcopy || true)}"
+STRIP="${STRIP:-$(command -v strip || command -v llvm-strip || true)}"
+[[ -n "$OBJCOPY" && -x "$OBJCOPY" ]] || { echo "objcopy or llvm-objcopy is required (set OBJCOPY=...)" >&2; exit 2; }
+[[ -n "$STRIP" && -x "$STRIP" ]] || { echo "strip or llvm-strip is required (set STRIP=...)" >&2; exit 2; }
+if ! "$STRIP" --strip-unneeded --help >/dev/null 2>&1; then
+  "$OBJCOPY" --strip-unneeded --help >/dev/null 2>&1 || { echo "a strip tool supporting --strip-unneeded is required (set STRIP=...)" >&2; exit 2; }
+  STRIP="$OBJCOPY"
+fi
 
 TLS_OPTS=()
 case "$TLS_LIB" in
@@ -60,7 +80,7 @@ if [[ $STATIC -eq 1 ]]; then
   OSSL="$WORK/openssl"
   (cd "$OPENSSL_SRC" && ./Configure --prefix="$OSSL" --libdir=lib --openssldir=/etc/pki/tls \
       no-shared no-tests no-docs no-apps -fPIC >"$WORK/openssl.log" 2>&1 \
-    && make -j"$(nproc)" >>"$WORK/openssl.log" 2>&1 && make install_sw >>"$WORK/openssl.log" 2>&1) \
+    && make -j"$JOBS" >>"$WORK/openssl.log" 2>&1 && make install_sw >>"$WORK/openssl.log" 2>&1) \
     || { tail -50 "$WORK/openssl.log" >&2; exit 4; }
   TLS_OPTS=(BUILD_TLS=yes "OPENSSL_PREFIX=$OSSL"
             "LIBSSL_LIBS=$OSSL/lib/libssl.a" "LIBCRYPTO_LIBS=$OSSL/lib/libcrypto.a -ldl -pthread")
@@ -107,7 +127,7 @@ MAKE_OPTS=(
   "SERVER_CFLAGS=-DSYCACHE_VERSION=\\\"$VERSION\\\""
   "${TLS_OPTS[@]}"
 )
-make -j"$(nproc)" "${MAKE_OPTS[@]}" >"$WORK/build.log" 2>&1 || { tail -50 "$WORK/build.log" >&2; exit 4; }
+make -j"$JOBS" "${MAKE_OPTS[@]}" >"$WORK/build.log" 2>&1 || { tail -50 "$WORK/build.log" >&2; exit 4; }
 
 if [[ $STATIC -eq 1 ]]; then
   for b in src/sycache-server src/sycache-cli src/sycache-benchmark; do
@@ -129,11 +149,26 @@ STAGE="$WORK/stage"; P="$STAGE/opt/sycache"
 make -C src install "${MAKE_OPTS[@]}" PREFIX="$P" >>"$WORK/build.log" 2>&1
 # 剥离调试符号：调试信息单独输出 sycache-debuginfo 包，供崩溃分析，不进安装包
 DBG="$WORK/debug/opt/sycache/lib/debug"; mkdir -p "$DBG"
-for b in sycache-server sycache-cli sycache-benchmark; do
-  objcopy --only-keep-debug "$P/bin/$b" "$DBG/$b.debug"
-  strip --strip-unneeded "$P/bin/$b"
-  objcopy --add-gnu-debuglink="$DBG/$b.debug" "$P/bin/$b"
-done
+if file "$P/bin/sycache-server" | grep -q 'ELF'; then
+  for b in sycache-server sycache-cli sycache-benchmark; do
+    "$OBJCOPY" --only-keep-debug "$P/bin/$b" "$DBG/$b.debug"
+    "$STRIP" --strip-unneeded "$P/bin/$b"
+    "$OBJCOPY" --add-gnu-debuglink="$DBG/$b.debug" "$P/bin/$b"
+  done
+else
+  # macOS development builds are Mach-O; GNU debug links are an ELF packaging
+  # concern, so keep the native binaries intact and let release builds perform
+  # the split inside the Linux compatibility container.
+  rm -rf "$DBG"
+  echo "non-ELF development build: skip GNU debug-link split"
+fi
+
+install_file() {
+  local mode="$1" src="$2" dest="$3"
+  mkdir -p "$(dirname "$dest")"
+  install -m "$mode" "$src" "$dest"
+}
+
 mkdir -p "$P/conf" "$P/share" "$P/licenses" "$P/instances"
 "$HERE/packaging/make-conf.sh" valkey.conf > "$P/conf/sycache.conf.default"
 "$HERE/packaging/make-conf.sh" sentinel.conf > "$P/conf/sycache-sentinel.conf.default"
@@ -141,15 +176,15 @@ cp COPYING "$P/licenses/VALKEY-COPYING"
 for d in deps/*/; do   # 随 Valkey 捆绑的第三方库许可证
   n="$(basename "$d")"; [[ "$n" == gtest-parallel ]] && continue   # 仅测试使用，不进二进制
   for f in "$d"COPYING* "$d"LICENSE* "$d"COPYRIGHT*; do
-    [[ -f "$f" ]] && install -D -m 0644 "$f" "$P/licenses/deps/$n/$(basename "$f")"
+    [[ -f "$f" ]] && install_file 0644 "$f" "$P/licenses/deps/$n/$(basename "$f")"
   done
 done
 cp "$ROOT/docs/NOTICE" "$P/licenses/NOTICE"
-install -D -m 0644 "$HERE/packaging/sycache@.service" "$STAGE/usr/lib/systemd/system/sycache@.service"
-install -D -m 0644 "$HERE/packaging/sycache-sentinel@.service" "$STAGE/usr/lib/systemd/system/sycache-sentinel@.service"
-install -D -m 0644 "$HERE/packaging/sycache-thp.service" "$STAGE/usr/lib/systemd/system/sycache-thp.service"
-install -D -m 0644 "$HERE/packaging/90-sycache.conf" "$STAGE/usr/lib/sysctl.d/90-sycache.conf"
-install -D -m 0644 "$HERE/packaging/sycache.logrotate" "$STAGE/etc/logrotate.d/sycache"
+install_file 0644 "$HERE/packaging/sycache@.service" "$STAGE/usr/lib/systemd/system/sycache@.service"
+install_file 0644 "$HERE/packaging/sycache-sentinel@.service" "$STAGE/usr/lib/systemd/system/sycache-sentinel@.service"
+install_file 0644 "$HERE/packaging/sycache-thp.service" "$STAGE/usr/lib/systemd/system/sycache-thp.service"
+install_file 0644 "$HERE/packaging/90-sycache.conf" "$STAGE/usr/lib/sysctl.d/90-sycache.conf"
+install_file 0644 "$HERE/packaging/sycache.logrotate" "$STAGE/etc/logrotate.d/sycache"
 
 # BUILDINFO：真实上游版本与补丁清单，供 SBOM、VEX 与控制台「关于」页使用（规格书 12 节）
 {

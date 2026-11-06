@@ -3,6 +3,9 @@
 //	sycache-wrapper start|stop|restart <端口>
 //	sycache-wrapper switch-version <版本>
 //
+// switch-version 在目标版本尚未安装时，会读取 agent 状态目录中同版本的
+// 已下载包和签名，验签后安装到 /opt/sycache/versions/<版本> 再切换。
+//
 // 构建：CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" ./cmd/sycache-wrapper
 package main
 

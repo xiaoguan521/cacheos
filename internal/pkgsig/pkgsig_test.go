@@ -39,6 +39,9 @@ func TestSignVerify(t *testing.T) {
 	if _, err := Sign(priv, "cacheos-ci-pkg-test", "sycache", "1.30.6;rm", "amd64", "standard", data); err == nil {
 		t.Fatal("bad version accepted")
 	}
+	if _, err := Sign(priv, "cacheos-ci-pkg-test", "sycache", "1.0.0-dev", "amd64", "standard", data); err != nil {
+		t.Fatalf("development package version rejected: %v", err)
+	}
 	if _, err := Sign(priv, "cacheos-prod-2027", "sycache", "1.30.6", "amd64", "standard", data); err == nil {
 		t.Fatal("license key id accepted for packages")
 	}

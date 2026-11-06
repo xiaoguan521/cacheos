@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -23,8 +24,10 @@ import (
 	"syscall"
 	"time"
 
+	agentv1 "github.com/xiaoguan521/cacheos/api/gen/agent/v1"
 	"github.com/xiaoguan521/cacheos/internal/console/alerts"
 	"github.com/xiaoguan521/cacheos/internal/console/api"
+	"github.com/xiaoguan521/cacheos/internal/console/backupstore"
 	"github.com/xiaoguan521/cacheos/internal/console/gateway"
 	"github.com/xiaoguan521/cacheos/internal/console/ha"
 	"github.com/xiaoguan521/cacheos/internal/console/licsvc"
@@ -119,8 +122,16 @@ func run(log *slog.Logger, o options) error {
 			return err
 		}
 	}
-	gw := &gateway.Server{Store: st, CA: ca, CmdKey: cmdKey, Lic: lic, Audit: aud, Log: log}
-	orc := &orch.Service{Store: st, GW: gw, Box: box, Log: log, License: lic.Snapshot}
+	backupDir := envOr("CACHEOS_BACKUP_DIR", filepath.Join(dataDir, "backups"))
+	backupStorage, err := backupstore.NewFromEnv(dataDir)
+	if err != nil {
+		return fmt.Errorf("backup storage: %w", err)
+	}
+	gw := &gateway.Server{Store: st, CA: ca, CmdKey: cmdKey, Lic: lic, Audit: aud, Log: log, BackupDir: backupDir, BackupStore: backupStorage}
+	orc := &orch.Service{Store: st, GW: gw, Box: box, Log: log, License: lic.Snapshot, CA: ca}
+	if v, _ := st.GetKV("approval_required"); v == "1" {
+		orc.RequireApproval = true
+	}
 	if err := orc.EnsureBuiltinTemplates(); err != nil {
 		return fmt.Errorf("parameter templates: %w", err)
 	}
@@ -194,7 +205,8 @@ func run(log *slog.Logger, o options) error {
 			log.Warn("reset host status", "err", err)
 		}
 		lic.Tick(time.Now())
-		go housekeeping(lctx, st, lic)
+		apiSrv.RecoverMigrations()
+		go housekeeping(lctx, st, lic, gw, log)
 		go alr.Run(lctx)
 	}
 	go el.Run(ctx, lead, gw.DisconnectAll)
@@ -257,9 +269,9 @@ func commandKey(st *store.Store) (ed25519.PrivateKey, error) {
 	return ed25519.PrivateKey(b), nil
 }
 
-// housekeeping：每小时记录已见时间（防时钟回拨）、清理 7 天前的分钟指标。
-func housekeeping(ctx context.Context, st *store.Store, lic *licsvc.Service) {
-	t := time.NewTicker(time.Hour)
+// housekeeping：刷新授权、执行每日 RDB 备份策略并清理分钟指标。
+func housekeeping(ctx context.Context, st *store.Store, lic *licsvc.Service, gw *gateway.Server, log *slog.Logger) {
+	t := time.NewTicker(time.Minute)
 	defer t.Stop()
 	for {
 		select {
@@ -267,9 +279,94 @@ func housekeeping(ctx context.Context, st *store.Store, lic *licsvc.Service) {
 			return
 		case now := <-t.C:
 			lic.Tick(now)
+			runScheduledBackups(ctx, st, lic, gw, log, now)
 			m := query.Use(st.DB).MetricMinute
 			if _, err := m.WithContext(ctx).Where(m.Minute.Lt(now.Add(-7 * 24 * time.Hour).Unix())).Delete(); err != nil {
 				slog.Warn("prune metrics", "err", err)
+			}
+		}
+	}
+}
+
+func runScheduledBackups(ctx context.Context, st *store.Store, lic *licsvc.Service, gw *gateway.Server, log *slog.Logger, now time.Time) {
+	pq := query.Use(st.DB).BackupPolicy
+	policies, err := pq.WithContext(ctx).Where(pq.Enabled).Find()
+	if err != nil {
+		log.Warn("load backup policies", "err", err)
+		return
+	}
+	for _, policy := range policies {
+		if policy.Cron != now.Format("15:04") || policy.LastRunAt != nil && policy.LastRunAt.In(now.Location()).Format("2006-01-02") == now.Format("2006-01-02") {
+			continue
+		}
+		// Mark before dispatch so a slow backup cannot be started twice by two
+		// minute ticks. A failed run is still visible in the audit/backup record.
+		last := now
+		policy.LastRunAt = &last
+		if err := pq.WithContext(ctx).Save(policy); err != nil {
+			log.Warn("mark backup policy", "unit", policy.UnitID, "err", err)
+			continue
+		}
+		iq := query.Use(st.DB).Instance
+		instances, err := iq.WithContext(ctx).Where(iq.UnitID.Eq(policy.UnitID), iq.Kind.Eq("server")).Order(iq.ID).Find()
+		if err != nil || len(instances) == 0 {
+			log.Warn("scheduled backup has no server", "unit", policy.UnitID, "err", err)
+			continue
+		}
+		in := instances[0]
+		for _, candidate := range instances {
+			if candidate.Role == "master" || candidate.Desired == "master" {
+				in = candidate
+				break
+			}
+		}
+		upload := policy.Upload && lic.Snapshot().Feature(license.FeatureRemoteBkp)
+		if policy.Upload && !upload {
+			log.Warn("scheduled remote backup skipped: license feature unavailable", "unit", policy.UnitID)
+			continue
+		}
+		backupID := fmt.Sprintf("s-%d", now.UnixNano())
+		res, sendErr := gw.Send(ctx, in.HostID, &agentv1.ServerMessage{Body: &agentv1.ServerMessage_Backup{Backup: &agentv1.Backup{Port: in.Port, BackupId: backupID, Upload: upload}}}, 3*time.Minute)
+		if sendErr != nil || res.Status != agentv1.CommandResult_OK {
+			msg := "unknown backup failure"
+			if sendErr != nil {
+				msg = sendErr.Error()
+			} else {
+				msg = res.Message
+			}
+			_ = query.Use(st.DB).Backup.WithContext(ctx).Create(&store.Backup{ID: backupID, UnitID: policy.UnitID, InstanceID: in.ID, Location: map[bool]string{true: "console", false: "local"}[upload], Status: "failed", Trigger: "schedule", Error: msg, CreatedBy: "scheduler", CreatedAt: now})
+			log.Warn("scheduled backup failed", "unit", policy.UnitID, "err", msg)
+			continue
+		}
+		if !upload {
+			var meta struct {
+				Size   int64  `json:"size"`
+				SHA256 string `json:"sha256"`
+			}
+			_ = json.Unmarshal(res.Payload, &meta)
+			_ = query.Use(st.DB).Backup.WithContext(ctx).Create(&store.Backup{ID: backupID, UnitID: policy.UnitID, InstanceID: in.ID, Location: "local", Size: meta.Size, SHA256: meta.SHA256, Status: "done", Trigger: "schedule", CreatedBy: "scheduler", CreatedAt: now})
+		} else if row, err := query.Use(st.DB).Backup.WithContext(ctx).Where(query.Use(st.DB).Backup.ID.Eq(backupID)).First(); err == nil {
+			row.Trigger, row.CreatedBy = "schedule", "scheduler"
+			_ = query.Use(st.DB).Backup.WithContext(ctx).Save(row)
+		}
+		if policy.KeepDays > 0 {
+			cutoff := now.Add(-time.Duration(policy.KeepDays) * 24 * time.Hour)
+			bq := query.Use(st.DB).Backup
+			expired, findErr := bq.WithContext(ctx).Where(bq.UnitID.Eq(policy.UnitID), bq.Status.Eq("done"), bq.CreatedAt.Lt(cutoff)).Find()
+			if findErr != nil {
+				log.Warn("find expired backups", "unit", policy.UnitID, "err", findErr)
+				continue
+			}
+			for _, row := range expired {
+				if err := gw.RemoveBackup(ctx, row); err != nil {
+					log.Warn("remove expired backup", "unit", policy.UnitID, "backup", row.ID, "err", err)
+					continue
+				}
+				expiredAt := now
+				row.Status, row.ExpiresAt, row.Error = "expired", &expiredAt, ""
+				if err := bq.WithContext(ctx).Save(row); err != nil {
+					log.Warn("mark expired backup", "unit", policy.UnitID, "backup", row.ID, "err", err)
+				}
 			}
 		}
 	}

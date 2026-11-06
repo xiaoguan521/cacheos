@@ -491,6 +491,55 @@ func (Diagnose_Kind) EnumDescriptor() ([]byte, []int) {
 	return file_agent_v1_agent_proto_rawDescGZIP(), []int{27, 0}
 }
 
+type Migrate_Mode int32
+
+const (
+	Migrate_MODE_UNSPECIFIED Migrate_Mode = 0
+	Migrate_FULL             Migrate_Mode = 1
+	Migrate_FULL_INCREMENTAL Migrate_Mode = 2
+)
+
+// Enum value maps for Migrate_Mode.
+var (
+	Migrate_Mode_name = map[int32]string{
+		0: "MODE_UNSPECIFIED",
+		1: "FULL",
+		2: "FULL_INCREMENTAL",
+	}
+	Migrate_Mode_value = map[string]int32{
+		"MODE_UNSPECIFIED": 0,
+		"FULL":             1,
+		"FULL_INCREMENTAL": 2,
+	}
+)
+
+func (x Migrate_Mode) Enum() *Migrate_Mode {
+	p := new(Migrate_Mode)
+	*p = x
+	return p
+}
+
+func (x Migrate_Mode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (Migrate_Mode) Descriptor() protoreflect.EnumDescriptor {
+	return file_agent_v1_agent_proto_enumTypes[8].Descriptor()
+}
+
+func (Migrate_Mode) Type() protoreflect.EnumType {
+	return &file_agent_v1_agent_proto_enumTypes[8]
+}
+
+func (x Migrate_Mode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use Migrate_Mode.Descriptor instead.
+func (Migrate_Mode) EnumDescriptor() ([]byte, []int) {
+	return file_agent_v1_agent_proto_rawDescGZIP(), []int{28, 0}
+}
+
 type EnrollRequest struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	EnrollToken        string                 `protobuf:"bytes,1,opt,name=enroll_token,json=enrollToken,proto3" json:"enroll_token,omitempty"`
@@ -1739,6 +1788,7 @@ type ServerMessage struct {
 	//	*ServerMessage_SwitchVersion
 	//	*ServerMessage_UpgradeAgent
 	//	*ServerMessage_Probe
+	//	*ServerMessage_Migrate
 	Body          isServerMessage_Body `protobuf_oneof:"body"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1946,6 +1996,15 @@ func (x *ServerMessage) GetProbe() *Probe {
 	return nil
 }
 
+func (x *ServerMessage) GetMigrate() *Migrate {
+	if x != nil {
+		if x, ok := x.Body.(*ServerMessage_Migrate); ok {
+			return x.Migrate
+		}
+	}
+	return nil
+}
+
 type isServerMessage_Body interface {
 	isServerMessage_Body()
 }
@@ -2014,6 +2073,10 @@ type ServerMessage_Probe struct {
 	Probe *Probe `protobuf:"bytes,25,opt,name=probe,proto3,oneof"`
 }
 
+type ServerMessage_Migrate struct {
+	Migrate *Migrate `protobuf:"bytes,26,opt,name=migrate,proto3,oneof"`
+}
+
 func (*ServerMessage_License) isServerMessage_Body() {}
 
 func (*ServerMessage_Create) isServerMessage_Body() {}
@@ -2045,6 +2108,8 @@ func (*ServerMessage_SwitchVersion) isServerMessage_Body() {}
 func (*ServerMessage_UpgradeAgent) isServerMessage_Body() {}
 
 func (*ServerMessage_Probe) isServerMessage_Body() {}
+
+func (*ServerMessage_Migrate) isServerMessage_Body() {}
 
 type LicenseUpdate struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -2106,6 +2171,7 @@ type CreateInstance struct {
 	SentinelQuorum      uint32                 `protobuf:"varint,11,opt,name=sentinel_quorum,json=sentinelQuorum,proto3" json:"sentinel_quorum,omitempty"`
 	ClusterEnabled      bool                   `protobuf:"varint,12,opt,name=cluster_enabled,json=clusterEnabled,proto3" json:"cluster_enabled,omitempty"`
 	Tls                 *TlsMaterial           `protobuf:"bytes,13,opt,name=tls,proto3" json:"tls,omitempty"`
+	BindAddress         string                 `protobuf:"bytes,14,opt,name=bind_address,json=bindAddress,proto3" json:"bind_address,omitempty"` // 业务监听地址，只允许主机内网地址或具体主机名
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }
@@ -2229,6 +2295,13 @@ func (x *CreateInstance) GetTls() *TlsMaterial {
 		return x.Tls
 	}
 	return nil
+}
+
+func (x *CreateInstance) GetBindAddress() string {
+	if x != nil {
+		return x.BindAddress
+	}
+	return ""
 }
 
 type ReplicaOf struct {
@@ -2636,6 +2709,8 @@ type ClusterOp struct {
 	Slot          uint32                 `protobuf:"varint,7,opt,name=slot,proto3" json:"slot,omitempty"`                  // SETSLOT / MIGRATE_SLOT 的槽
 	Batch         uint32                 `protobuf:"varint,8,opt,name=batch,proto3" json:"batch,omitempty"`                // MIGRATE_SLOT 每批键数
 	TimeoutMs     uint32                 `protobuf:"varint,9,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
+	PeerUser      string                 `protobuf:"bytes,10,opt,name=peer_user,json=peerUser,proto3" json:"peer_user,omitempty"`             // MIGRATE 目标认证账号；仅允许内置 sycache-cluster
+	PeerPassword  string                 `protobuf:"bytes,11,opt,name=peer_password,json=peerPassword,proto3" json:"peer_password,omitempty"` // MIGRATE 目标认证口令，走 mTLS 指令，不写日志
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2731,6 +2806,20 @@ func (x *ClusterOp) GetTimeoutMs() uint32 {
 		return x.TimeoutMs
 	}
 	return 0
+}
+
+func (x *ClusterOp) GetPeerUser() string {
+	if x != nil {
+		return x.PeerUser
+	}
+	return ""
+}
+
+func (x *ClusterOp) GetPeerPassword() string {
+	if x != nil {
+		return x.PeerPassword
+	}
+	return ""
 }
 
 type SlotRange struct {
@@ -3012,6 +3101,7 @@ type Backup struct {
 	Port          uint32                 `protobuf:"varint,1,opt,name=port,proto3" json:"port,omitempty"`
 	BackupId      string                 `protobuf:"bytes,2,opt,name=backup_id,json=backupId,proto3" json:"backup_id,omitempty"`
 	Upload        bool                   `protobuf:"varint,3,opt,name=upload,proto3" json:"upload,omitempty"`
+	Delete        bool                   `protobuf:"varint,4,opt,name=delete,proto3" json:"delete,omitempty"` // 只删除 agent 本机已保存的备份，不触发 BGSAVE
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3063,6 +3153,13 @@ func (x *Backup) GetBackupId() string {
 func (x *Backup) GetUpload() bool {
 	if x != nil {
 		return x.Upload
+	}
+	return false
+}
+
+func (x *Backup) GetDelete() bool {
+	if x != nil {
+		return x.Delete
 	}
 	return false
 }
@@ -3196,6 +3293,134 @@ func (x *Diagnose) GetSample() uint32 {
 	return 0
 }
 
+// 在线数据迁移（P5 M9）：FULL 使用源端 SCAN + DUMP，在本机目标实例 RESTORE；
+// FULL_INCREMENTAL 让目标实例直接从源端执行原生复制流同步，最终由 agent 提升目标。
+// 源端口令只经 mTLS 指令下发；复制期间由目标数据面本地保存 masterauth，提升后立即清除，
+// 控制台保存的任务凭据必须加密。
+type Migrate struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Port           uint32                 `protobuf:"varint,1,opt,name=port,proto3" json:"port,omitempty"`
+	JobId          string                 `protobuf:"bytes,2,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	SourceAddress  string                 `protobuf:"bytes,3,opt,name=source_address,json=sourceAddress,proto3" json:"source_address,omitempty"` // host:port，只允许 TCP 地址，不接受 URL 或命令
+	SourceUser     string                 `protobuf:"bytes,4,opt,name=source_user,json=sourceUser,proto3" json:"source_user,omitempty"`
+	SourcePassword string                 `protobuf:"bytes,5,opt,name=source_password,json=sourcePassword,proto3" json:"source_password,omitempty"`
+	Pattern        string                 `protobuf:"bytes,6,opt,name=pattern,proto3" json:"pattern,omitempty"` // 前缀匹配（例如 app:*）或 *
+	Mode           Migrate_Mode           `protobuf:"varint,7,opt,name=mode,proto3,enum=cacheos.agent.v1.Migrate_Mode" json:"mode,omitempty"`
+	Batch          uint32                 `protobuf:"varint,8,opt,name=batch,proto3" json:"batch,omitempty"`
+	MaxPasses      uint32                 `protobuf:"varint,9,opt,name=max_passes,json=maxPasses,proto3" json:"max_passes,omitempty"`                 // 兼容旧控制台字段；复制流模式不使用
+	SourceQuiesced bool                   `protobuf:"varint,10,opt,name=source_quiesced,json=sourceQuiesced,proto3" json:"source_quiesced,omitempty"` // 操作员确认最终轮次前源端已停止写入
+	Finalize       bool                   `protobuf:"varint,11,opt,name=finalize,proto3" json:"finalize,omitempty"`                                   // 结束临时复制并将目标提升为主节点；不再重新做全量同步
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *Migrate) Reset() {
+	*x = Migrate{}
+	mi := &file_agent_v1_agent_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Migrate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Migrate) ProtoMessage() {}
+
+func (x *Migrate) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_v1_agent_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Migrate.ProtoReflect.Descriptor instead.
+func (*Migrate) Descriptor() ([]byte, []int) {
+	return file_agent_v1_agent_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *Migrate) GetPort() uint32 {
+	if x != nil {
+		return x.Port
+	}
+	return 0
+}
+
+func (x *Migrate) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+func (x *Migrate) GetSourceAddress() string {
+	if x != nil {
+		return x.SourceAddress
+	}
+	return ""
+}
+
+func (x *Migrate) GetSourceUser() string {
+	if x != nil {
+		return x.SourceUser
+	}
+	return ""
+}
+
+func (x *Migrate) GetSourcePassword() string {
+	if x != nil {
+		return x.SourcePassword
+	}
+	return ""
+}
+
+func (x *Migrate) GetPattern() string {
+	if x != nil {
+		return x.Pattern
+	}
+	return ""
+}
+
+func (x *Migrate) GetMode() Migrate_Mode {
+	if x != nil {
+		return x.Mode
+	}
+	return Migrate_MODE_UNSPECIFIED
+}
+
+func (x *Migrate) GetBatch() uint32 {
+	if x != nil {
+		return x.Batch
+	}
+	return 0
+}
+
+func (x *Migrate) GetMaxPasses() uint32 {
+	if x != nil {
+		return x.MaxPasses
+	}
+	return 0
+}
+
+func (x *Migrate) GetSourceQuiesced() bool {
+	if x != nil {
+		return x.SourceQuiesced
+	}
+	return false
+}
+
+func (x *Migrate) GetFinalize() bool {
+	if x != nil {
+		return x.Finalize
+	}
+	return false
+}
+
 // Key 浏览（P5）：SCAN 分页，value 默认只返回类型、长度与 TTL；明文需单独授权，由控制台审计。
 type BrowseKeys struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -3211,7 +3436,7 @@ type BrowseKeys struct {
 
 func (x *BrowseKeys) Reset() {
 	*x = BrowseKeys{}
-	mi := &file_agent_v1_agent_proto_msgTypes[28]
+	mi := &file_agent_v1_agent_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3223,7 +3448,7 @@ func (x *BrowseKeys) String() string {
 func (*BrowseKeys) ProtoMessage() {}
 
 func (x *BrowseKeys) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_agent_proto_msgTypes[28]
+	mi := &file_agent_v1_agent_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3236,7 +3461,7 @@ func (x *BrowseKeys) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BrowseKeys.ProtoReflect.Descriptor instead.
 func (*BrowseKeys) Descriptor() ([]byte, []int) {
-	return file_agent_v1_agent_proto_rawDescGZIP(), []int{28}
+	return file_agent_v1_agent_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *BrowseKeys) GetPort() uint32 {
@@ -3294,7 +3519,7 @@ type SwitchVersion struct {
 
 func (x *SwitchVersion) Reset() {
 	*x = SwitchVersion{}
-	mi := &file_agent_v1_agent_proto_msgTypes[29]
+	mi := &file_agent_v1_agent_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3306,7 +3531,7 @@ func (x *SwitchVersion) String() string {
 func (*SwitchVersion) ProtoMessage() {}
 
 func (x *SwitchVersion) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_agent_proto_msgTypes[29]
+	mi := &file_agent_v1_agent_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3319,7 +3544,7 @@ func (x *SwitchVersion) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SwitchVersion.ProtoReflect.Descriptor instead.
 func (*SwitchVersion) Descriptor() ([]byte, []int) {
-	return file_agent_v1_agent_proto_rawDescGZIP(), []int{29}
+	return file_agent_v1_agent_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *SwitchVersion) GetVersion() string {
@@ -3362,7 +3587,7 @@ type UpgradeAgent struct {
 
 func (x *UpgradeAgent) Reset() {
 	*x = UpgradeAgent{}
-	mi := &file_agent_v1_agent_proto_msgTypes[30]
+	mi := &file_agent_v1_agent_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3374,7 +3599,7 @@ func (x *UpgradeAgent) String() string {
 func (*UpgradeAgent) ProtoMessage() {}
 
 func (x *UpgradeAgent) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_agent_proto_msgTypes[30]
+	mi := &file_agent_v1_agent_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3387,7 +3612,7 @@ func (x *UpgradeAgent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpgradeAgent.ProtoReflect.Descriptor instead.
 func (*UpgradeAgent) Descriptor() ([]byte, []int) {
-	return file_agent_v1_agent_proto_rawDescGZIP(), []int{30}
+	return file_agent_v1_agent_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *UpgradeAgent) GetVersion() string {
@@ -3428,7 +3653,7 @@ type Probe struct {
 
 func (x *Probe) Reset() {
 	*x = Probe{}
-	mi := &file_agent_v1_agent_proto_msgTypes[31]
+	mi := &file_agent_v1_agent_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3440,7 +3665,7 @@ func (x *Probe) String() string {
 func (*Probe) ProtoMessage() {}
 
 func (x *Probe) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_agent_proto_msgTypes[31]
+	mi := &file_agent_v1_agent_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3453,7 +3678,7 @@ func (x *Probe) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Probe.ProtoReflect.Descriptor instead.
 func (*Probe) Descriptor() ([]byte, []int) {
-	return file_agent_v1_agent_proto_rawDescGZIP(), []int{31}
+	return file_agent_v1_agent_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *Probe) GetPort() uint32 {
@@ -3475,7 +3700,7 @@ type FetchPackageRequest struct {
 
 func (x *FetchPackageRequest) Reset() {
 	*x = FetchPackageRequest{}
-	mi := &file_agent_v1_agent_proto_msgTypes[32]
+	mi := &file_agent_v1_agent_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3487,7 +3712,7 @@ func (x *FetchPackageRequest) String() string {
 func (*FetchPackageRequest) ProtoMessage() {}
 
 func (x *FetchPackageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_agent_proto_msgTypes[32]
+	mi := &file_agent_v1_agent_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3500,7 +3725,7 @@ func (x *FetchPackageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FetchPackageRequest.ProtoReflect.Descriptor instead.
 func (*FetchPackageRequest) Descriptor() ([]byte, []int) {
-	return file_agent_v1_agent_proto_rawDescGZIP(), []int{32}
+	return file_agent_v1_agent_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *FetchPackageRequest) GetKind() string {
@@ -3542,7 +3767,7 @@ type PackageChunk struct {
 
 func (x *PackageChunk) Reset() {
 	*x = PackageChunk{}
-	mi := &file_agent_v1_agent_proto_msgTypes[33]
+	mi := &file_agent_v1_agent_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3554,7 +3779,7 @@ func (x *PackageChunk) String() string {
 func (*PackageChunk) ProtoMessage() {}
 
 func (x *PackageChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_agent_proto_msgTypes[33]
+	mi := &file_agent_v1_agent_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3567,7 +3792,7 @@ func (x *PackageChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PackageChunk.ProtoReflect.Descriptor instead.
 func (*PackageChunk) Descriptor() ([]byte, []int) {
-	return file_agent_v1_agent_proto_rawDescGZIP(), []int{33}
+	return file_agent_v1_agent_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *PackageChunk) GetData() []byte {
@@ -3604,7 +3829,7 @@ type BackupChunk struct {
 
 func (x *BackupChunk) Reset() {
 	*x = BackupChunk{}
-	mi := &file_agent_v1_agent_proto_msgTypes[34]
+	mi := &file_agent_v1_agent_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3616,7 +3841,7 @@ func (x *BackupChunk) String() string {
 func (*BackupChunk) ProtoMessage() {}
 
 func (x *BackupChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_agent_proto_msgTypes[34]
+	mi := &file_agent_v1_agent_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3629,7 +3854,7 @@ func (x *BackupChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupChunk.ProtoReflect.Descriptor instead.
 func (*BackupChunk) Descriptor() ([]byte, []int) {
-	return file_agent_v1_agent_proto_rawDescGZIP(), []int{34}
+	return file_agent_v1_agent_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *BackupChunk) GetBackupId() string {
@@ -3677,7 +3902,7 @@ type UploadResult struct {
 
 func (x *UploadResult) Reset() {
 	*x = UploadResult{}
-	mi := &file_agent_v1_agent_proto_msgTypes[35]
+	mi := &file_agent_v1_agent_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3689,7 +3914,7 @@ func (x *UploadResult) String() string {
 func (*UploadResult) ProtoMessage() {}
 
 func (x *UploadResult) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_agent_proto_msgTypes[35]
+	mi := &file_agent_v1_agent_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3702,7 +3927,7 @@ func (x *UploadResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadResult.ProtoReflect.Descriptor instead.
 func (*UploadResult) Descriptor() ([]byte, []int) {
-	return file_agent_v1_agent_proto_rawDescGZIP(), []int{35}
+	return file_agent_v1_agent_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *UploadResult) GetSize() int64 {
@@ -3859,7 +4084,7 @@ const file_agent_v1_agent_proto_rawDesc = "" +
 	"\n" +
 	"\x06FAILED\x10\x02\x12\x0f\n" +
 	"\vROLLED_BACK\x10\x03\x12\x13\n" +
-	"\x0fPENDING_RESTART\x10\x04\"\x9f\b\n" +
+	"\x0fPENDING_RESTART\x10\x04\"\xd6\b\n" +
 	"\rServerMessage\x12\x15\n" +
 	"\x06cmd_id\x18\x01 \x01(\tR\x05cmdId\x12$\n" +
 	"\x0eissued_at_unix\x18\x02 \x01(\x03R\fissuedAtUnix\x12\x1c\n" +
@@ -3880,10 +4105,11 @@ const file_agent_v1_agent_proto_rawDesc = "" +
 	"\x04keys\x18\x16 \x01(\v2\x1c.cacheos.agent.v1.BrowseKeysH\x00R\x04keys\x12H\n" +
 	"\x0eswitch_version\x18\x17 \x01(\v2\x1f.cacheos.agent.v1.SwitchVersionH\x00R\rswitchVersion\x12E\n" +
 	"\rupgrade_agent\x18\x18 \x01(\v2\x1e.cacheos.agent.v1.UpgradeAgentH\x00R\fupgradeAgent\x12/\n" +
-	"\x05probe\x18\x19 \x01(\v2\x17.cacheos.agent.v1.ProbeH\x00R\x05probeB\x06\n" +
+	"\x05probe\x18\x19 \x01(\v2\x17.cacheos.agent.v1.ProbeH\x00R\x05probe\x125\n" +
+	"\amigrate\x18\x1a \x01(\v2\x19.cacheos.agent.v1.MigrateH\x00R\amigrateB\x06\n" +
 	"\x04body\"!\n" +
 	"\rLicenseUpdate\x12\x10\n" +
-	"\x03raw\x18\x01 \x01(\tR\x03raw\"\xa1\x05\n" +
+	"\x03raw\x18\x01 \x01(\tR\x03raw\"\xc4\x05\n" +
 	"\x0eCreateInstance\x12\x12\n" +
 	"\x04port\x18\x01 \x01(\rR\x04port\x12*\n" +
 	"\x04kind\x18\x02 \x01(\x0e2\x16.cacheos.agent.v1.KindR\x04kind\x12D\n" +
@@ -3902,7 +4128,8 @@ const file_agent_v1_agent_proto_rawDesc = "" +
 	" \x01(\rR\x12sentinelMasterPort\x12'\n" +
 	"\x0fsentinel_quorum\x18\v \x01(\rR\x0esentinelQuorum\x12'\n" +
 	"\x0fcluster_enabled\x18\f \x01(\bR\x0eclusterEnabled\x12/\n" +
-	"\x03tls\x18\r \x01(\v2\x1d.cacheos.agent.v1.TlsMaterialR\x03tls\x1a9\n" +
+	"\x03tls\x18\r \x01(\v2\x1d.cacheos.agent.v1.TlsMaterialR\x03tls\x12!\n" +
+	"\fbind_address\x18\x0e \x01(\tR\vbindAddress\x1a9\n" +
 	"\vParamsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"3\n" +
@@ -3956,7 +4183,7 @@ const file_agent_v1_agent_proto_rawDesc = "" +
 	"\vCOORDINATED\x10\x02\x12\v\n" +
 	"\aCLUSTER\x10\x03\x12\x11\n" +
 	"\rCLUSTER_FORCE\x10\x04\x12\f\n" +
-	"\bSENTINEL\x10\x05\"\xd5\x03\n" +
+	"\bSENTINEL\x10\x05\"\x97\x04\n" +
 	"\tClusterOp\x12\x12\n" +
 	"\x04port\x18\x01 \x01(\rR\x04port\x12.\n" +
 	"\x02op\x18\x02 \x01(\x0e2\x1e.cacheos.agent.v1.ClusterOp.OpR\x02op\x12\x1b\n" +
@@ -3967,7 +4194,10 @@ const file_agent_v1_agent_proto_rawDesc = "" +
 	"\x04slot\x18\a \x01(\rR\x04slot\x12\x14\n" +
 	"\x05batch\x18\b \x01(\rR\x05batch\x12\x1d\n" +
 	"\n" +
-	"timeout_ms\x18\t \x01(\rR\ttimeoutMs\"\xb4\x01\n" +
+	"timeout_ms\x18\t \x01(\rR\ttimeoutMs\x12\x1b\n" +
+	"\tpeer_user\x18\n" +
+	" \x01(\tR\bpeerUser\x12#\n" +
+	"\rpeer_password\x18\v \x01(\tR\fpeerPassword\"\xb4\x01\n" +
 	"\x02Op\x12\x12\n" +
 	"\x0eOP_UNSPECIFIED\x10\x00\x12\b\n" +
 	"\x04MEET\x10\x01\x12\r\n" +
@@ -4015,11 +4245,12 @@ const file_agent_v1_agent_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12'\n" +
 	"\x0fpassword_sha256\x18\x02 \x03(\tR\x0epasswordSha256\x12\x14\n" +
 	"\x05rules\x18\x03 \x03(\tR\x05rules\x12\x18\n" +
-	"\aenabled\x18\x04 \x01(\bR\aenabled\"Q\n" +
+	"\aenabled\x18\x04 \x01(\bR\aenabled\"i\n" +
 	"\x06Backup\x12\x12\n" +
 	"\x04port\x18\x01 \x01(\rR\x04port\x12\x1b\n" +
 	"\tbackup_id\x18\x02 \x01(\tR\bbackupId\x12\x16\n" +
-	"\x06upload\x18\x03 \x01(\bR\x06upload\"u\n" +
+	"\x06upload\x18\x03 \x01(\bR\x06upload\x12\x16\n" +
+	"\x06delete\x18\x04 \x01(\bR\x06delete\"u\n" +
 	"\aRestore\x12\x12\n" +
 	"\x04port\x18\x01 \x01(\rR\x04port\x12\x1b\n" +
 	"\tbackup_id\x18\x02 \x01(\tR\bbackupId\x12!\n" +
@@ -4037,7 +4268,26 @@ const file_agent_v1_agent_proto_rawDesc = "" +
 	"\x06MEMORY\x10\x03\x12\v\n" +
 	"\aBIGKEYS\x10\x04\x12\v\n" +
 	"\aCLIENTS\x10\x05\x12\x0f\n" +
-	"\vRDB_ANALYZE\x10\x06\"\x92\x01\n" +
+	"\vRDB_ANALYZE\x10\x06\"\xab\x03\n" +
+	"\aMigrate\x12\x12\n" +
+	"\x04port\x18\x01 \x01(\rR\x04port\x12\x15\n" +
+	"\x06job_id\x18\x02 \x01(\tR\x05jobId\x12%\n" +
+	"\x0esource_address\x18\x03 \x01(\tR\rsourceAddress\x12\x1f\n" +
+	"\vsource_user\x18\x04 \x01(\tR\n" +
+	"sourceUser\x12'\n" +
+	"\x0fsource_password\x18\x05 \x01(\tR\x0esourcePassword\x12\x18\n" +
+	"\apattern\x18\x06 \x01(\tR\apattern\x122\n" +
+	"\x04mode\x18\a \x01(\x0e2\x1e.cacheos.agent.v1.Migrate.ModeR\x04mode\x12\x14\n" +
+	"\x05batch\x18\b \x01(\rR\x05batch\x12\x1d\n" +
+	"\n" +
+	"max_passes\x18\t \x01(\rR\tmaxPasses\x12'\n" +
+	"\x0fsource_quiesced\x18\n" +
+	" \x01(\bR\x0esourceQuiesced\x12\x1a\n" +
+	"\bfinalize\x18\v \x01(\bR\bfinalize\"<\n" +
+	"\x04Mode\x12\x14\n" +
+	"\x10MODE_UNSPECIFIED\x10\x00\x12\b\n" +
+	"\x04FULL\x10\x01\x12\x14\n" +
+	"\x10FULL_INCREMENTAL\x10\x02\"\x92\x01\n" +
 	"\n" +
 	"BrowseKeys\x12\x12\n" +
 	"\x04port\x18\x01 \x01(\rR\x04port\x12\x18\n" +
@@ -4105,8 +4355,8 @@ func file_agent_v1_agent_proto_rawDescGZIP() []byte {
 	return file_agent_v1_agent_proto_rawDescData
 }
 
-var file_agent_v1_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 8)
-var file_agent_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 41)
+var file_agent_v1_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 9)
+var file_agent_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
 var file_agent_v1_agent_proto_goTypes = []any{
 	(Kind)(0),                   // 0: cacheos.agent.v1.Kind
 	(State)(0),                  // 1: cacheos.agent.v1.State
@@ -4116,108 +4366,112 @@ var file_agent_v1_agent_proto_goTypes = []any{
 	(ClusterOp_Op)(0),           // 5: cacheos.agent.v1.ClusterOp.Op
 	(SentinelOp_Op)(0),          // 6: cacheos.agent.v1.SentinelOp.Op
 	(Diagnose_Kind)(0),          // 7: cacheos.agent.v1.Diagnose.Kind
-	(*EnrollRequest)(nil),       // 8: cacheos.agent.v1.EnrollRequest
-	(*EnrollResponse)(nil),      // 9: cacheos.agent.v1.EnrollResponse
-	(*AgentMessage)(nil),        // 10: cacheos.agent.v1.AgentMessage
-	(*Hello)(nil),               // 11: cacheos.agent.v1.Hello
-	(*HostTuning)(nil),          // 12: cacheos.agent.v1.HostTuning
-	(*Heartbeat)(nil),           // 13: cacheos.agent.v1.Heartbeat
-	(*InstanceStatus)(nil),      // 14: cacheos.agent.v1.InstanceStatus
-	(*ReplicaInfo)(nil),         // 15: cacheos.agent.v1.ReplicaInfo
-	(*SentinelMaster)(nil),      // 16: cacheos.agent.v1.SentinelMaster
-	(*SlowlogEntry)(nil),        // 17: cacheos.agent.v1.SlowlogEntry
-	(*CommandResult)(nil),       // 18: cacheos.agent.v1.CommandResult
-	(*ServerMessage)(nil),       // 19: cacheos.agent.v1.ServerMessage
-	(*LicenseUpdate)(nil),       // 20: cacheos.agent.v1.LicenseUpdate
-	(*CreateInstance)(nil),      // 21: cacheos.agent.v1.CreateInstance
-	(*ReplicaOf)(nil),           // 22: cacheos.agent.v1.ReplicaOf
-	(*TlsMaterial)(nil),         // 23: cacheos.agent.v1.TlsMaterial
-	(*ApplyParams)(nil),         // 24: cacheos.agent.v1.ApplyParams
-	(*InstanceAction)(nil),      // 25: cacheos.agent.v1.InstanceAction
-	(*SetReplication)(nil),      // 26: cacheos.agent.v1.SetReplication
-	(*Failover)(nil),            // 27: cacheos.agent.v1.Failover
-	(*ClusterOp)(nil),           // 28: cacheos.agent.v1.ClusterOp
-	(*SlotRange)(nil),           // 29: cacheos.agent.v1.SlotRange
-	(*SentinelOp)(nil),          // 30: cacheos.agent.v1.SentinelOp
-	(*SyncAcl)(nil),             // 31: cacheos.agent.v1.SyncAcl
-	(*AclUser)(nil),             // 32: cacheos.agent.v1.AclUser
-	(*Backup)(nil),              // 33: cacheos.agent.v1.Backup
-	(*Restore)(nil),             // 34: cacheos.agent.v1.Restore
-	(*Diagnose)(nil),            // 35: cacheos.agent.v1.Diagnose
-	(*BrowseKeys)(nil),          // 36: cacheos.agent.v1.BrowseKeys
-	(*SwitchVersion)(nil),       // 37: cacheos.agent.v1.SwitchVersion
-	(*UpgradeAgent)(nil),        // 38: cacheos.agent.v1.UpgradeAgent
-	(*Probe)(nil),               // 39: cacheos.agent.v1.Probe
-	(*FetchPackageRequest)(nil), // 40: cacheos.agent.v1.FetchPackageRequest
-	(*PackageChunk)(nil),        // 41: cacheos.agent.v1.PackageChunk
-	(*BackupChunk)(nil),         // 42: cacheos.agent.v1.BackupChunk
-	(*UploadResult)(nil),        // 43: cacheos.agent.v1.UploadResult
-	nil,                         // 44: cacheos.agent.v1.InstanceStatus.ConfigEntry
-	nil,                         // 45: cacheos.agent.v1.CommandResult.DetailsEntry
-	nil,                         // 46: cacheos.agent.v1.CreateInstance.ParamsEntry
-	nil,                         // 47: cacheos.agent.v1.ApplyParams.ParamsEntry
-	nil,                         // 48: cacheos.agent.v1.SentinelOp.OptionsEntry
+	(Migrate_Mode)(0),           // 8: cacheos.agent.v1.Migrate.Mode
+	(*EnrollRequest)(nil),       // 9: cacheos.agent.v1.EnrollRequest
+	(*EnrollResponse)(nil),      // 10: cacheos.agent.v1.EnrollResponse
+	(*AgentMessage)(nil),        // 11: cacheos.agent.v1.AgentMessage
+	(*Hello)(nil),               // 12: cacheos.agent.v1.Hello
+	(*HostTuning)(nil),          // 13: cacheos.agent.v1.HostTuning
+	(*Heartbeat)(nil),           // 14: cacheos.agent.v1.Heartbeat
+	(*InstanceStatus)(nil),      // 15: cacheos.agent.v1.InstanceStatus
+	(*ReplicaInfo)(nil),         // 16: cacheos.agent.v1.ReplicaInfo
+	(*SentinelMaster)(nil),      // 17: cacheos.agent.v1.SentinelMaster
+	(*SlowlogEntry)(nil),        // 18: cacheos.agent.v1.SlowlogEntry
+	(*CommandResult)(nil),       // 19: cacheos.agent.v1.CommandResult
+	(*ServerMessage)(nil),       // 20: cacheos.agent.v1.ServerMessage
+	(*LicenseUpdate)(nil),       // 21: cacheos.agent.v1.LicenseUpdate
+	(*CreateInstance)(nil),      // 22: cacheos.agent.v1.CreateInstance
+	(*ReplicaOf)(nil),           // 23: cacheos.agent.v1.ReplicaOf
+	(*TlsMaterial)(nil),         // 24: cacheos.agent.v1.TlsMaterial
+	(*ApplyParams)(nil),         // 25: cacheos.agent.v1.ApplyParams
+	(*InstanceAction)(nil),      // 26: cacheos.agent.v1.InstanceAction
+	(*SetReplication)(nil),      // 27: cacheos.agent.v1.SetReplication
+	(*Failover)(nil),            // 28: cacheos.agent.v1.Failover
+	(*ClusterOp)(nil),           // 29: cacheos.agent.v1.ClusterOp
+	(*SlotRange)(nil),           // 30: cacheos.agent.v1.SlotRange
+	(*SentinelOp)(nil),          // 31: cacheos.agent.v1.SentinelOp
+	(*SyncAcl)(nil),             // 32: cacheos.agent.v1.SyncAcl
+	(*AclUser)(nil),             // 33: cacheos.agent.v1.AclUser
+	(*Backup)(nil),              // 34: cacheos.agent.v1.Backup
+	(*Restore)(nil),             // 35: cacheos.agent.v1.Restore
+	(*Diagnose)(nil),            // 36: cacheos.agent.v1.Diagnose
+	(*Migrate)(nil),             // 37: cacheos.agent.v1.Migrate
+	(*BrowseKeys)(nil),          // 38: cacheos.agent.v1.BrowseKeys
+	(*SwitchVersion)(nil),       // 39: cacheos.agent.v1.SwitchVersion
+	(*UpgradeAgent)(nil),        // 40: cacheos.agent.v1.UpgradeAgent
+	(*Probe)(nil),               // 41: cacheos.agent.v1.Probe
+	(*FetchPackageRequest)(nil), // 42: cacheos.agent.v1.FetchPackageRequest
+	(*PackageChunk)(nil),        // 43: cacheos.agent.v1.PackageChunk
+	(*BackupChunk)(nil),         // 44: cacheos.agent.v1.BackupChunk
+	(*UploadResult)(nil),        // 45: cacheos.agent.v1.UploadResult
+	nil,                         // 46: cacheos.agent.v1.InstanceStatus.ConfigEntry
+	nil,                         // 47: cacheos.agent.v1.CommandResult.DetailsEntry
+	nil,                         // 48: cacheos.agent.v1.CreateInstance.ParamsEntry
+	nil,                         // 49: cacheos.agent.v1.ApplyParams.ParamsEntry
+	nil,                         // 50: cacheos.agent.v1.SentinelOp.OptionsEntry
 }
 var file_agent_v1_agent_proto_depIdxs = []int32{
-	11, // 0: cacheos.agent.v1.AgentMessage.hello:type_name -> cacheos.agent.v1.Hello
-	13, // 1: cacheos.agent.v1.AgentMessage.heartbeat:type_name -> cacheos.agent.v1.Heartbeat
-	18, // 2: cacheos.agent.v1.AgentMessage.result:type_name -> cacheos.agent.v1.CommandResult
-	12, // 3: cacheos.agent.v1.Hello.tuning:type_name -> cacheos.agent.v1.HostTuning
-	14, // 4: cacheos.agent.v1.Hello.instances:type_name -> cacheos.agent.v1.InstanceStatus
-	14, // 5: cacheos.agent.v1.Heartbeat.instances:type_name -> cacheos.agent.v1.InstanceStatus
+	12, // 0: cacheos.agent.v1.AgentMessage.hello:type_name -> cacheos.agent.v1.Hello
+	14, // 1: cacheos.agent.v1.AgentMessage.heartbeat:type_name -> cacheos.agent.v1.Heartbeat
+	19, // 2: cacheos.agent.v1.AgentMessage.result:type_name -> cacheos.agent.v1.CommandResult
+	13, // 3: cacheos.agent.v1.Hello.tuning:type_name -> cacheos.agent.v1.HostTuning
+	15, // 4: cacheos.agent.v1.Hello.instances:type_name -> cacheos.agent.v1.InstanceStatus
+	15, // 5: cacheos.agent.v1.Heartbeat.instances:type_name -> cacheos.agent.v1.InstanceStatus
 	0,  // 6: cacheos.agent.v1.InstanceStatus.kind:type_name -> cacheos.agent.v1.Kind
 	1,  // 7: cacheos.agent.v1.InstanceStatus.state:type_name -> cacheos.agent.v1.State
-	15, // 8: cacheos.agent.v1.InstanceStatus.replicas:type_name -> cacheos.agent.v1.ReplicaInfo
-	16, // 9: cacheos.agent.v1.InstanceStatus.sentinel_masters:type_name -> cacheos.agent.v1.SentinelMaster
-	44, // 10: cacheos.agent.v1.InstanceStatus.config:type_name -> cacheos.agent.v1.InstanceStatus.ConfigEntry
-	17, // 11: cacheos.agent.v1.InstanceStatus.slowlog_tail:type_name -> cacheos.agent.v1.SlowlogEntry
+	16, // 8: cacheos.agent.v1.InstanceStatus.replicas:type_name -> cacheos.agent.v1.ReplicaInfo
+	17, // 9: cacheos.agent.v1.InstanceStatus.sentinel_masters:type_name -> cacheos.agent.v1.SentinelMaster
+	46, // 10: cacheos.agent.v1.InstanceStatus.config:type_name -> cacheos.agent.v1.InstanceStatus.ConfigEntry
+	18, // 11: cacheos.agent.v1.InstanceStatus.slowlog_tail:type_name -> cacheos.agent.v1.SlowlogEntry
 	2,  // 12: cacheos.agent.v1.CommandResult.status:type_name -> cacheos.agent.v1.CommandResult.Status
-	14, // 13: cacheos.agent.v1.CommandResult.instance:type_name -> cacheos.agent.v1.InstanceStatus
-	45, // 14: cacheos.agent.v1.CommandResult.details:type_name -> cacheos.agent.v1.CommandResult.DetailsEntry
-	20, // 15: cacheos.agent.v1.ServerMessage.license:type_name -> cacheos.agent.v1.LicenseUpdate
-	21, // 16: cacheos.agent.v1.ServerMessage.create:type_name -> cacheos.agent.v1.CreateInstance
-	24, // 17: cacheos.agent.v1.ServerMessage.params:type_name -> cacheos.agent.v1.ApplyParams
-	25, // 18: cacheos.agent.v1.ServerMessage.action:type_name -> cacheos.agent.v1.InstanceAction
-	26, // 19: cacheos.agent.v1.ServerMessage.replication:type_name -> cacheos.agent.v1.SetReplication
-	27, // 20: cacheos.agent.v1.ServerMessage.failover:type_name -> cacheos.agent.v1.Failover
-	28, // 21: cacheos.agent.v1.ServerMessage.cluster:type_name -> cacheos.agent.v1.ClusterOp
-	30, // 22: cacheos.agent.v1.ServerMessage.sentinel:type_name -> cacheos.agent.v1.SentinelOp
-	31, // 23: cacheos.agent.v1.ServerMessage.acl:type_name -> cacheos.agent.v1.SyncAcl
-	33, // 24: cacheos.agent.v1.ServerMessage.backup:type_name -> cacheos.agent.v1.Backup
-	34, // 25: cacheos.agent.v1.ServerMessage.restore:type_name -> cacheos.agent.v1.Restore
-	35, // 26: cacheos.agent.v1.ServerMessage.diagnose:type_name -> cacheos.agent.v1.Diagnose
-	36, // 27: cacheos.agent.v1.ServerMessage.keys:type_name -> cacheos.agent.v1.BrowseKeys
-	37, // 28: cacheos.agent.v1.ServerMessage.switch_version:type_name -> cacheos.agent.v1.SwitchVersion
-	38, // 29: cacheos.agent.v1.ServerMessage.upgrade_agent:type_name -> cacheos.agent.v1.UpgradeAgent
-	39, // 30: cacheos.agent.v1.ServerMessage.probe:type_name -> cacheos.agent.v1.Probe
-	0,  // 31: cacheos.agent.v1.CreateInstance.kind:type_name -> cacheos.agent.v1.Kind
-	46, // 32: cacheos.agent.v1.CreateInstance.params:type_name -> cacheos.agent.v1.CreateInstance.ParamsEntry
-	22, // 33: cacheos.agent.v1.CreateInstance.replica_of:type_name -> cacheos.agent.v1.ReplicaOf
-	32, // 34: cacheos.agent.v1.CreateInstance.acl_users:type_name -> cacheos.agent.v1.AclUser
-	23, // 35: cacheos.agent.v1.CreateInstance.tls:type_name -> cacheos.agent.v1.TlsMaterial
-	47, // 36: cacheos.agent.v1.ApplyParams.params:type_name -> cacheos.agent.v1.ApplyParams.ParamsEntry
-	3,  // 37: cacheos.agent.v1.InstanceAction.action:type_name -> cacheos.agent.v1.InstanceAction.Action
-	22, // 38: cacheos.agent.v1.SetReplication.replica_of:type_name -> cacheos.agent.v1.ReplicaOf
-	4,  // 39: cacheos.agent.v1.Failover.mode:type_name -> cacheos.agent.v1.Failover.Mode
-	5,  // 40: cacheos.agent.v1.ClusterOp.op:type_name -> cacheos.agent.v1.ClusterOp.Op
-	29, // 41: cacheos.agent.v1.ClusterOp.slots:type_name -> cacheos.agent.v1.SlotRange
-	6,  // 42: cacheos.agent.v1.SentinelOp.op:type_name -> cacheos.agent.v1.SentinelOp.Op
-	48, // 43: cacheos.agent.v1.SentinelOp.options:type_name -> cacheos.agent.v1.SentinelOp.OptionsEntry
-	32, // 44: cacheos.agent.v1.SyncAcl.users:type_name -> cacheos.agent.v1.AclUser
-	7,  // 45: cacheos.agent.v1.Diagnose.what:type_name -> cacheos.agent.v1.Diagnose.Kind
-	8,  // 46: cacheos.agent.v1.AgentGateway.Enroll:input_type -> cacheos.agent.v1.EnrollRequest
-	10, // 47: cacheos.agent.v1.AgentGateway.Connect:input_type -> cacheos.agent.v1.AgentMessage
-	40, // 48: cacheos.agent.v1.AgentGateway.FetchPackage:input_type -> cacheos.agent.v1.FetchPackageRequest
-	42, // 49: cacheos.agent.v1.AgentGateway.UploadBackup:input_type -> cacheos.agent.v1.BackupChunk
-	9,  // 50: cacheos.agent.v1.AgentGateway.Enroll:output_type -> cacheos.agent.v1.EnrollResponse
-	19, // 51: cacheos.agent.v1.AgentGateway.Connect:output_type -> cacheos.agent.v1.ServerMessage
-	41, // 52: cacheos.agent.v1.AgentGateway.FetchPackage:output_type -> cacheos.agent.v1.PackageChunk
-	43, // 53: cacheos.agent.v1.AgentGateway.UploadBackup:output_type -> cacheos.agent.v1.UploadResult
-	50, // [50:54] is the sub-list for method output_type
-	46, // [46:50] is the sub-list for method input_type
-	46, // [46:46] is the sub-list for extension type_name
-	46, // [46:46] is the sub-list for extension extendee
-	0,  // [0:46] is the sub-list for field type_name
+	15, // 13: cacheos.agent.v1.CommandResult.instance:type_name -> cacheos.agent.v1.InstanceStatus
+	47, // 14: cacheos.agent.v1.CommandResult.details:type_name -> cacheos.agent.v1.CommandResult.DetailsEntry
+	21, // 15: cacheos.agent.v1.ServerMessage.license:type_name -> cacheos.agent.v1.LicenseUpdate
+	22, // 16: cacheos.agent.v1.ServerMessage.create:type_name -> cacheos.agent.v1.CreateInstance
+	25, // 17: cacheos.agent.v1.ServerMessage.params:type_name -> cacheos.agent.v1.ApplyParams
+	26, // 18: cacheos.agent.v1.ServerMessage.action:type_name -> cacheos.agent.v1.InstanceAction
+	27, // 19: cacheos.agent.v1.ServerMessage.replication:type_name -> cacheos.agent.v1.SetReplication
+	28, // 20: cacheos.agent.v1.ServerMessage.failover:type_name -> cacheos.agent.v1.Failover
+	29, // 21: cacheos.agent.v1.ServerMessage.cluster:type_name -> cacheos.agent.v1.ClusterOp
+	31, // 22: cacheos.agent.v1.ServerMessage.sentinel:type_name -> cacheos.agent.v1.SentinelOp
+	32, // 23: cacheos.agent.v1.ServerMessage.acl:type_name -> cacheos.agent.v1.SyncAcl
+	34, // 24: cacheos.agent.v1.ServerMessage.backup:type_name -> cacheos.agent.v1.Backup
+	35, // 25: cacheos.agent.v1.ServerMessage.restore:type_name -> cacheos.agent.v1.Restore
+	36, // 26: cacheos.agent.v1.ServerMessage.diagnose:type_name -> cacheos.agent.v1.Diagnose
+	38, // 27: cacheos.agent.v1.ServerMessage.keys:type_name -> cacheos.agent.v1.BrowseKeys
+	39, // 28: cacheos.agent.v1.ServerMessage.switch_version:type_name -> cacheos.agent.v1.SwitchVersion
+	40, // 29: cacheos.agent.v1.ServerMessage.upgrade_agent:type_name -> cacheos.agent.v1.UpgradeAgent
+	41, // 30: cacheos.agent.v1.ServerMessage.probe:type_name -> cacheos.agent.v1.Probe
+	37, // 31: cacheos.agent.v1.ServerMessage.migrate:type_name -> cacheos.agent.v1.Migrate
+	0,  // 32: cacheos.agent.v1.CreateInstance.kind:type_name -> cacheos.agent.v1.Kind
+	48, // 33: cacheos.agent.v1.CreateInstance.params:type_name -> cacheos.agent.v1.CreateInstance.ParamsEntry
+	23, // 34: cacheos.agent.v1.CreateInstance.replica_of:type_name -> cacheos.agent.v1.ReplicaOf
+	33, // 35: cacheos.agent.v1.CreateInstance.acl_users:type_name -> cacheos.agent.v1.AclUser
+	24, // 36: cacheos.agent.v1.CreateInstance.tls:type_name -> cacheos.agent.v1.TlsMaterial
+	49, // 37: cacheos.agent.v1.ApplyParams.params:type_name -> cacheos.agent.v1.ApplyParams.ParamsEntry
+	3,  // 38: cacheos.agent.v1.InstanceAction.action:type_name -> cacheos.agent.v1.InstanceAction.Action
+	23, // 39: cacheos.agent.v1.SetReplication.replica_of:type_name -> cacheos.agent.v1.ReplicaOf
+	4,  // 40: cacheos.agent.v1.Failover.mode:type_name -> cacheos.agent.v1.Failover.Mode
+	5,  // 41: cacheos.agent.v1.ClusterOp.op:type_name -> cacheos.agent.v1.ClusterOp.Op
+	30, // 42: cacheos.agent.v1.ClusterOp.slots:type_name -> cacheos.agent.v1.SlotRange
+	6,  // 43: cacheos.agent.v1.SentinelOp.op:type_name -> cacheos.agent.v1.SentinelOp.Op
+	50, // 44: cacheos.agent.v1.SentinelOp.options:type_name -> cacheos.agent.v1.SentinelOp.OptionsEntry
+	33, // 45: cacheos.agent.v1.SyncAcl.users:type_name -> cacheos.agent.v1.AclUser
+	7,  // 46: cacheos.agent.v1.Diagnose.what:type_name -> cacheos.agent.v1.Diagnose.Kind
+	8,  // 47: cacheos.agent.v1.Migrate.mode:type_name -> cacheos.agent.v1.Migrate.Mode
+	9,  // 48: cacheos.agent.v1.AgentGateway.Enroll:input_type -> cacheos.agent.v1.EnrollRequest
+	11, // 49: cacheos.agent.v1.AgentGateway.Connect:input_type -> cacheos.agent.v1.AgentMessage
+	42, // 50: cacheos.agent.v1.AgentGateway.FetchPackage:input_type -> cacheos.agent.v1.FetchPackageRequest
+	44, // 51: cacheos.agent.v1.AgentGateway.UploadBackup:input_type -> cacheos.agent.v1.BackupChunk
+	10, // 52: cacheos.agent.v1.AgentGateway.Enroll:output_type -> cacheos.agent.v1.EnrollResponse
+	20, // 53: cacheos.agent.v1.AgentGateway.Connect:output_type -> cacheos.agent.v1.ServerMessage
+	43, // 54: cacheos.agent.v1.AgentGateway.FetchPackage:output_type -> cacheos.agent.v1.PackageChunk
+	45, // 55: cacheos.agent.v1.AgentGateway.UploadBackup:output_type -> cacheos.agent.v1.UploadResult
+	52, // [52:56] is the sub-list for method output_type
+	48, // [48:52] is the sub-list for method input_type
+	48, // [48:48] is the sub-list for extension type_name
+	48, // [48:48] is the sub-list for extension extendee
+	0,  // [0:48] is the sub-list for field type_name
 }
 
 func init() { file_agent_v1_agent_proto_init() }
@@ -4247,14 +4501,15 @@ func file_agent_v1_agent_proto_init() {
 		(*ServerMessage_SwitchVersion)(nil),
 		(*ServerMessage_UpgradeAgent)(nil),
 		(*ServerMessage_Probe)(nil),
+		(*ServerMessage_Migrate)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_agent_v1_agent_proto_rawDesc), len(file_agent_v1_agent_proto_rawDesc)),
-			NumEnums:      8,
-			NumMessages:   41,
+			NumEnums:      9,
+			NumMessages:   42,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

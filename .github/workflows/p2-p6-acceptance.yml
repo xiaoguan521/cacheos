@@ -1,0 +1,200 @@
+name: p2-p6-acceptance
+
+# P2/P3/P5/P6 的可自动化验收入口。真实 Kylin/UOS、跨主机网络、正式
+# 证书签名和 CPU/OS 互认证仍需要在发布前的目标环境中完成。
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      browser:
+        description: "运行控制台浏览器端到端验收"
+        type: boolean
+        default: true
+      object_store:
+        description: "运行 S3 兼容对象存储真实回归"
+        type: boolean
+        default: true
+      tongsuo:
+        description: "运行铜锁国密变体构建（耗时较长）"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p2-p6-acceptance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  p2-console:
+    name: P2 console and browser acceptance
+    if: github.event_name == 'pull_request' || inputs.browser
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Go tests and static checks
+        run: go test ./... && go vet ./...
+      - name: Build console web assets
+        working-directory: web
+        run: |
+          corepack enable
+          corepack pnpm install --frozen-lockfile
+          corepack pnpm run build
+      - name: Install Playwright Chromium
+        run: |
+          set -euo pipefail
+          e2e_dir="$RUNNER_TEMP/cacheos-e2e"
+          mkdir -p "$e2e_dir"
+          npm --prefix "$e2e_dir" init -y >/dev/null
+          npm --prefix "$e2e_dir" install --no-save playwright@1.56.1
+          "$e2e_dir/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Start an empty console and run browser acceptance
+        run: |
+          set -euo pipefail
+          data_dir="$RUNNER_TEMP/cacheos-console"
+          bin="$RUNNER_TEMP/sycache-console"
+          go build -o "$bin" ./cmd/sycache-console
+          CACHEOS_LISTEN=127.0.0.1:18443 \
+          CACHEOS_GRPC_LISTEN=127.0.0.1:19443 \
+          CACHEOS_DATA="$data_dir" \
+          "$bin" >"$RUNNER_TEMP/sycache-console.log" 2>&1 &
+          console_pid=$!
+          trap 'kill "$console_pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:18443/api/v1/setup/status >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:18443/api/v1/setup/status >/dev/null
+          NODE_PATH="$RUNNER_TEMP/cacheos-e2e/node_modules" \
+          BASE=http://127.0.0.1:18443 \
+          ADMIN_USER=admin \
+          ADMIN_PW='C0nsole!2026Safe' \
+          node web/e2e/ui-acceptance.cjs
+
+  p3-dataplane:
+    name: P3 placement and failover drill
+    if: github.event_name == 'pull_request' || inputs.browser
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install data-plane build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential libssl-dev libsystemd-dev pkg-config python3 binutils file tcl
+      - name: Fetch pinned upstream source
+        run: |
+          set -euo pipefail
+          source dataplane/UPSTREAM
+          git -c advice.detachedHead=false clone -q --depth 1 --branch "$UPSTREAM_TAG" "$UPSTREAM_GIT" upstream
+          test "$(git -C upstream rev-parse HEAD)" = "$UPSTREAM_COMMIT"
+      - name: Run placement tests
+        run: go test ./internal/console/orch -run 'Scale|Pick' -count=1 -v
+      - name: Build a Linux data plane and run local failover drill
+        run: |
+          set -euo pipefail
+          CACHEOS_JOBS=2 dataplane/build-sycache.sh -s upstream -o dist
+          package="$(find dist -maxdepth 1 -type f -name 'sycache-[0-9]*-x86_64.tar.gz' -print -quit)"
+          test -n "$package"
+          root="$RUNNER_TEMP/sycache-package"
+          mkdir -p "$root"
+          tar -xzf "$package" -C "$root"
+          SYCACHE_BIN="$root/opt/sycache/bin" scripts/demo-local.sh
+
+  p5-object-store:
+    name: P5 S3-compatible backup round trip
+    if: github.event_name == 'pull_request' || inputs.object_store
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      localstack:
+        image: localstack/localstack:3.8.1
+        env:
+          SERVICES: s3
+          AWS_DEFAULT_REGION: us-east-1
+        ports:
+          - 4566:4566
+        options: >-
+          --health-cmd "curl -f http://localhost:4566/_localstack/health || exit 1"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Create test bucket
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:4566/_localstack/health >/dev/null && break
+            sleep 1
+          done
+          code="$(curl -sS -o /dev/null -w '%{http_code}' -X PUT http://127.0.0.1:4566/cacheos)"
+          test "$code" = 200 || test "$code" = 204 || test "$code" = 409
+      - name: Run S3-compatible backup test
+        env:
+          CACHEOS_S3_ENDPOINT: http://127.0.0.1:4566
+          CACHEOS_S3_ALLOW_HTTP: "true"
+          CACHEOS_S3_BUCKET: cacheos
+          CACHEOS_S3_ACCESS_KEY: test
+          CACHEOS_S3_SECRET_KEY: test
+        run: go test ./internal/console/backupstore -run TestS3CompatibleRoundTrip -count=1 -v
+
+  p6-tongsuo:
+    name: P6 Tongsuo build smoke
+    if: github.event_name == 'workflow_dispatch' && inputs.tongsuo
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch pinned upstream source
+        run: |
+          set -euo pipefail
+          source dataplane/UPSTREAM
+          git -c advice.detachedHead=false clone -q --depth 1 --branch "$UPSTREAM_TAG" "$UPSTREAM_GIT" upstream
+          test "$(git -C upstream rev-parse HEAD)" = "$UPSTREAM_COMMIT"
+      - name: Build and verify Tongsuo variant
+        run: |
+          set -euo pipefail
+          mkdir -p dist-tongsuo
+          docker run --rm \
+            -v "$PWD:/repo:ro" \
+            -v "$PWD/upstream:/upstream:ro" \
+            -v "$PWD/dist-tongsuo:/out" \
+            openeuler/tongsuo:latest \
+            bash -euo pipefail -c '
+              if command -v dnf >/dev/null 2>&1; then
+                dnf install -y git gcc gcc-c++ make patch python3 binutils tar gzip file
+              elif command -v microdnf >/dev/null 2>&1; then
+                microdnf install -y git gcc gcc-c++ make patch python3 binutils tar gzip file
+              else
+                yum install -y git gcc gcc-c++ make patch python3 binutils tar gzip file
+              fi
+              export TONGSUO_PREFIX=/usr/local/tongsuo
+              export UPSTREAM_SRC=/upstream
+              export CACHEOS_TONGSUO_OUT=/out
+              export CACHEOS_JOBS=2
+              export LD_LIBRARY_PATH="$TONGSUO_PREFIX/lib64:$TONGSUO_PREFIX/lib:${LD_LIBRARY_PATH:-}"
+              /repo/scripts/tongsuo-build.sh
+            '
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cacheos-tongsuo
+          if-no-files-found: ignore
+          retention-days: 30
+          path: dist-tongsuo/*

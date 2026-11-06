@@ -553,7 +553,19 @@ diff -ruN a/src/server.c b/src/server.c
                  "redis_git_sha1:%s\r\n", serverGitSHA1(),
                  "redis_git_dirty:%i\r\n", strtol(serverGitDirty(), NULL, 10) > 0,
                  "redis_build_id:%s\r\n", serverBuildIdString(),
-@@ -6907,30 +6907,30 @@
+@@ -6158,7 +6158,10 @@
+                 "config_file:%s\r\n", server.configfile ? server.configfile : "",
+                 "io_threads_active:%i\r\n", server.active_io_threads_num > 1,
+                 "availability_zone:%s\r\n", server.availability_zone));
+-
++        /* Redis-compatible cluster mode alias in branded mode. */
++        if (!server.extended_redis_compat && server.cluster_enabled) {
++            info = sdscatfmt(info, "redis_mode:%s\r\n", mode);
++        }
+         /* Conditional properties */
+         if (isShutdownInitiated()) {
+             info = sdscatfmt(info, "shutdown_in_milliseconds:%I\r\n",
+@@ -6907,30 +6910,30 @@
  }
  
  sds getVersion(void) {
@@ -599,7 +611,7 @@ diff -ruN a/src/server.c b/src/server.c
      exit(0);
  }
  
-@@ -6955,7 +6955,7 @@
+@@ -6955,7 +6958,7 @@
      if (!show_logo) {
          serverLog(LL_NOTICE, "Running mode=%s, port=%d.", mode, server.port ? server.port : server.tls_port);
      } else {
@@ -608,7 +620,7 @@ diff -ruN a/src/server.c b/src/server.c
                   (sizeof(long) == 8) ? "64" : "32", mode, server.port ? server.port : server.tls_port, (long)getpid());
          serverLogRaw(LL_NOTICE | LL_RAW, buf);
      }
-@@ -7227,7 +7227,7 @@
+@@ -7227,7 +7230,7 @@
  /* Returns 1 if there is --sentinel among the arguments or if
   * executable name contains "valkey-sentinel". */
  int checkForSentinelMode(int argc, char **argv, char *exec_name) {
@@ -617,7 +629,7 @@ diff -ruN a/src/server.c b/src/server.c
  
      /* valkey may install symlinks like redis-sentinel -> valkey-sentinel. */
      if (strstr(exec_name, "redis-sentinel") != NULL) return 1;
-@@ -7305,7 +7305,7 @@
+@@ -7305,7 +7308,7 @@
  
  void serverOutOfMemoryHandler(size_t allocation_size) {
      serverLog(LL_WARNING, "Out Of Memory allocating %zu bytes!", allocation_size);
@@ -626,7 +638,7 @@ diff -ruN a/src/server.c b/src/server.c
  }
  
  /* Callback for sdstemplate on proc-title-template. See valkey.conf for
-@@ -7415,10 +7415,10 @@
+@@ -7415,10 +7418,10 @@
  static int serverSupervisedSystemd(void) {
  #ifndef HAVE_LIBSYSTEMD
      serverLog(LL_WARNING,
@@ -639,7 +651,7 @@ diff -ruN a/src/server.c b/src/server.c
      serverLog(LL_NOTICE, "Supervised by systemd. Please make sure you set appropriate values for TimeoutStartSec and "
                           "TimeoutStopSec in your service unit.");
      return 1;
-@@ -7528,9 +7528,9 @@
+@@ -7528,9 +7531,9 @@
      /* Check if we need to start in valkey-check-rdb/aof mode. We just execute
       * the program main. However the program is part of the server executable
       * so that we can easily execute an RDB check on loading errors. */
@@ -651,7 +663,7 @@ diff -ruN a/src/server.c b/src/server.c
          redis_check_aof_main(argc, argv);
  
      /* valkey may install symlinks like
-@@ -7548,7 +7548,7 @@
+@@ -7548,7 +7551,7 @@
          /* Handle special options --help and --version */
          if (strcmp(argv[1], "-v") == 0 || strcmp(argv[1], "--version") == 0) {
              sds version = getVersion();
@@ -660,7 +672,7 @@ diff -ruN a/src/server.c b/src/server.c
              sdsfree(version);
              exit(0);
          }
-@@ -7559,7 +7559,7 @@
+@@ -7559,7 +7562,7 @@
                  exit(0);
              } else {
                  fprintf(stderr, "Please specify the amount of memory to test in megabytes.\n");
@@ -669,7 +681,7 @@ diff -ruN a/src/server.c b/src/server.c
                  exit(1);
              }
          }
-@@ -7679,7 +7679,7 @@
+@@ -7679,7 +7682,7 @@
                        "Failed to test the kernel for a bug that could lead to data corruption during background save. "
                        "Your system could be affected, please report this error.");
          if (!checkIgnoreWarning("ARM64-COW-BUG")) {
@@ -678,7 +690,7 @@ diff -ruN a/src/server.c b/src/server.c
                                    "Note that it is possible to suppress this warning by setting the following config: "
                                    "ignore-warnings ARM64-COW-BUG");
              exit(1);
-@@ -7698,14 +7698,14 @@
+@@ -7698,14 +7701,14 @@
          server.pid = getpid();
      }
  

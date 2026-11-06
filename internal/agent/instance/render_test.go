@@ -31,7 +31,7 @@ func TestValidateUser(t *testing.T) {
 	}
 	for _, u := range []*agentv1.AclUser{
 		{Name: "default", PasswordSha256: []string{h}, Enabled: true},
-		{Name: "sycache-agent", PasswordSha256: []string{h}, Enabled: true},
+		{Name: "sycache-ops", PasswordSha256: []string{h}, Enabled: true},
 		{Name: "app 1", PasswordSha256: []string{h}, Enabled: true},
 		{Name: "app\nuser x on", PasswordSha256: []string{h}, Enabled: true},
 		{Name: "app", Enabled: true},
@@ -50,18 +50,28 @@ func TestValidateUser(t *testing.T) {
 
 func TestServerConf(t *testing.T) {
 	l := Layout{Root: "/opt/sycache", RunDir: "/run/sycache", LogDir: "/var/log/sycache"}
-	st := &State{Port: 7001, Revision: "p00000001", Params: map[string]string{"maxmemory": "1073741824", "save": "", "maxmemory-policy": "allkeys-lru"}, AdminPassword: "x"}
+	st := &State{Port: 7001, BindAddress: "10.0.0.7", Revision: "p00000001", Params: map[string]string{"maxmemory": "1073741824", "save": "", "maxmemory-policy": "allkeys-lru"}, AdminPassword: "x"}
 	conf := l.ServerConf(st, &agentv1.CreateInstance{ReplicaOf: &agentv1.ReplicaOf{Host: "10.0.0.1", Port: 7001}, Masterauth: "s3cret"})
 	for _, want := range []string{"port 7001\n", "unixsocket /run/sycache/sycache-7001.sock\n", "dir /opt/sycache/instances/7001\n",
+		"bind 10.0.0.7\n", "protected-mode yes\n", "enable-debug-command no\n", "enable-module-command no\n",
 		"aclfile /opt/sycache/instances/7001/users.acl\n", "replicaof 10.0.0.1 7001\n", "masteruser sycache-repl\n", "masterauth s3cret\n",
 		"maxmemory 1073741824\n", "save \"\"\n", "maxmemory-policy allkeys-lru\n"} {
 		if !strings.Contains(conf, want) {
 			t.Errorf("missing %q in\n%s", want, conf)
 		}
 	}
+	clusterConf := l.ServerConf(st, &agentv1.CreateInstance{ClusterEnabled: true, Masterauth: "s3cret"})
+	for _, want := range []string{"cluster-enabled yes\n", "cluster-config-file nodes.conf\n", "cluster-announce-ip 10.0.0.7\n", "cluster-announce-port 7001\n", "cluster-announce-bus-port 17001\n"} {
+		if !strings.Contains(clusterConf, want) {
+			t.Errorf("missing %q in cluster config\n%s", want, clusterConf)
+		}
+	}
 	acl := ACLFile(st, "s3cret", nil)
 	if strings.Contains(acl, "s3cret") || strings.Contains(acl, " x ") || !strings.HasPrefix(acl, "user default off") {
 		t.Fatalf("acl file leaks secrets or enables default:\n%s", acl)
+	}
+	if strings.Contains(acl, "+sentinel|") || !strings.Contains(acl, "user sycache-sentinel ") || !strings.Contains(acl, "user sycache-cluster ") || !strings.Contains(acl, "+restore-asking") {
+		t.Fatalf("server ACL must use data-node sentinel permissions:\n%s", acl)
 	}
 }
 

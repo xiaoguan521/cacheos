@@ -3,13 +3,15 @@ import { onMounted, onUnmounted, ref } from 'vue'
 import dayjs from 'dayjs'
 import { message } from 'antdv-next'
 import { api, errMsg } from '../api/client'
+import { useSession } from '../stores/session'
 
 const rows = ref<any[]>([])
 const detail = ref<any>(null)
 const open = ref(false)
+const session = useSession()
 const statusName: Record<string, string> = { DRAFT: '草稿', PRECHECKED: '已预检', APPROVED: '已批准', APPLYING: '执行中', APPLIED: '已完成', PARTIAL: '部分完成', FAILED: '失败', ROLLED_BACK: '已回滚', PAUSED: '已暂停' }
 const statusColor: Record<string, string> = { APPLYING: 'gold', APPLIED: 'green', PARTIAL: 'orange', FAILED: 'red', ROLLED_BACK: 'volcano', PAUSED: 'default' }
-const kindName: Record<string, string> = { create: '创建', params: '参数变更', start: '启动', stop: '停止', restart: '重启', failover: '故障切换', delete: '删除' }
+const kindName: Record<string, string> = { create: '创建', params: '参数变更', start: '启动', stop: '停止', restart: '重启', failover: '故障切换', reshard: '在线迁槽', scale: '扩缩容', upgrade: '引擎升级', delete: '删除' }
 
 async function load() {
   try {
@@ -26,6 +28,22 @@ async function show(row: any) {
   } catch (e) {
     message.error(errMsg(e))
   }
+}
+
+async function approve(row: any) {
+  try {
+    await api.post(`/operations/${row.id}/approve`)
+    message.success(`操作 #${row.id} 已批准`)
+    await load()
+  } catch (e) { message.error(errMsg(e)) }
+}
+
+async function resume(row: any) {
+  try {
+    await api.post(`/operations/${row.id}/resume`)
+    message.success(`操作 #${row.id} 已续跑`)
+    await load()
+  } catch (e) { message.error(errMsg(e)) }
 }
 
 let timer: number | undefined
@@ -50,7 +68,7 @@ onUnmounted(() => clearInterval(timer))
           <template v-else-if="column.key === 'unit'"><router-link :to="{ name: 'unit-detail', params: { id: record.unit_id } }">{{ record.unit || `#${record.unit_id}` }}</router-link></template>
           <template v-else-if="column.key === 'kind'">{{ kindName[record.kind] || record.kind }}</template>
           <template v-else-if="column.key === 'status'"><a-tag :color="statusColor[record.status] || 'default'">{{ statusName[record.status] || record.status }}</a-tag></template>
-          <template v-else-if="column.key === 'action'"><a @click="show(record)">详情</a></template>
+          <template v-else-if="column.key === 'action'"><a-space :size="6"><a @click="show(record)">详情</a><a v-if="record.status === 'PRECHECKED' && session.can('releaser') && record.created_by !== session.username" @click="approve(record)">批准</a><a v-if="record.status === 'PAUSED' && session.can('releaser') && record.created_by !== session.username" @click="resume(record)">续跑</a></a-space></template>
         </template>
       </a-table>
     </section>

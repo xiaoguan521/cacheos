@@ -49,6 +49,22 @@ async function toggleMaintenance(host: any) {
   }
 }
 
+function installedVersions(host: any): string[] {
+  return String(host.engine_versions || '').split(',').map((v) => v.trim()).filter(Boolean)
+}
+
+async function switchVersion(host: any, version: string) {
+  if (!version || version === host.engine_current) return
+  if (!window.confirm(`将 ${host.name} 的 current 切换到 ${version}；实例会在后续滚动重启时使用新版本，继续？`)) return
+  try {
+    await api.post(`/hosts/${host.id}/switch-version`, { version })
+    message.success(`主机 ${host.name} 已切换到 ${version}`)
+    await load()
+  } catch (e) {
+    message.error(errMsg(e))
+  }
+}
+
 async function revoke(host: any) {
   try {
     await api.post(`/hosts/${host.id}/revoke`)
@@ -87,7 +103,7 @@ onMounted(load)
 
     <section class="panel">
       <a-table :data-source="hosts" row-key="id" :loading="loading" :pagination="{ pageSize: 20 }"
-        :columns="[{ title: '主机', key: 'host' }, { title: '状态', key: 'status', width: 110 }, { title: '区域', dataIndex: 'zone', width: 120 }, { title: '系统', key: 'system' }, { title: '资源', key: 'resource', width: 190 }, { title: '实例', key: 'instances', width: 100 }, { title: '最近心跳', key: 'seen', width: 170 }, { title: '', key: 'actions', width: 210 }]">
+        :columns="[{ title: '主机', key: 'host' }, { title: '状态', key: 'status', width: 110 }, { title: '区域', dataIndex: 'zone', width: 120 }, { title: '系统', key: 'system' }, { title: '版本', key: 'version', width: 190 }, { title: '资源', key: 'resource', width: 190 }, { title: '实例', key: 'instances', width: 100 }, { title: '最近心跳', key: 'seen', width: 170 }, { title: '', key: 'actions', width: 210 }]">
         <template #emptyText><a-empty description="还没有接入主机" /></template>
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'host'">
@@ -100,6 +116,12 @@ onMounted(load)
           </template>
           <template v-else-if="column.key === 'system'">
             <div>{{ record.os_release || '—' }}</div><div class="sub">{{ record.arch }} · {{ record.agent_version || 'agent 未上报版本' }}</div>
+          </template>
+          <template v-else-if="column.key === 'version'">
+            <a-select size="small" :value="record.engine_current || undefined" :disabled="!session.can('operator') || !session.writable || !record.online || !installedVersions(record).length"
+              placeholder="未上报" style="width: 170px" :options="installedVersions(record).map((v) => ({ value: v, label: v }))"
+              @change="(v: string) => switchVersion(record, v)" />
+            <div class="sub">已安装 {{ installedVersions(record).length }} 个</div>
           </template>
           <template v-else-if="column.key === 'resource'">
             <div>CPU {{ Math.round(record.cpu_percent || 0) }}% · {{ record.cpu_cores || 0 }} 核</div>

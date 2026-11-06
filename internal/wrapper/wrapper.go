@@ -3,8 +3,9 @@
 // 安全要点：
 //   - 只接受 4 个子命令：start|stop|restart <端口>、switch-version <版本>；
 //   - 端口必须匹配 ^[0-9]{4,5}$、在 1024–65535 之间，且 /opt/sycache/instances/<端口> 是真实目录（非软链）并含实例配置；
-//   - 版本必须匹配 ^[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.]+)?$，且 /opt/sycache/versions/<版本>/bin/sycache-server 存在、
-//     解析后仍在 /opt/sycache 之内；
+//   - 版本必须匹配 ^[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.]+)?$，且已安装版本的
+//     /opt/sycache/versions/<版本>/bin/sycache-server 解析后仍在 /opt/sycache 之内；
+//     未安装时只接受 agent 状态目录中待安装的同版本包，验签并安全解包后再切换；
 //   - systemctl 用切片方式执行，清空环境变量，绝不经过 shell；参数只出现在 systemd 单元名中；
 //   - 不提供 enable/disable/kill/daemon-reload，不读写实例配置，不接触数据文件。
 package wrapper
@@ -15,8 +16,12 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
+
+	"github.com/xiaoguan521/cacheos/internal/agent/engineupdate"
+	"github.com/xiaoguan521/cacheos/internal/pkgsig"
 )
 
 // ExitUsage 是参数非法时的退出码（与 sysexits.h 的 EX_USAGE 一致）。
@@ -35,12 +40,15 @@ var SafeEnv = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin"}
 
 // Paths 是 wrapper 涉及的路径（生产值见 Default；测试可替换）。
 type Paths struct {
-	Root      string // /opt/sycache
-	Systemctl string
+	Root          string // /opt/sycache
+	Systemctl     string
+	AgentStateDir string // /var/lib/sycache-agent；仅用于待安装包暂存区
 }
 
 // Default 是生产环境的路径。
-func Default() Paths { return Paths{Root: "/opt/sycache", Systemctl: "/usr/bin/systemctl"} }
+func Default() Paths {
+	return Paths{Root: "/opt/sycache", Systemctl: "/usr/bin/systemctl", AgentStateDir: "/var/lib/sycache-agent"}
+}
 
 // Command 是一次经过校验、可直接执行的调用。
 type Command struct {
@@ -63,7 +71,7 @@ func (p Paths) Build(argv []string) (Command, error) {
 		}
 		return Command{Path: p.Systemctl, Args: []string{argv[0], unit}, Env: SafeEnv}, nil
 	case "switch-version":
-		if err := p.checkVersion(argv[1]); err != nil {
+		if !versionRe.MatchString(argv[1]) || (p.checkVersion(argv[1]) != nil && !p.pendingVersion(argv[1])) {
 			return Command{}, ErrUsage
 		}
 		return Command{Switch: argv[1]}, nil
@@ -121,6 +129,26 @@ func (p Paths) checkVersion(v string) error {
 // SwitchVersion 原子切换 current 软链到 versions/<版本>。不重启任何实例：滚动重启由控制台编排（规格书 6.4）。
 func (p Paths) SwitchVersion(v string) error {
 	if err := p.checkVersion(v); err != nil {
+		pkgPath, sigPath, ok := p.pendingPaths(v)
+		if !ok {
+			return err
+		}
+		data, readErr := os.ReadFile(pkgPath)
+		if readErr != nil {
+			return fmt.Errorf("install-version: read package: %w", readErr)
+		}
+		sig, readErr := os.ReadFile(sigPath)
+		if readErr != nil {
+			return fmt.Errorf("install-version: read signature: %w", readErr)
+		}
+		if _, installErr := engineupdate.Install(p.Root, data, sig, runtime.GOARCH, pkgsig.Keys()); installErr != nil {
+			return installErr
+		}
+		// Only remove the agent-owned staging files after atomic publication.
+		_ = os.Remove(pkgPath)
+		_ = os.Remove(sigPath)
+	}
+	if err := p.checkVersion(v); err != nil {
 		return err
 	}
 	tmp := filepath.Join(p.Root, "current.tmp")
@@ -133,4 +161,25 @@ func (p Paths) SwitchVersion(v string) error {
 		return fmt.Errorf("switch-version: %w", err)
 	}
 	return nil
+}
+
+func (p Paths) pendingVersion(v string) bool {
+	_, _, ok := p.pendingPaths(v)
+	return ok
+}
+
+func (p Paths) pendingPaths(v string) (pkgPath, sigPath string, ok bool) {
+	if p.AgentStateDir == "" || !versionRe.MatchString(v) {
+		return "", "", false
+	}
+	base := filepath.Join(p.AgentStateDir, "upgrade")
+	pkgPath = filepath.Join(base, v+".tar.gz")
+	sigPath = filepath.Join(base, v+".sig")
+	for _, name := range []string{pkgPath, sigPath} {
+		fi, err := os.Lstat(name)
+		if err != nil || !fi.Mode().IsRegular() {
+			return "", "", false
+		}
+	}
+	return pkgPath, sigPath, true
 }
