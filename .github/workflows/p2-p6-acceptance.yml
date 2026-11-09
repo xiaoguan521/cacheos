@@ -3,7 +3,6 @@ name: p2-p6-acceptance
 # P2/P3/P5/P6 的可自动化验收入口。真实 Kylin/UOS、跨主机网络、正式
 # 证书签名和 CPU/OS 互认证仍需要在发布前的目标环境中完成。
 on:
-  pull_request:
   workflow_dispatch:
     inputs:
       browser:
@@ -23,7 +22,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: p2-p6-acceptance-${{ github.event.pull_request.number || github.ref }}
+  group: p2-p6-acceptance-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

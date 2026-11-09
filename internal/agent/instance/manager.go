@@ -813,6 +813,9 @@ func (m *Manager) Failover(ctx context.Context, req *agentv1.Failover) (*agentv1
 // ClusterOp executes one allow-listed cluster primitive.  The console keeps
 // the topology state machine; the agent only exposes typed, single-step
 // commands and never accepts an arbitrary command string.
+//
+// SECURITY: req.PeerPassword 只用于 MIGRATE AUTH2，不得写入任何日志或返回值。
+// 调用方 (agent.go) 只记录 port + error，不记录完整 proto；debug 级别亦然。
 func (m *Manager) ClusterOp(ctx context.Context, req *agentv1.ClusterOp) ([]byte, *agentv1.InstanceStatus, error) {
 	defer m.lock(req.GetPort())()
 	st, err := m.Load(req.GetPort())

@@ -175,7 +175,8 @@ func (s *Server) enrollToken(c *gin.Context) {
 		return
 	}
 	s.audit(c, "host.enroll_token", "host", "", map[string]any{"zone": req.Zone, "expires_at": exp})
-	cmd := fmt.Sprintf("sudo -u sycache-agent sycache-agent enroll -server %s -token %s -ca-fingerprint %s && sudo systemctl enable --now sycache-agent", s.GRPCAddr, tok, s.CAFingerprint)
+	// 单引号包裹防止 shell 特殊字符（服务器地址可能包含 IPv6 方括号、端口号等）
+	cmd := fmt.Sprintf("sudo -u sycache-agent sycache-agent enroll -server '%s' -token '%s' -ca-fingerprint '%s' && sudo systemctl enable --now sycache-agent", s.GRPCAddr, tok, s.CAFingerprint)
 	c.JSON(http.StatusOK, gin.H{"token": tok, "expires_at": exp, "server": s.GRPCAddr, "ca_fingerprint": s.CAFingerprint, "command": cmd})
 }
 

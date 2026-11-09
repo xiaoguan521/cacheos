@@ -106,7 +106,8 @@ func (s *Service) runSentinel(ctx context.Context, r *opRun, unitID uint, change
 		r.finish(store.OpPaused, err.Error())
 		return err
 	}
-	op := agentv1.SentinelOp{MasterName: change.MasterName, MasterHost: change.MasterHost, MasterPort: change.MasterPort, Quorum: change.Quorum, Options: change.Options, AuthPass: change.AuthPass}
+	// AuthPass 在 SentinelOp() 入口已校验必须为空；此处显式不传递，防止绕过入口直接调用时泄露明文口令。
+	op := agentv1.SentinelOp{MasterName: change.MasterName, MasterHost: change.MasterHost, MasterPort: change.MasterPort, Quorum: change.Quorum, Options: change.Options}
 	switch change.Operation {
 	case "monitor":
 		op.Op = agentv1.SentinelOp_MONITOR
