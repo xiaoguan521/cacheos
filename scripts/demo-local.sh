@@ -48,6 +48,17 @@ wait_ping() {
   return 1
 }
 
+# --cluster create 只在发起节点上确认加入；其余节点可能还没收敛，此时读写会得到 CLUSTERDOWN。
+wait_cluster_ok() {
+  local port="$1"
+  for _ in $(seq 1 150); do
+    if "$BIN_DIR/sycache-cli" -h 127.0.0.1 -p "$port" cluster info 2>/dev/null | grep -q '^cluster_state:ok'; then return 0; fi
+    sleep 0.1
+  done
+  echo "cluster node $port did not reach cluster_state:ok" >&2
+  return 1
+}
+
 echo "== CacheOS P4 local demo"
 echo "run directory: $RUN"
 
@@ -66,6 +77,7 @@ done
 nodes=()
 for port in "${DATA_PORTS[@]}"; do nodes+=("127.0.0.1:$port"); done
 "$BIN_DIR/sycache-cli" --cluster create "${nodes[@]}" --cluster-replicas 1 --cluster-yes
+for port in "${DATA_PORTS[@]}"; do wait_cluster_ok "$port"; done
 
 for n in 0 1 2; do
   port="${SENTINEL_PORTS[$n]}"
