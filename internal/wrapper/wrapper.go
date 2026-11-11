@@ -2,9 +2,9 @@
 //
 // 安全要点：
 //   - 只接受 4 个子命令：start|stop|restart <端口>、switch-version <版本>；
-//   - 端口必须匹配 ^[0-9]{4,5}$、在 1024–65535 之间，且 /opt/sycache/instances/<端口> 是真实目录（非软链）并含实例配置；
+//   - 端口必须匹配 ^[0-9]{4,5}$、在 1024–65535 之间，且 /home/atwasoft/sycache/instances/<端口> 是真实目录（非软链）并含实例配置；
 //   - 版本必须匹配 ^[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.]+)?$，且已安装版本的
-//     /opt/sycache/versions/<版本>/bin/sycache-server 解析后仍在 /opt/sycache 之内；
+//     /home/atwasoft/sycache/versions/<版本>/bin/sycache-server 解析后仍在 /home/atwasoft/sycache 之内；
 //     未安装时只接受 agent 状态目录中待安装的同版本包，验签并安全解包后再切换；
 //   - systemctl 用切片方式执行，清空环境变量，绝不经过 shell；参数只出现在 systemd 单元名中；
 //   - 不提供 enable/disable/kill/daemon-reload，不读写实例配置，不接触数据文件。
@@ -40,14 +40,14 @@ var SafeEnv = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin"}
 
 // Paths 是 wrapper 涉及的路径（生产值见 Default；测试可替换）。
 type Paths struct {
-	Root          string // /opt/sycache
+	Root          string // /home/atwasoft/sycache
 	Systemctl     string
 	AgentStateDir string // /var/lib/sycache-agent；仅用于待安装包暂存区
 }
 
 // Default 是生产环境的路径。
 func Default() Paths {
-	return Paths{Root: "/opt/sycache", Systemctl: "/usr/bin/systemctl", AgentStateDir: "/var/lib/sycache-agent"}
+	return Paths{Root: "/home/atwasoft/sycache", Systemctl: "/usr/bin/systemctl", AgentStateDir: "/var/lib/sycache-agent"}
 }
 
 // Command 是一次经过校验、可直接执行的调用。

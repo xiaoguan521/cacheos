@@ -799,7 +799,7 @@ type Hello struct {
 	MemTotalBytes      uint64                 `protobuf:"varint,5,opt,name=mem_total_bytes,json=memTotalBytes,proto3" json:"mem_total_bytes,omitempty"`
 	OsRelease          string                 `protobuf:"bytes,6,opt,name=os_release,json=osRelease,proto3" json:"os_release,omitempty"` // /etc/os-release 的 PRETTY_NAME
 	Kernel             string                 `protobuf:"bytes,7,opt,name=kernel,proto3" json:"kernel,omitempty"`
-	EngineVersions     []string               `protobuf:"bytes,8,rep,name=engine_versions,json=engineVersions,proto3" json:"engine_versions,omitempty"`     // /opt/sycache/versions 下已安装的产品版本
+	EngineVersions     []string               `protobuf:"bytes,8,rep,name=engine_versions,json=engineVersions,proto3" json:"engine_versions,omitempty"`     // /home/atwasoft/sycache/versions 下已安装的产品版本
 	EngineCurrent      string                 `protobuf:"bytes,9,opt,name=engine_current,json=engineCurrent,proto3" json:"engine_current,omitempty"`        // current 软链指向的版本
 	EngineBuildinfo    string                 `protobuf:"bytes,10,opt,name=engine_buildinfo,json=engineBuildinfo,proto3" json:"engine_buildinfo,omitempty"` // 当前版本的 BUILDINFO 原文
 	Tuning             *HostTuning            `protobuf:"bytes,11,opt,name=tuning,proto3" json:"tuning,omitempty"`
@@ -996,7 +996,7 @@ type Heartbeat struct {
 	CpuPercent        float64                `protobuf:"fixed64,1,opt,name=cpu_percent,json=cpuPercent,proto3" json:"cpu_percent,omitempty"`
 	MemUsedBytes      uint64                 `protobuf:"varint,2,opt,name=mem_used_bytes,json=memUsedBytes,proto3" json:"mem_used_bytes,omitempty"`
 	MemTotalBytes     uint64                 `protobuf:"varint,3,opt,name=mem_total_bytes,json=memTotalBytes,proto3" json:"mem_total_bytes,omitempty"`
-	DataDiskFreeBytes uint64                 `protobuf:"varint,4,opt,name=data_disk_free_bytes,json=dataDiskFreeBytes,proto3" json:"data_disk_free_bytes,omitempty"` // /opt/sycache/instances 所在分区
+	DataDiskFreeBytes uint64                 `protobuf:"varint,4,opt,name=data_disk_free_bytes,json=dataDiskFreeBytes,proto3" json:"data_disk_free_bytes,omitempty"` // /home/atwasoft/sycache/instances 所在分区
 	Instances         []*InstanceStatus      `protobuf:"bytes,5,rep,name=instances,proto3" json:"instances,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache

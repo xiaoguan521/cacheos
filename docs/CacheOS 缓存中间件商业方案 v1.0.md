@@ -104,19 +104,19 @@ sycache = Valkey 9.1.x 官方源码 + **1 个改名 patch**（`patches/0001-syca
 make -j BUILD_TLS=yes USE_SYSTEMD=yes MALLOC=jemalloc \
      ENGINE_NAME=sycache USE_REDIS_SYMLINKS=no \
      OPENSSL_PREFIX=/build/deps/${TLS_LIB}   # openssl-3.x 或 tongsuo-8.x
-make PREFIX=/opt/sycache install
+make PREFIX=/home/atwasoft/sycache install
 ```
 
 `ENGINE_NAME` 与 `USE_REDIS_SYMLINKS` 为 Valkey Makefile 的现有变量，实施第一步先确认 9.1 源码中的确切名称；若变量不足以覆盖全部二进制名，改名放进 patch。
 
-产物目录：`/opt/sycache/{bin,conf,licenses}`、`/opt/sycache/instances/<port>/{sycache.conf,data,acl.conf}`、`/var/log/sycache/`、`/run/sycache/`。输出 RPM / DEB / tar.gz、SBOM（Syft），架构 x86\_64 + aarch64，二期加 loongarch64。
+产物目录：`/home/atwasoft/sycache/{bin,conf,licenses}`、`/home/atwasoft/sycache/instances/<port>/{sycache.conf,data,acl.conf}`、`/var/log/sycache/`、`/run/sycache/`。输出 RPM / DEB / tar.gz、SBOM（Syft），架构 x86\_64 + aarch64，二期加 loongarch64。
 
 ### 5.4 系统身份
 
 - 系统用户与组 `sycache`（nologin）；实例进程以 sycache 运行，不需要 root（端口均大于 1024）。
-- systemd 模板单元 `sycache@.service`：`Type=notify`，`ExecStart=/opt/sycache/bin/sycache-server /opt/sycache/instances/%i/sycache.conf`，`LimitNOFILE=65535`，`ProtectSystem=strict`，`ReadWritePaths=/opt/sycache/instances/%i /var/log/sycache`。哨兵用 `sycache-sentinel@.service`。
+- systemd 模板单元 `sycache@.service`：`Type=notify`，`ExecStart=/home/atwasoft/sycache/bin/sycache-server /home/atwasoft/sycache/instances/%i/sycache.conf`，`LimitNOFILE=65535`，`ProtectSystem=strict`，`ReadWritePaths=/home/atwasoft/sycache/instances/%i /var/log/sycache`。哨兵用 `sycache-sentinel@.service`。
 - 主机调优由安装包写入 `/etc/sysctl.d/90-sycache.conf`（`vm.overcommit_memory=1`、`net.core.somaxconn=4096`）并关闭透明大页。
-- 符号链接 `/usr/bin/sycache-cli → /opt/sycache/bin/sycache-cli`。
+- 符号链接 `/usr/bin/sycache-cli → /home/atwasoft/sycache/bin/sycache-cli`。
 
 ### 5.5 CLI 兼容矩阵与信号
 
@@ -162,7 +162,7 @@ message ServerMessage {
     ClusterOp cluster = 24;       // MEET / ADDSLOTS / SETSLOT / MIGRATE 批次
     Backup backup = 25;           // BGSAVE 后上传或本地保留
     Restore restore = 26;
-    UpgradeBinary upgrade = 27;   // 切换 /opt/sycache/versions/<ver> 软链
+    UpgradeBinary upgrade = 27;   // 切换 /home/atwasoft/sycache/versions/<ver> 软链
     Diagnose diagnose = 28;       // 慢日志、延迟、大 Key 抽样、RDB 离线分析
     LicenseUpdate license = 15;   // 与 v3.1 相同
   }
@@ -190,7 +190,7 @@ message ServerMessage {
 3. 重启原主节点，作为从节点重新加入。
 4. 每一步超时（默认 120 秒）即暂停整个编排并告警，**不自动继续**。
 
-二进制升级同样走此流程：新版本解压到 `/opt/sycache/versions/<ver>/`，切换 `current` 软链后按上面顺序重启，失败时切回原软链。
+二进制升级同样走此流程：新版本解压到 `/home/atwasoft/sycache/versions/<ver>/`，切换 `current` 软链后按上面顺序重启，失败时切回原软链。
 
 ### 6.5 wrapper 与 sudoers
 
@@ -327,7 +327,7 @@ P4 演示只用一台 Linux 服务器：在同机起 6 个实例组成 3 主 3 �
 | 版本格式 | 产品版本 `主.次.补丁`（如 `CacheOS 1.0.0`）；补丁号用于安全修复与缺陷修复 |
 | 源码改动点 | `src/version.h` 新增宏 SYCACHE\_VERSION，只替换给人看的版本输出；影响 `--version`、启动日志、`INFO server` 的 `sycache_version``；HELLO 与复制握手保持上游值` |
 | 保持原值 | `INFO` 的 `redis_version` 字段保持上游兼容值：客户端靠它判断支持哪些命令；RDB 版本号与模块 API 版本不改 |
-| 对应关系 | 仓库内 `versions.yaml`：产品版本 → 上游 Valkey 版本 + 已合入补丁（CVE 编号、上游 commit）；安装包附 `/opt/sycache/share/SBOM.spdx.json` 与 `BUILDINFO`，写真实上游版本 |
+| 对应关系 | 仓库内 `versions.yaml`：产品版本 → 上游 Valkey 版本 + 已合入补丁（CVE 编号、上游 commit）；安装包附 `/home/atwasoft/sycache/share/SBOM.spdx.json` 与 `BUILDINFO`，写真实上游版本 |
 | 安全修复流程 | Valkey 发布安全公告后 7 天内完成评估：受影响则 backport 修复，发补丁版；不受影响则出书面说明 |
 | 补丁规则例外 | 第 5 节「零逻辑改动」的唯一例外：允许原样 backport Valkey 官方的安全修复 commit，每个 CVE 一个文件 `patches/1xxx-cve-YYYY-NNNNN.patch`，单独评审 |
 | 对客户 | 每个补丁版发布安全公告与 VEX 文件（CSAF 格式），逐条写明 CVE 在哪个产品版本修复，或说明不受影响；控制台 M14「关于」页对 admin 展示映射关系 |

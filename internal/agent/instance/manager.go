@@ -34,7 +34,7 @@ import (
 
 // Layout 是本机目录布局（生产值见 DefaultLayout）。
 type Layout struct {
-	Root     string // /opt/sycache
+	Root     string // /home/atwasoft/sycache
 	RunDir   string // /run/sycache
 	LogDir   string // /var/log/sycache
 	StateDir string // agent 状态目录下的 instances 子目录
@@ -42,7 +42,7 @@ type Layout struct {
 
 // DefaultLayout 返回生产布局。
 func DefaultLayout(agentState string) Layout {
-	return Layout{Root: "/opt/sycache", RunDir: "/run/sycache", LogDir: "/var/log/sycache", StateDir: filepath.Join(agentState, "instances")}
+	return Layout{Root: "/home/atwasoft/sycache", RunDir: "/run/sycache", LogDir: "/var/log/sycache", StateDir: filepath.Join(agentState, "instances")}
 }
 
 func (l Layout) InstanceDir(port uint32) string {

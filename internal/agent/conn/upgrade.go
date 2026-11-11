@@ -108,7 +108,7 @@ func (a *Agent) handleAgentUpgrade(ctx context.Context, client agentv1.AgentGate
 }
 
 // handleEngineUpgrade 下载、验签并把数据面包暂存给 root wrapper；wrapper 会再次验签，
-// 只把 opt/sycache 内容安装到 versions/<version>，然后原子切换 current。
+// 只把 home/atwasoft/sycache 内容安装到 versions/<version>，然后原子切换 current。
 // 复用 SwitchVersion 消息保持既有四条 sudoers 规则不变。
 func (a *Agent) handleEngineUpgrade(ctx context.Context, client agentv1.AgentGatewayClient, u *agentv1.SwitchVersion, reply func(*agentv1.CommandResult)) {
 	fail := func(msg string) {

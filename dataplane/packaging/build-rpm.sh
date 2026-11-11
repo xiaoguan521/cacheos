@@ -12,7 +12,7 @@ R="$WORK/root"; mkdir -p "$R"
 tar -C "$R" -xzf "$TAR"
 # shellcheck disable=SC1091
 BI_FILE="$WORK/buildinfo.vars"
-sed 's/^/BI_/' "$R/opt/sycache/share/BUILDINFO" > "$BI_FILE"
+sed 's/^/BI_/' "$R/home/atwasoft/sycache/share/BUILDINFO" > "$BI_FILE"
 source "$BI_FILE"
 
 # 版本：1.0.0 → Version 1.0.0 Release 1；1.0.0-rc.1 → Version 1.0.0 Release 0.rc.1（预发布排在正式版之前）
@@ -22,7 +22,7 @@ REL="${REL//-/.}"
 
 FILES="$(cd "$R" && find . -mindepth 1 \( -type f -o -type l \) | sed 's#^\.##' | sort \
   | sed -e 's#^/etc/logrotate.d/sycache$#%config(noreplace) &#')"
-DIRS="$(cd "$R" && find ./opt/sycache -type d | sed 's#^\.#%dir #' | sort)"
+DIRS="$(cd "$R" && find ./home/atwasoft/sycache -type d | sed 's#^\.#%dir #' | sort)"
 
 script() { sed '1d' "$HERE/scripts/$1"; }
 cat > "$WORK/sycache.spec" <<EOF
@@ -30,7 +30,7 @@ Name:           sycache
 Version:        $V
 Release:        $REL
 Summary:        CacheOS sycache - Redis-compatible in-memory data store
-License:        Proprietary; includes BSD-3-Clause and other third-party components (see /opt/sycache/licenses)
+License:        Proprietary; includes BSD-3-Clause and other third-party components (see /home/atwasoft/sycache/licenses)
 URL:            https://cacheos.invalid
 AutoReqProv:    yes
 # 安装前脚本创建系统用户；用文件依赖，兼容 RHEL 系（shadow-utils）与 openEuler（shadow）
@@ -41,7 +41,7 @@ Requires(pre):  /usr/sbin/useradd /usr/sbin/groupadd /usr/bin/getent
 
 %description
 Data plane of CacheOS: standalone, replication, sentinel and native cluster.
-Engine $BI_upstream_version ($BI_upstream_commit), TLS: $BI_tls. Provenance: /opt/sycache/share/BUILDINFO.
+Engine $BI_upstream_version ($BI_upstream_commit), TLS: $BI_tls. Provenance: /home/atwasoft/sycache/share/BUILDINFO.
 
 %install
 mkdir -p %{buildroot}

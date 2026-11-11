@@ -33,7 +33,7 @@ func main() {
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 	server := fs.String("server", envOr("SYCACHE_CONSOLE", ""), "控制台 gRPC 地址 host:port")
 	stateDir := fs.String("state-dir", "/var/lib/sycache-agent", "身份与状态目录")
-	root := fs.String("root", "/opt/sycache", "数据面安装目录")
+	root := fs.String("root", "/home/atwasoft/sycache", "数据面安装目录")
 	wrapper := fs.String("wrapper", envOr("SYCACHE_WRAPPER", "sudo -n /usr/libexec/sycache/sycache-wrapper"), "提权入口（按空格切分，不经过 shell）")
 	token := fs.String("token", "", "一次性注册令牌（enroll）")
 	caFP := fs.String("ca-fingerprint", "", "控制台 CA 证书 sha256 指纹（enroll）")

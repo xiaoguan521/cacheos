@@ -49,12 +49,12 @@ func TestValidateUser(t *testing.T) {
 }
 
 func TestServerConf(t *testing.T) {
-	l := Layout{Root: "/opt/sycache", RunDir: "/run/sycache", LogDir: "/var/log/sycache"}
+	l := Layout{Root: "/home/atwasoft/sycache", RunDir: "/run/sycache", LogDir: "/var/log/sycache"}
 	st := &State{Port: 7001, BindAddress: "10.0.0.7", Revision: "p00000001", Params: map[string]string{"maxmemory": "1073741824", "save": "", "maxmemory-policy": "allkeys-lru"}, AdminPassword: "x"}
 	conf := l.ServerConf(st, &agentv1.CreateInstance{ReplicaOf: &agentv1.ReplicaOf{Host: "10.0.0.1", Port: 7001}, Masterauth: "s3cret"})
-	for _, want := range []string{"port 7001\n", "unixsocket /run/sycache/sycache-7001.sock\n", "dir /opt/sycache/instances/7001\n",
+	for _, want := range []string{"port 7001\n", "unixsocket /run/sycache/sycache-7001.sock\n", "dir /home/atwasoft/sycache/instances/7001\n",
 		"bind 10.0.0.7\n", "protected-mode yes\n", "enable-debug-command no\n", "enable-module-command no\n",
-		"aclfile /opt/sycache/instances/7001/users.acl\n", "replicaof 10.0.0.1 7001\n", "masteruser sycache-repl\n", "masterauth s3cret\n",
+		"aclfile /home/atwasoft/sycache/instances/7001/users.acl\n", "replicaof 10.0.0.1 7001\n", "masteruser sycache-repl\n", "masterauth s3cret\n",
 		"maxmemory 1073741824\n", "save \"\"\n", "maxmemory-policy allkeys-lru\n"} {
 		if !strings.Contains(conf, want) {
 			t.Errorf("missing %q in\n%s", want, conf)

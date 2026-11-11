@@ -3,5 +3,5 @@
 set -e
 getent group sycache >/dev/null 2>&1 || groupadd -r sycache
 getent passwd sycache >/dev/null 2>&1 || \
-  useradd -r -g sycache -d /opt/sycache -s /sbin/nologin -c "CacheOS sycache" sycache
+  useradd -r -g sycache -d /home/atwasoft/sycache -s /sbin/nologin -c "CacheOS sycache" sycache
 exit 0

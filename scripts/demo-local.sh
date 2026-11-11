@@ -6,11 +6,11 @@
 # 拦截仍由 web/e2e/ui-acceptance.cjs 在已初始化控制台上验收。
 #
 # 用法：
-#   SYCACHE_BIN=/opt/sycache/bin scripts/demo-local.sh
+#   SYCACHE_BIN=/home/atwasoft/sycache/bin scripts/demo-local.sh
 #   KEEP=1 KILL_MASTER=0 BASE_PORT=17001 scripts/demo-local.sh
 set -euo pipefail
 
-BIN_DIR="${SYCACHE_BIN:-/opt/sycache/bin}"
+BIN_DIR="${SYCACHE_BIN:-/home/atwasoft/sycache/bin}"
 BASE_PORT="${BASE_PORT:-17001}"
 KEEP="${KEEP:-0}"
 KILL_MASTER="${KILL_MASTER:-1}"

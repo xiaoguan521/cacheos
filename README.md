@@ -60,7 +60,7 @@ cd web && pnpm install --offline && pnpm run build
 cd .. && node web/e2e/ui-acceptance.cjs       # 需要已初始化控制台与 Playwright
 
 # P4 单机数据面演示：6 个集群实例 + 3 个哨兵；仅清理脚本自己创建的临时目录
-SYCACHE_BIN=/opt/sycache/bin scripts/demo-local.sh
+SYCACHE_BIN=/home/atwasoft/sycache/bin scripts/demo-local.sh
 
 # Linux 部署（需 root；agent 先 enroll，console 先配置 env）
 deploy/install-agent.sh <sycache-agent> <sycache-wrapper>

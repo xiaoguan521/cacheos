@@ -1,7 +1,7 @@
 package instance
 
 // 用真实的 sycache-server 验证实例生命周期与参数状态机。
-// 运行：SYCACHE_BIN=<.../opt/sycache/bin> go test ./internal/agent/instance/ -run Integration -v
+// 运行：SYCACHE_BIN=<.../home/atwasoft/sycache/bin> go test ./internal/agent/instance/ -run Integration -v
 // 未设置 SYCACHE_BIN 时跳过（CI 的 make agent-it 会设置）。
 
 import (
