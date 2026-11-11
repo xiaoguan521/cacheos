@@ -10,6 +10,7 @@ import { CanvasRenderer } from 'echarts/renderers'
 import VChart from 'vue-echarts'
 import { api, errMsg } from '../api/client'
 import { useSession } from '../stores/session'
+import DiffView from '../components/DiffView.vue'
 
 use([HeatmapChart, GridComponent, TooltipComponent, VisualMapComponent, CanvasRenderer])
 
@@ -34,6 +35,12 @@ const scaleForm = reactive({ replicas: 1, shards: 3 })
 const sentinelOpen = ref(false)
 const sentinelForm = reactive({ operation: 'set', down_after_ms: '30000', failover_timeout: '60000', parallel_syncs: '1' })
 const reshardForm = reactive({ source_instance_id: '', target_instance_id: '', slots: '0-100', batch: 100 })
+const rollbackOpen = ref(false)
+const rollbackTarget = ref<any>(null)
+const rollbackPreview = ref<any>(null)
+const rollbackDiff = ref('')
+const rollbackNote = ref('')
+const rollbackRestart = ref(false)
 
 const id = computed(() => String(route.params.id))
 const metricRows = computed(() => Object.entries(metrics.value?.instances || {}).flatMap(([instanceID, points]: [string, any]) => (points || []).slice(-20).map((p: any) => ({ instanceID, ...p }))))
@@ -202,6 +209,49 @@ async function applyParams() {
   }
 }
 
+// 回滚前先用参数预览接口计算"当前版本 → 目标历史版本"的差异（删除的键按默认值计入差异，与服务端一致）
+async function openRollback(revision: any) {
+  const current = unit.value?.params || {}
+  const target = revision.params || {}
+  const reset = Object.keys(current).filter((key) => !(key in target))
+  try {
+    const pv = await api.post(`/units/${id.value}/params/preview`, { set: target, reset })
+    rollbackPreview.value = pv
+    rollbackDiff.value = Object.keys(pv.changed || {})
+      .sort()
+      .flatMap((key) => [`-${key}=${pv.old?.[key] ?? ''}`, `+${key}=${pv.changed[key]}`])
+      .join('\n')
+    rollbackTarget.value = revision
+    rollbackNote.value = `回滚到 ${revision.id}`
+    rollbackRestart.value = false
+    rollbackOpen.value = true
+  } catch (e) {
+    message.error(errMsg(e))
+  }
+}
+
+async function submitRollback() {
+  if (!rollbackTarget.value || !rollbackPreview.value) return
+  if (!rollbackNote.value.trim()) {
+    message.error('请填写变更说明')
+    return
+  }
+  try {
+    // 父版本取预览时的当前版本：确认的差异与提交时的基线一致，否则服务端返回 REVISION_CONFLICT
+    const r = await api.post(`/units/${id.value}/revisions/${rollbackTarget.value.id}/rollback`, {
+      parent_revision_id: rollbackPreview.value.base_revision,
+      note: rollbackNote.value,
+      restart: rollbackRestart.value,
+      switchover: rollbackRestart.value,
+    })
+    message.success(`回滚操作 #${r.operation?.id || '—'} 已提交`)
+    rollbackOpen.value = false
+    await load()
+  } catch (e) {
+    message.error(errMsg(e))
+  }
+}
+
 function openAccount() {
   Object.assign(accountForm, { name: '', password: '', key_patterns: '*', categories: '+@read,+@write,-@dangerous', enabled: true })
   generatedPassword.value = ''
@@ -331,7 +381,7 @@ onUnmounted(() => clearInterval(timer))
       <section class="panel">
         <h2>参数版本</h2>
         <a-timeline>
-          <a-timeline-item v-for="revision in revisions" :key="revision.id" color="blue"><b>{{ revision.id }}</b> · {{ revision.note || '—' }}<div class="sub">{{ revision.created_by }} · {{ dayjs(revision.created_at).format('YYYY-MM-DD HH:mm') }}</div></a-timeline-item>
+          <a-timeline-item v-for="revision in revisions" :key="revision.id" color="blue"><b>{{ revision.id }}</b> · {{ revision.note || '—' }}<div class="sub">{{ revision.created_by }} · {{ dayjs(revision.created_at).format('YYYY-MM-DD HH:mm') }}</div><a-button v-if="revision.id !== unit.revision_id" type="link" size="small" :disabled="!session.can('releaser') || !session.writable" @click="openRollback(revision)">回滚到此版本</a-button></a-timeline-item>
         </a-timeline>
         <a-empty v-if="!revisions.length" description="还没有版本记录" />
       </section>
@@ -372,6 +422,14 @@ onUnmounted(() => clearInterval(timer))
       <a-alert v-if="generatedPassword" type="warning" show-icon style="margin-top: 14px" message="请立即保存以下口令；关闭窗口后不会再次返回。" :description="generatedPassword" />
     </a-modal>
 
+    <a-modal v-model:open="rollbackOpen" :title="`回滚参数到 ${rollbackTarget?.id || ''}`" ok-text="确认回滚" :ok-button-props="{ disabled: !session.can('releaser') || !session.writable || !rollbackDiff }" @ok="submitRollback">
+      <p class="sub">当前版本 <b>{{ rollbackPreview?.base_revision }}</b> → 目标版本 <b>{{ rollbackTarget?.id }}</b>。回滚会生成一个新版本，历史版本保持不变。</p>
+      <DiffView v-if="rollbackDiff" :diff="rollbackDiff" />
+      <a-alert v-else type="info" show-icon message="目标版本与当前参数一致，无需回滚" />
+      <a-input v-model:value="rollbackNote" placeholder="变更说明（必填）" style="margin-top: 14px" />
+      <a-checkbox v-model:checked="rollbackRestart" style="margin-top: 8px">需要时滚动重启</a-checkbox>
+      <p v-if="rollbackPreview?.restart?.length" class="sub">需重启的参数：{{ rollbackPreview.restart.join('、') }}</p>
+    </a-modal>
     <a-modal v-model:open="upgradeOpen" title="滚动升级数据面" ok-text="提交升级" :ok-button-props="{ disabled: !session.can('releaser') || !session.writable }" @ok="upgradeUnit">
       <a-form layout="vertical">
         <a-form-item label="目标版本" extra="版本必须已导入版本库，且覆盖该单元所有主机的架构。"><a-input v-model:value="upgradeVersion" placeholder="例如 1.30.6-1" /></a-form-item>

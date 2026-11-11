@@ -722,6 +722,32 @@ func (s *Server) applyParams(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"operation": op})
 }
 
+// rollbackParams 把参数回滚到历史版本 :revision_id：以该版本的全量参数生成一个新版本（走与"应用参数"相同的操作流程）。
+func (s *Server) rollbackParams(c *gin.Context) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		ParentRevisionID string `json:"parent_revision_id"`
+		Note             string `json:"note"`
+		Restart          bool   `json:"restart"`
+		Switchover       bool   `json:"switchover"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		failErr(c, err)
+		return
+	}
+	target := c.Param("revision_id")
+	op, err := s.Orch.RollbackParams(id, target, orch.ParamChange{ParentRevisionID: req.ParentRevisionID, Note: req.Note, Restart: req.Restart, Switchover: req.Switchover}, c.GetString("user"))
+	if err != nil {
+		failErr(c, err)
+		return
+	}
+	s.audit(c, "unit.params.rollback", "unit", fmt.Sprint(id), gin.H{"from": req.ParentRevisionID, "to": target, "note": req.Note, "restart": req.Restart, "operation": op.ID})
+	c.JSON(http.StatusAccepted, gin.H{"operation": op})
+}
+
 type metricPoint struct {
 	Minute     int64   `json:"minute"`
 	OpsPerSec  uint64  `json:"ops_per_sec"`
