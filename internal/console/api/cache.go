@@ -994,14 +994,6 @@ func (s *Server) diagnose(c *gin.Context) {
 		}
 	}
 
-	type instanceReport struct {
-		InstanceID uint   `json:"instance_id"`
-		HostID     uint   `json:"host_id"`
-		Port       uint32 `json:"port"`
-		Role       string `json:"role,omitempty"`
-		Report     any    `json:"report,omitempty"`
-		Error      string `json:"error,omitempty"`
-	}
 	reports := make([]instanceReport, 0, len(instances))
 	for _, in := range instances {
 		r, err := s.GW.Send(c.Request.Context(), in.HostID, &agentv1.ServerMessage{Body: &agentv1.ServerMessage_Diagnose{Diagnose: &agentv1.Diagnose{Port: in.Port, What: kind, Sample: uint32(sample)}}}, time.Minute)
@@ -1019,11 +1011,8 @@ func (s *Server) diagnose(c *gin.Context) {
 			reports = append(reports, item)
 			continue
 		}
-		var payload struct {
-			Report any `json:"report"`
-		}
-		if len(r.Payload) > 0 && json.Unmarshal(r.Payload, &payload) == nil {
-			item.Report = payload.Report
+		if p, ok := decodeDiagnosePayload(r.Payload); ok {
+			item.Report, item.Aggregate, item.Advice = p.Report, p.Aggregate, p.Advice
 		} else {
 			item.Report = gin.H{"raw": string(r.Payload)}
 		}
@@ -1032,10 +1021,39 @@ func (s *Server) diagnose(c *gin.Context) {
 
 	s.audit(c, "unit.diagnose", "unit", fmt.Sprint(id), map[string]any{"kind": kind.String(), "instances": len(instances)})
 	if c.Query("instance_id") != "" {
-		c.JSON(http.StatusOK, gin.H{"kind": kind.String(), "sample": sample, "report": reports[0].Report, "error": reports[0].Error})
+		c.JSON(http.StatusOK, gin.H{"kind": kind.String(), "sample": sample, "report": reports[0].Report,
+			"aggregate": reports[0].Aggregate, "advice": reports[0].Advice, "error": reports[0].Error})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"kind": kind.String(), "sample": sample, "instances": reports})
+}
+
+// instanceReport 是诊断接口对单个实例的回传；Aggregate 与 Advice 仅在对应诊断类型下存在。
+type instanceReport struct {
+	InstanceID uint   `json:"instance_id"`
+	HostID     uint   `json:"host_id"`
+	Port       uint32 `json:"port"`
+	Role       string `json:"role,omitempty"`
+	Report     any    `json:"report,omitempty"`
+	Aggregate  any    `json:"aggregate,omitempty"`
+	Advice     any    `json:"advice,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+// diagnosePayload 是 agent 诊断 JSON 负载的控制台侧视图；旧 agent 只有 report 字段。
+type diagnosePayload struct {
+	Report    any `json:"report"`
+	Aggregate any `json:"aggregate,omitempty"`
+	Advice    any `json:"advice,omitempty"`
+}
+
+// decodeDiagnosePayload 解析 agent 回传的诊断负载；非 JSON 时返回 false，调用方保留原始输出。
+func decodeDiagnosePayload(raw []byte) (diagnosePayload, bool) {
+	var p diagnosePayload
+	if len(raw) == 0 || json.Unmarshal(raw, &p) != nil {
+		return diagnosePayload{}, false
+	}
+	return p, true
 }
 
 func (s *Server) browseKeys(c *gin.Context) {

@@ -120,6 +120,7 @@ func (s *Server) Handler() (http.Handler, error) {
 	a.POST("/api-tokens", s.writable, s.feature(license.FeatureAPIToken), s.createToken)
 	a.DELETE("/api-tokens/:id", s.revokeToken)
 	a.GET("/dashboard", s.dashboard)
+	a.GET("/metrics/prometheus", role(store.RoleViewer), s.prometheusMetrics) // 控制台侧 Prometheus 文本指标（不监听端口）
 
 	a.GET("/license", s.licenseGet)
 	a.GET("/license/request", role(store.RoleAdmin), s.licenseRequest)
