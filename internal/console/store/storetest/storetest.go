@@ -1,6 +1,6 @@
 // Package storetest 为测试提供独立的数据库。
 //
-// 默认每个测试一个临时 SQLite 文件；设置 ETOS_TEST_DB=postgres://... 时，每个测试在该库中
+// 默认每个测试一个临时 SQLite 文件；设置 CACHEOS_TEST_DB=postgres://... 时，每个测试在该库中
 // 创建独立的 schema，测试结束后删除。CI 的 postgres 任务用它让控制台测试在 PostgreSQL 上再跑一遍。
 package storetest
 
@@ -33,7 +33,7 @@ func Open(t testing.TB) *store.Store {
 // OpenRaw 返回一个未执行任何迁移的空库（SQLite 临时文件，或 PostgreSQL 中独立的 schema）。
 func OpenRaw(t testing.TB) *gorm.DB {
 	t.Helper()
-	dsn := os.Getenv("ETOS_TEST_DB")
+	dsn := os.Getenv("CACHEOS_TEST_DB")
 	if dsn == "" {
 		db, err := store.OpenDB(filepath.Join(t.TempDir(), "test.db"))
 		if err != nil {
@@ -47,7 +47,7 @@ func OpenRaw(t testing.TB) *gorm.DB {
 		return db
 	}
 	if !strings.HasPrefix(dsn, "postgres") {
-		t.Fatalf("ETOS_TEST_DB must be a postgres:// DSN")
+		t.Fatalf("CACHEOS_TEST_DB must be a postgres:// DSN")
 	}
 	b := make([]byte, 6)
 	_, _ = rand.Read(b)

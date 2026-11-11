@@ -14,9 +14,9 @@ import (
 )
 
 func pg(t *testing.T) *sql.DB {
-	dsn := os.Getenv("ETOS_TEST_DB")
+	dsn := os.Getenv("CACHEOS_TEST_DB")
 	if dsn == "" {
-		t.Skip("ETOS_TEST_DB not set")
+		t.Skip("CACHEOS_TEST_DB not set")
 	}
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
@@ -135,7 +135,7 @@ func TestLockSessionDetectsDeadPeer(t *testing.T) {
 		// 本机 Unix 套接字连接时 PostgreSQL 把这些值报告为 0（不适用）；TCP 连接上必须不大于上限
 		var n int
 		fmt.Sscan(strings.TrimSuffix(v, "ms"), &n)
-		if n > max || (n == 0 && !strings.Contains(os.Getenv("ETOS_TEST_DB"), "host=/")) {
+		if n > max || (n == 0 && !strings.Contains(os.Getenv("CACHEOS_TEST_DB"), "host=/")) {
 			t.Errorf("%s = %s, want 1..%d", name, v, max)
 		}
 	}

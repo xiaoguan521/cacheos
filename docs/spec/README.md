@@ -69,3 +69,7 @@
 - [ ] Linux 安装包、systemd sandbox 与目标环境浏览器验收：本地 Playwright 冒烟已通过，仍需目标 Linux 实机确认安装、sandbox、NoNewPrivileges 与真实 agent 链路
 - [ ] P6 信创验收：Tongsuo 本机构建 smoke 已通过，仍需 Tongsuo/国密互操作、CPU/OS/数据库组合认证和 PoC 实测
 - [ ] 正式发布密钥仪式：`internal/license` 与 `internal/pkgsig` 目前只有演示 / 空公钥环；`go test -tags release` 需在离线签名机完成公钥入库后通过
+
+### 第二阶段（功能完善）
+
+- [ ] 扩展数据类型（第二阶段）：按改名流程纳入上游社区 BSD 许可的 JSON、布隆过滤器、搜索/向量模块；需先完成依赖许可审查、ADR 与 CLAUDE.md 规则扩展，再进入构建与打包

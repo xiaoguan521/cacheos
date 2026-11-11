@@ -17,7 +17,7 @@ import (
 
 // 子命令：sycache-console backup | restore（规格书 P6-6）。
 //
-// 口令只从文件或环境变量 ETOS_BACKUP_PASSPHRASE 读取，不接受命令行参数（会出现在 ps 与 shell 历史中）。
+// 口令只从文件或环境变量 CACHEOS_BACKUP_PASSPHRASE 读取，不接受命令行参数（会出现在 ps 与 shell 历史中）。
 func backupMain(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "用法：sycache-console backup|restore [参数]")
@@ -46,9 +46,9 @@ type commonFlags struct {
 
 func addCommon(fs *flag.FlagSet) commonFlags {
 	return commonFlags{
-		dataDir:  fs.String("data", envOr("ETOS_DATA", "/var/lib/sycache-console"), "数据目录"),
-		dsn:      fs.String("db", envOr("ETOS_DB", ""), "数据库：SQLite 文件路径或 postgres:// DSN（默认 <data>/console.db）"),
-		passFile: fs.String("passphrase-file", "", "备份口令文件（也可用环境变量 ETOS_BACKUP_PASSPHRASE）"),
+		dataDir:  fs.String("data", envOr("CACHEOS_DATA", "/var/lib/sycache-console"), "数据目录"),
+		dsn:      fs.String("db", envOr("CACHEOS_DB", ""), "数据库：SQLite 文件路径或 postgres:// DSN（默认 <data>/console.db）"),
+		passFile: fs.String("passphrase-file", "", "备份口令文件（也可用环境变量 CACHEOS_BACKUP_PASSPHRASE）"),
 	}
 }
 
@@ -68,10 +68,10 @@ func (c commonFlags) passphrase() ([]byte, error) {
 			return nil, err
 		}
 		p = bytes.TrimRight(b, "\r\n")
-	} else if v := os.Getenv("ETOS_BACKUP_PASSPHRASE"); v != "" {
+	} else if v := os.Getenv("CACHEOS_BACKUP_PASSPHRASE"); v != "" {
 		p = []byte(v)
 	} else {
-		return nil, errors.New("需要 -passphrase-file 或环境变量 ETOS_BACKUP_PASSPHRASE")
+		return nil, errors.New("需要 -passphrase-file 或环境变量 CACHEOS_BACKUP_PASSPHRASE")
 	}
 	if len(p) < 12 {
 		return nil, errors.New("备份口令至少 12 个字符（备份包含节点 CA 私钥）")
