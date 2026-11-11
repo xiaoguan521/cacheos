@@ -175,6 +175,7 @@ func (s *Server) Handler() (http.Handler, error) {
 	a.POST("/units/:id/migrations", role(store.RoleOperator), s.writable, s.stepUp, s.createMigration)
 	a.POST("/units/:id/migrations/:migration_id/cutover", role(store.RoleOperator), s.writable, s.stepUp, s.cutoverMigration)
 	a.POST("/units/:id/reshard", role(store.RoleReleaser), s.writable, s.stepUp, s.reshard)
+	a.POST("/units/:id/rebalance", role(store.RoleReleaser), s.writable, s.stepUp, s.rebalance)
 	a.GET("/units/:id/accounts", role(store.RoleOperator), s.listAccounts)
 	a.POST("/units/:id/accounts", role(store.RoleOperator), s.writable, s.stepUp, s.saveAccount)
 	a.DELETE("/units/:id/accounts/:name", role(store.RoleOperator), s.writable, s.stepUp, s.deleteAccount)

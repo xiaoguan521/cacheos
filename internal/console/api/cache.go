@@ -1536,6 +1536,43 @@ func (s *Server) reshard(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"operation": op})
 }
 
+// rebalance：dry_run 只返回基于已保存状态的计划，不下发指令；否则登记并后台执行再平衡。
+func (s *Server) rebalance(c *gin.Context) {
+	if !s.Lic.Snapshot().Feature(license.FeatureReshard) {
+		fail(c, http.StatusPaymentRequired, "LICENSE_FEATURE_DENIED", "当前授权不包含在线迁槽")
+		return
+	}
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		DryRun    bool   `json:"dry_run"`
+		Batch     uint32 `json:"batch"`
+		Tolerance uint32 `json:"tolerance"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		failErr(c, err)
+		return
+	}
+	if req.DryRun {
+		plan, err := s.Orch.PreviewRebalance(id, req.Tolerance)
+		if err != nil {
+			failErr(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"dry_run": true, "plan": plan})
+		return
+	}
+	op, err := s.Orch.Rebalance(id, orch.RebalanceSpec{Batch: req.Batch, Tolerance: req.Tolerance}, c.GetString("user"))
+	if err != nil {
+		failErr(c, err)
+		return
+	}
+	s.audit(c, "unit.rebalance", "unit", fmt.Sprint(id), map[string]any{"batch": req.Batch, "tolerance": req.Tolerance, "operation": op.ID})
+	c.JSON(http.StatusAccepted, gin.H{"operation": op})
+}
+
 func (s *Server) runMigration(id, hostID uint, port uint32) {
 	q := s.q().MigrationJob
 	job, err := q.WithContext(context.Background()).Where(q.ID.Eq(id)).First()

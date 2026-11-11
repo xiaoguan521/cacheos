@@ -11,7 +11,7 @@ const open = ref(false)
 const session = useSession()
 const statusName: Record<string, string> = { DRAFT: '草稿', PRECHECKED: '已预检', APPROVED: '已批准', APPLYING: '执行中', APPLIED: '已完成', PARTIAL: '部分完成', FAILED: '失败', ROLLED_BACK: '已回滚', PAUSED: '已暂停' }
 const statusColor: Record<string, string> = { APPLYING: 'gold', APPLIED: 'green', PARTIAL: 'orange', FAILED: 'red', ROLLED_BACK: 'volcano', PAUSED: 'default' }
-const kindName: Record<string, string> = { create: '创建', params: '参数变更', start: '启动', stop: '停止', restart: '重启', failover: '故障切换', reshard: '在线迁槽', scale: '扩缩容', upgrade: '引擎升级', delete: '删除' }
+const kindName: Record<string, string> = { create: '创建', params: '参数变更', start: '启动', stop: '停止', restart: '重启', failover: '故障切换', reshard: '在线迁槽', rebalance: '再平衡', scale: '扩缩容', upgrade: '引擎升级', delete: '删除' }
 
 async function load() {
   try {

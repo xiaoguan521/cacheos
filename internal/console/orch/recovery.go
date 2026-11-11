@@ -141,6 +141,13 @@ func (s *Service) rebuildPending(op *store.Operation) (func(context.Context, *op
 			return nil
 		}, nil
 
+	case "rebalance":
+		var spec RebalanceSpec
+		if err := json.Unmarshal([]byte(op.Request), &spec); err != nil {
+			return nil, fmt.Errorf("decode rebalance operation: %w", err)
+		}
+		return s.rebalanceJob(op.UnitID, spec), nil
+
 	case "upgrade":
 		req, err := decodeEngineUpgrade(op.Request)
 		if err != nil {
