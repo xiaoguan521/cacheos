@@ -48,8 +48,11 @@ make ci          UPSTREAM_SRC=/tmp/valkey   # 提交前的完整校验（含版�
 make compat-build                           # glibc 2.17 容器中兼容构建，产出 tar.gz / RPM / DEB（需要 docker）
 
 # GitHub Actions：标签 v* 或 Actions → binary-packages 手动触发，
-# 为 x86_64 / aarch64 生成可交付的 tar.gz、RPM、DEB、调试符号包、SBOM、BUILDINFO 与 SHA256SUMS
-# （工作流不需要本机执行，产物在 Actions Artifacts 中保留 90 天）
+# 为 x86_64 / aarch64 生成可交付的 tar.gz、RPM、DEB、调试符号包、SBOM、BUILDINFO 与 SHA256SUMS，
+# 并将兼容构建环境发布到 GHCR（ghcr.io/xiaoguan521/cacheos/build-env:el7）。
+# 发布后可复用构建环境，跳过本机 Dockerfile 构建：
+CACHEOS_BUILD_IMAGE=ghcr.io/xiaoguan521/cacheos/build-env:el7 make compat-build
+# GHCR 包首次发布后需在 Package settings 中设为 Public，匿名用户才能直接 pull。
 
 # 控制面 / agent
 go test ./...
