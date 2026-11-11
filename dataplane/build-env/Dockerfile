@@ -7,6 +7,8 @@
 ARG ARCH=x86_64
 FROM quay.io/pypa/manylinux2014_${ARCH}
 
+LABEL org.opencontainers.image.source="https://github.com/xiaoguan521/cacheos"
+
 # perl-IPC-Cmd 等：OpenSSL 3.x 的 Configure 需要；systemd-devel：sd_notify（Type=notify）；rpm-build：打 RPM 包
 RUN yum install -y -q perl-IPC-Cmd perl-Data-Dumper perl-Time-Piece systemd-devel rpm-build which patch \
  && yum clean all

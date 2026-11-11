@@ -1,7 +1,8 @@
 name: binary-packages
 
 # 商业方案 5.3 的发布构建：在 glibc 2.17 兼容环境中生成
-# sycache 的 tar.gz、RPM、DEB、调试符号包、BUILDINFO、SBOM 与校验清单。
+# sycache 的 tar.gz、RPM、DEB、调试符号包、BUILDINFO、SBOM 与校验清单；
+# 同时把 glibc 2.17 兼容构建环境镜像发布到 GHCR。
 #
 # 日常代码门禁由 dataplane.yml / p1-verify.yml 负责；本工作流只负责
 # 可交付的二进制包，避免把宿主机临时构建产物误当成发布包。
@@ -17,14 +18,56 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 concurrency:
   group: binary-packages-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  publish-builder:
+    name: publish build environment (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare Docker builder
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push compatibility builder image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./dataplane/build-env
+          build-args: |
+            ARCH=${{ matrix.arch }}
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/build-env:el7-${{ matrix.arch }}
+            ghcr.io/${{ github.repository }}/build-env:sha-${{ github.sha }}-${{ matrix.arch }}
+
   build:
     name: ${{ matrix.arch }} packages
+    needs: publish-builder
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     strategy:
@@ -41,6 +84,13 @@ jobs:
 
       - name: Prepare Docker builder
         uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install host packaging tools
         run: |
@@ -70,6 +120,8 @@ jobs:
           }
 
       - name: Build compatibility packages
+        env:
+          CACHEOS_BUILD_IMAGE: ghcr.io/${{ github.repository }}/build-env:sha-${{ github.sha }}-${{ matrix.arch }}
         shell: bash
         run: |
           set -euo pipefail
@@ -130,6 +182,33 @@ jobs:
             dist/BUILDINFO
             dist/SHA256SUMS
             security/vex/*.csaf.json
+
+  publish-builder-manifest:
+    name: publish multi-arch build environment tag
+    needs: [publish-builder, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Prepare Docker builder
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}/build-env"
+          docker buildx imagetools create \
+            --tag "$image:el7" \
+            --tag "$image:sha-${GITHUB_SHA}" \
+            "$image:sha-${GITHUB_SHA}-x86_64" \
+            "$image:sha-${GITHUB_SHA}-aarch64"
 
   upstream-suite:
     if: inputs.upstream_suite

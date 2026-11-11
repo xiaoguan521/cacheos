@@ -2,7 +2,8 @@
 # 在 glibc 2.17 容器中做兼容构建（静态 OpenSSL LTS），并生成 RPM 与 DEB 包。
 #
 # 用法：dataplane/build-compat.sh [-o <输出目录>] [-s <上游源码目录>]
-# 需要 docker；镜像由 dataplane/build-env/Dockerfile 构建（首次运行自动构建，按宿主架构选择基础镜像）。
+# 需要 docker；默认使用 dataplane/build-env/Dockerfile 首次自动构建。
+# 设置 CACHEOS_BUILD_IMAGE 时改为拉取预构建的兼容构建镜像（例如 GHCR 中的 el7 标签）。
 # 产物：<输出目录>/sycache-<版本>-<架构>.tar.gz、sycache-debuginfo-*.tar.gz、*.rpm、*.deb、BUILDINFO
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -22,10 +23,13 @@ case "$(uname -m)" in
   s390x) ARCH=s390x ;;
   *) echo "unsupported host architecture: $(uname -m)" >&2; exit 2 ;;
 esac
-IMAGE="cacheos-build:el7-$ARCH"
+IMAGE="${CACHEOS_BUILD_IMAGE:-cacheos-build:el7-$ARCH}"
 
-docker image inspect "$IMAGE" >/dev/null 2>&1 \
-  || docker build -q -t "$IMAGE" --build-arg ARCH="$ARCH" "$ROOT/dataplane/build-env"
+if [[ -n "${CACHEOS_BUILD_IMAGE:-}" ]]; then
+  docker pull "$IMAGE"
+elif ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+  docker build -q -t "$IMAGE" --build-arg ARCH="$ARCH" "$ROOT/dataplane/build-env"
+fi
 
 MOUNTS=(-v "$ROOT:/repo:ro" -v "$OUT:/out")
 BUILD_ARGS=(-S -o /out)
