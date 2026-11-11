@@ -57,6 +57,10 @@ $(script postinstall.sh)
 if [ "\$1" -eq 0 ]; then set -- remove; else set -- upgrade; fi
 $(script preremove.sh)
 
+%postun
+if [ "\$1" -eq 0 ]; then set -- remove; else set -- upgrade; fi
+$(script postremove.sh)
+
 %files
 $DIRS
 $FILES

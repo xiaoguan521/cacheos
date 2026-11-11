@@ -150,3 +150,40 @@ func TestUnitsCanReachInstallRootUnderHome(t *testing.T) {
 		}
 	}
 }
+
+// sycache-cli 入口：安装时在 /usr/bin 建软链指向当前版本，卸载时只删除指向本产品路径的软链（不得 rm -rf）。
+func TestSycacheCliSymlinkLifecycle(t *testing.T) {
+	const target = "/home/atwasoft/sycache/current/bin/sycache-cli"
+	const link = "/usr/bin/sycache-cli"
+
+	post := readPackaging(t, "dataplane/packaging/scripts/postinstall.sh")
+	if !strings.Contains(post, "ln -sfn "+target+" "+link) {
+		t.Errorf("postinstall.sh must create %s -> %s with ln -sfn", link, target)
+	}
+	if !strings.Contains(post, "[ -L "+link+" ]") || !strings.Contains(post, "! -e "+link) {
+		t.Errorf("postinstall.sh must only overwrite %s when it is absent or already a symlink", link)
+	}
+
+	postrm := readPackaging(t, "dataplane/packaging/scripts/postremove.sh")
+	if !strings.Contains(postrm, `[ "$1" = "remove" ] || exit 0`) {
+		t.Errorf("postremove.sh must do nothing on upgrade")
+	}
+	if !strings.Contains(postrm, "[ -L "+link+" ]") || !strings.Contains(postrm, "readlink "+link+`)" = `+target+" ]") {
+		t.Errorf("postremove.sh must remove %s only when it is a symlink to %s", link, target)
+	}
+	if strings.Contains(postrm, "rm -rf") {
+		t.Errorf("postremove.sh contains destructive recursive removal")
+	}
+
+	debBuild := readPackaging(t, "dataplane/packaging/build-deb.sh")
+	if !strings.Contains(debBuild, `DEBIAN/postrm"`) || !strings.Contains(debBuild, "scripts/postremove.sh") {
+		t.Errorf("build-deb.sh must install postremove.sh as DEBIAN/postrm")
+	}
+	if !strings.Contains(debBuild, "remove|purge) set -- remove") {
+		t.Errorf("build-deb.sh must map dpkg remove/purge to remove")
+	}
+	rpmBuild := readPackaging(t, "dataplane/packaging/build-rpm.sh")
+	if !strings.Contains(rpmBuild, "%postun") || !strings.Contains(rpmBuild, "script postremove.sh") {
+		t.Errorf("build-rpm.sh must add a %%postun section running postremove.sh")
+	}
+}

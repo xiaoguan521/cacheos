@@ -42,6 +42,8 @@ v="$("$B/sycache-server" --version)"
 [[ "$v" == *"SyCache server v=$ver "* ]] || { echo "unexpected --version: $v"; exit 1; }
 test -f /usr/lib/systemd/system/sycache@.service
 test -d /home/atwasoft/sycache/instances && test "$(stat -c %U /home/atwasoft/sycache/instances)" = sycache
+command -v sycache-cli >/dev/null
+sycache-cli --version >/dev/null
 
 step "primary / replica as user sycache"
 for p in 7001 7002; do
@@ -78,5 +80,6 @@ case "$KIND" in
   deb) apt-get remove -y -qq sycache >/dev/null ;;
 esac
 test ! -e "$B/sycache-server"
+test ! -L /usr/bin/sycache-cli
 glibc="$(getconf GNU_LIBC_VERSION | awk '{print $2}')"
 echo "NOTICE: $KIND install/run/uninstall OK on $OS ($ARCH, glibc $glibc)"

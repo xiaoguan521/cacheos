@@ -19,6 +19,11 @@ if [ -n "$ver" ]; then
   [ -e /home/atwasoft/sycache/current ] || ln -s "versions/$ver" /home/atwasoft/sycache/current
 fi
 install -d -o sycache -g sycache -m 0750 /var/log/sycache
+# 命令行入口：/usr/bin/sycache-cli 指向当前版本（切换版本后自动生效）。
+# 只在路径不存在或本身已是软链时写入，绝不覆盖真实文件。
+if [ ! -e /usr/bin/sycache-cli ] || [ -L /usr/bin/sycache-cli ]; then
+  ln -sfn /home/atwasoft/sycache/current/bin/sycache-cli /usr/bin/sycache-cli
+fi
 if command -v sysctl >/dev/null 2>&1; then
   sysctl -q -p /usr/lib/sysctl.d/90-sycache.conf >/dev/null 2>&1 || true
 fi

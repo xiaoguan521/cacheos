@@ -58,7 +58,9 @@ echo /etc/logrotate.d/sycache > "$R/DEBIAN/conffiles"
 { echo '#!/bin/sh'; echo 'set -e'; echo '[ "$1" = "configure" ] || exit 0'; sed '1d' "$HERE/scripts/postinstall.sh"; } > "$R/DEBIAN/postinst"
 { echo '#!/bin/sh'; echo 'set -e'; echo 'case "$1" in remove) set -- remove ;; *) set -- upgrade ;; esac'
   sed '1d' "$HERE/scripts/preremove.sh"; } > "$R/DEBIAN/prerm"
-chmod 0755 "$R/DEBIAN/preinst" "$R/DEBIAN/postinst" "$R/DEBIAN/prerm"
+{ echo '#!/bin/sh'; echo 'set -e'; echo 'case "$1" in remove|purge) set -- remove ;; *) set -- upgrade ;; esac'
+  sed '1d' "$HERE/scripts/postremove.sh"; } > "$R/DEBIAN/postrm"
+chmod 0755 "$R/DEBIAN/preinst" "$R/DEBIAN/postinst" "$R/DEBIAN/prerm" "$R/DEBIAN/postrm"
 
 DEB="$OUT/sycache_${DEB_VERSION}_${DEB_ARCH}.deb"
 dpkg-deb --root-owner-group -Zxz --build "$R" "$DEB" >/dev/null

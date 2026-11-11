@@ -69,6 +69,13 @@ func TestInstallAndStaged(t *testing.T) {
 	}
 }
 
+// 防递归标记沿用本产品前缀，不再使用旧项目前缀。
+func TestSelfUpdateGuardName(t *testing.T) {
+	if envGuard != "SYCACHE_AGENT_SELFUPDATE_EXEC" {
+		t.Fatalf("envGuard = %q", envGuard)
+	}
+}
+
 func TestNewer(t *testing.T) {
 	for _, c := range []struct {
 		a, b string

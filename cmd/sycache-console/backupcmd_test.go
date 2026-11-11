@@ -25,7 +25,7 @@ func TestBackupRestoreCLI(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "b.etosbk")
 	var so, se bytes.Buffer
 
-	if rc := backupMain([]string{"backup", "-data", src, "-out", out}, &so, &se); rc == 0 || !strings.Contains(se.String(), "ETOS_BACKUP_PASSPHRASE") {
+	if rc := backupMain([]string{"backup", "-data", src, "-out", out}, &so, &se); rc == 0 || !strings.Contains(se.String(), "CACHEOS_BACKUP_PASSPHRASE") {
 		t.Fatalf("backup without passphrase: rc=%d %s", rc, se.String())
 	}
 	short := filepath.Join(t.TempDir(), "short")
@@ -60,5 +60,20 @@ func TestBackupRestoreCLI(t *testing.T) {
 	se.Reset()
 	if rc := backupMain([]string{"restore", "-data", dst, "-in", out, "-passphrase-file", pf, "-force"}, &so, &se); rc == 0 || !strings.Contains(se.String(), "不是空库") {
 		t.Fatalf("second restore: rc=%d %s", rc, se.String())
+	}
+}
+
+// 环境变量统一使用 CACHEOS_ 前缀：CACHEOS_DATA 指定数据目录，CACHEOS_BACKUP_PASSPHRASE 提供口令。
+func TestBackupEnvPrefix(t *testing.T) {
+	src := t.TempDir()
+	if _, err := store.Open(filepath.Join(src, "console.db")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CACHEOS_DATA", src)
+	t.Setenv("CACHEOS_BACKUP_PASSPHRASE", "long enough passphrase")
+	out := filepath.Join(t.TempDir(), "env.sycbk")
+	var so, se bytes.Buffer
+	if rc := backupMain([]string{"backup", "-out", out}, &so, &se); rc != 0 {
+		t.Fatalf("backup via CACHEOS_* env: rc=%d %s", rc, se.String())
 	}
 }
