@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// testRoot 搭一个最小的 /opt/sycache：实例 7001（server）、26379（sentinel）、版本 9.1.3 与 9.1.4。
+// testRoot 搭一个最小的 /home/atwasoft/sycache：实例 7001（server）、26379（sentinel）、版本 9.1.3 与 9.1.4。
 func testRoot(t *testing.T) Paths {
 	t.Helper()
 	root := t.TempDir()

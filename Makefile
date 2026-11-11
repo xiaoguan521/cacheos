@@ -61,13 +61,13 @@ golden:
 # 行为等价与互通测试；设置 VALKEY_BIN=<上游 valkey 的 src 目录> 时额外跑混合版本互通
 compat:
 	rm -rf $(DIST)/pkg && mkdir -p $(DIST)/pkg && tar -C $(DIST)/pkg -xzf $(firstword $(wildcard $(DIST)/sycache-[0-9]*.tar.gz))
-	SYCACHE_BIN=$(abspath $(DIST))/pkg/opt/sycache/bin python3 test/compat/compat_test.py -v
+	SYCACHE_BIN=$(abspath $(DIST))/pkg/home/atwasoft/sycache/bin python3 test/compat/compat_test.py -v
 
 # 客户端兼容矩阵（Python、Go；可选 Java、Node、.NET），源码按 test/clients/clients.lock 拉取
 clients:
-	SYCACHE_BIN=$(abspath $(DIST))/pkg/opt/sycache/bin python3 test/clients/client_matrix_test.py -v
+	SYCACHE_BIN=$(abspath $(DIST))/pkg/home/atwasoft/sycache/bin python3 test/clients/client_matrix_test.py -v
 
-# P4 单机演示：需要先准备 sycache 二进制，默认从 /opt/sycache/bin 读取
+# P4 单机演示：需要先准备 sycache 二进制，默认从 /home/atwasoft/sycache/bin 读取
 demo-local:
 	scripts/demo-local.sh
 

@@ -1,7 +1,7 @@
 // Package engineupdate 安全安装 sycache 数据面升级包。
 //
 // 升级包是 build-sycache.sh 生成的完整安装 tar.gz。安装时只把
-// opt/sycache/ 下的内容放入 versions/<version>/；包内的 systemd、sysctl
+// home/atwasoft/sycache/ 下的内容放入 versions/<version>/；包内的 systemd、sysctl
 // 和 logrotate 文件属于系统安装阶段，不能借升级流程覆盖系统路径。
 package engineupdate
 
@@ -25,7 +25,7 @@ const (
 	MaxPackage   int64 = 128 << 20
 	maxExpanded  int64 = 512 << 20
 	maxEntries         = 10000
-	enginePrefix       = "opt/sycache"
+	enginePrefix       = "home/atwasoft/sycache"
 )
 
 var ErrRejected = errors.New("engine package rejected")

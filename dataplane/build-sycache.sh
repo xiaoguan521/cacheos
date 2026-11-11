@@ -13,7 +13,7 @@
 #     在 glibc 2.17 的构建环境（dataplane/build-env/）中执行，即可覆盖 CentOS 7、麒麟 V10、统信 UOS、openEuler
 #     与较新的发行版。OPENSSL_SRC 指向已检出的源码时跳过拉取；MAX_GLIBC 设置后校验二进制不依赖更高版本的 glibc 符号。
 # USE_SYSTEMD：默认 auto（有 libsystemd-dev 时启用 Type=notify），发布构建环境必须为 yes。
-# 产物：<输出目录>/sycache-<产品版本>-<架构>.tar.gz，解压到 / 得到 /opt/sycache 目录树；同目录输出 BUILDINFO。
+# 产物：<输出目录>/sycache-<产品版本>-<架构>.tar.gz，解压到 / 得到 /home/atwasoft/sycache 目录树；同目录输出 BUILDINFO。
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
@@ -144,11 +144,11 @@ if [[ -n "${MAX_GLIBC:-}" ]]; then
   done
 fi
 
-# 安装到暂存根目录：/opt/sycache/{bin,conf,share,licenses}
-STAGE="$WORK/stage"; P="$STAGE/opt/sycache"
+# 安装到暂存根目录：/home/atwasoft/sycache/{bin,conf,share,licenses}
+STAGE="$WORK/stage"; P="$STAGE/home/atwasoft/sycache"
 make -C src install "${MAKE_OPTS[@]}" PREFIX="$P" >>"$WORK/build.log" 2>&1
 # 剥离调试符号：调试信息单独输出 sycache-debuginfo 包，供崩溃分析，不进安装包
-DBG="$WORK/debug/opt/sycache/lib/debug"; mkdir -p "$DBG"
+DBG="$WORK/debug/home/atwasoft/sycache/lib/debug"; mkdir -p "$DBG"
 if file "$P/bin/sycache-server" | grep -q 'ELF'; then
   for b in sycache-server sycache-cli sycache-benchmark; do
     "$OBJCOPY" --only-keep-debug "$P/bin/$b" "$DBG/$b.debug"

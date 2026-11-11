@@ -19,7 +19,7 @@ func (s *Server) about(c *gin.Context) {
 		"commit":           version.Commit,
 		"build_date":       version.BuildDate,
 		"based_on":         "Valkey (BSD-3-Clause)",
-		"notice":           "docs/NOTICE; installed data-plane packages ship /opt/sycache/licenses/NOTICE",
+		"notice":           "docs/NOTICE; installed data-plane packages ship /home/atwasoft/sycache/licenses/NOTICE",
 		"current_release":  current,
 		"release_mappings": version.Releases,
 	})

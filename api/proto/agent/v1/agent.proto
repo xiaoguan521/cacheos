@@ -54,7 +54,7 @@ message Hello {
   uint64 mem_total_bytes = 5;
   string os_release = 6;             // /etc/os-release 的 PRETTY_NAME
   string kernel = 7;
-  repeated string engine_versions = 8; // /opt/sycache/versions 下已安装的产品版本
+  repeated string engine_versions = 8; // /home/atwasoft/sycache/versions 下已安装的产品版本
   string engine_current = 9;           // current 软链指向的版本
   string engine_buildinfo = 10;        // 当前版本的 BUILDINFO 原文
   HostTuning tuning = 11;
@@ -73,7 +73,7 @@ message Heartbeat {
   double cpu_percent = 1;
   uint64 mem_used_bytes = 2;
   uint64 mem_total_bytes = 3;
-  uint64 data_disk_free_bytes = 4;   // /opt/sycache/instances 所在分区
+  uint64 data_disk_free_bytes = 4;   // /home/atwasoft/sycache/instances 所在分区
   repeated InstanceStatus instances = 5;
 }
 

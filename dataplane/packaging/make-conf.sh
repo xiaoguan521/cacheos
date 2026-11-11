@@ -13,8 +13,8 @@ sed -E \
   -e 's#/var/run/valkey-sentinel\.pid#/run/sycache/sycache-sentinel.pid#g' \
   -e 's#/var/run/valkey\.pid#/run/sycache/sycache.pid#g' \
   -e 's#/run/valkey\.(sock|pid)#/run/sycache/sycache.\1#g' \
-  -e 's#/etc/valkey/#/opt/sycache/conf/#g' \
-  -e 's#/var/valkey/#/opt/sycache/scripts/#g' \
+  -e 's#/etc/valkey/#/home/atwasoft/sycache/conf/#g' \
+  -e 's#/var/valkey/#/home/atwasoft/sycache/scripts/#g' \
   -e 's#valkey\.conf#sycache.conf#g' \
   -e 's#Valkey#SyCache#g; s#VALKEY#SYCACHE#g; s#valkey#sycache#g' \
   "$IN"

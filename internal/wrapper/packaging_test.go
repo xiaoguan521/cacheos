@@ -55,7 +55,7 @@ func TestAgentPackagingIsPresentAndHardened(t *testing.T) {
 	}
 
 	service := readPackaging(t, "dataplane/packaging/sycache-agent.service")
-	for _, want := range []string{"User=sycache-agent", "Group=sycache", "ExecStart=/usr/bin/sycache-agent run", "Restart=on-failure", "ProtectSystem=strict", "UMask=0007", "RuntimeDirectory=sycache", "ReadWritePaths=/var/lib/sycache-agent /opt/sycache /run/sycache"} {
+	for _, want := range []string{"User=sycache-agent", "Group=sycache", "ExecStart=/usr/bin/sycache-agent run", "Restart=on-failure", "ProtectSystem=strict", "UMask=0007", "RuntimeDirectory=sycache", "ReadWritePaths=/var/lib/sycache-agent /home/atwasoft/sycache /run/sycache"} {
 		if !strings.Contains(service, want) {
 			t.Errorf("agent service missing %q", want)
 		}
@@ -99,7 +99,7 @@ func TestAgentPackagingIsPresentAndHardened(t *testing.T) {
 	}
 
 	pre := readPackaging(t, "dataplane/packaging/agent-scripts/preinstall.sh")
-	for _, want := range []string{"groupadd", "useradd", "sycache-agent", "/var/lib/sycache-agent", "/opt/sycache"} {
+	for _, want := range []string{"groupadd", "useradd", "sycache-agent", "/var/lib/sycache-agent", "/home/atwasoft/sycache"} {
 		if !strings.Contains(pre, want) {
 			t.Errorf("agent preinstall missing %q", want)
 		}
@@ -115,6 +115,38 @@ func TestAgentPackagingIsPresentAndHardened(t *testing.T) {
 	for _, want := range []string{"User=sycache-console", "Group=sycache-console", "ReadWritePaths=/var/lib/sycache-console /etc/cacheos"} {
 		if !strings.Contains(consoleService, want) {
 			t.Errorf("console service missing %q", want)
+		}
+	}
+}
+
+// 安装根位于 /home 之下：ProtectHome=yes 会让单元看不到整个 /home，引擎二进制与实例目录都不可达，
+// ProtectHome=tmpfs 同样会把安装根遮住。只允许 read-only，写入范围仍由 ReadWritePaths 限定。
+func TestUnitsCanReachInstallRootUnderHome(t *testing.T) {
+	root := Default().Root
+	if root != "/home/atwasoft/sycache" {
+		t.Fatalf("default install root = %q", root)
+	}
+	for _, path := range []string{
+		"dataplane/packaging/sycache@.service",
+		"dataplane/packaging/sycache-sentinel@.service",
+		"dataplane/packaging/sycache-agent.service",
+		"deploy/sycache-agent.service",
+	} {
+		body := readPackaging(t, path)
+		if !strings.Contains(body, "\nProtectHome=read-only\n") {
+			t.Errorf("%s must set ProtectHome=read-only: install root %s lives under /home", path, root)
+		}
+		if !strings.Contains(body, root) {
+			t.Errorf("%s does not reference install root %s", path, root)
+		}
+		rw := false
+		for _, line := range strings.Split(body, "\n") {
+			if strings.HasPrefix(line, "ReadWritePaths=") && strings.Contains(line, root) {
+				rw = true
+			}
+		}
+		if !rw {
+			t.Errorf("%s: ReadWritePaths does not cover %s", path, root)
 		}
 	}
 }

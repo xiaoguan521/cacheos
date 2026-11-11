@@ -29,16 +29,16 @@ done
 
 if [[ $# -ge 1 ]]; then
   W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
-  tar -C "$W" -xzf "$1" ./opt/sycache/share/BUILDINFO ./opt/sycache/share/sbom.spdx.json
+  tar -C "$W" -xzf "$1" ./home/atwasoft/sycache/share/BUILDINFO ./home/atwasoft/sycache/share/sbom.spdx.json
   # shellcheck disable=SC1091
   BI_FILE="$W/buildinfo.vars"
-  sed 's/^/BI_/' "$W/opt/sycache/share/BUILDINFO" > "$BI_FILE"
+  sed 's/^/BI_/' "$W/home/atwasoft/sycache/share/BUILDINFO" > "$BI_FILE"
   source "$BI_FILE"
   [[ "$BI_product_version" == "$current" ]] || fail "BUILDINFO product_version $BI_product_version != $current"
   [[ "$BI_upstream_version" == "$UPSTREAM_VERSION" ]] || fail "BUILDINFO upstream_version mismatch"
   [[ "$BI_upstream_commit" == "$UPSTREAM_COMMIT" ]] || fail "BUILDINFO upstream_commit mismatch"
   [[ "$(tr ' ' '\n' <<<"$BI_patches" | sort)" == "$present" ]] || fail "BUILDINFO patches mismatch"
-  python3 - "$W/opt/sycache/share/sbom.spdx.json" "$current" "$UPSTREAM_VERSION" <<'EOF' || fail "SBOM mismatch"
+  python3 - "$W/home/atwasoft/sycache/share/sbom.spdx.json" "$current" "$UPSTREAM_VERSION" <<'EOF' || fail "SBOM mismatch"
 import json, sys
 doc = json.load(open(sys.argv[1]))
 by = {p["name"]: p["versionInfo"] for p in doc["packages"]}

@@ -109,7 +109,7 @@ jobs:
           root="$RUNNER_TEMP/sycache-package"
           mkdir -p "$root"
           tar -xzf "$package" -C "$root"
-          SYCACHE_BIN="$root/opt/sycache/bin" scripts/demo-local.sh
+          SYCACHE_BIN="$root/home/atwasoft/sycache/bin" scripts/demo-local.sh
 
   p5-object-store:
     name: P5 S3-compatible backup round trip
