@@ -369,6 +369,7 @@ onUnmounted(() => clearInterval(timer))
         <a-button @click="router.push({ name: 'backups', params: { id } })">备份</a-button>
         <a-button v-if="unit.mode !== 'standalone' || session.can('operator')" @click="router.push({ name: 'migrations', params: { id } })">迁移</a-button>
         <a-button @click="router.push({ name: 'keys', params: { id } })">Key 浏览器</a-button>
+        <a-button v-if="session.cliExec" @click="router.push({ name: 'cli', params: { id } })">Web 命令行</a-button>
         <a-button :disabled="!session.can('operator')" @click="action(unit.status === 'stopped' ? 'start' : 'stop')">{{ unit.status === 'stopped' ? '启动' : '停止' }}</a-button>
         <a-button :disabled="!session.can('operator')" @click="action('restart')">重启</a-button>
         <a-button v-if="unit.mode !== 'standalone'" :disabled="!session.can('operator')" @click="failover">故障切换</a-button>

@@ -22,6 +22,7 @@ import (
 	"github.com/xiaoguan521/cacheos/internal/console/store"
 	"github.com/xiaoguan521/cacheos/internal/license"
 	"github.com/xiaoguan521/cacheos/internal/paramcat"
+	"github.com/xiaoguan521/cacheos/internal/webcli"
 )
 
 // ---------- 主机 ----------
@@ -1088,6 +1089,105 @@ func (s *Server) browseKeys(c *gin.Context) {
 	}
 	s.audit(c, "unit.keys.browse", "instance", fmt.Sprint(in.ID), map[string]any{"pattern": c.Query("pattern"), "reveal": reveal, "unit": u.ID})
 	c.JSON(http.StatusOK, payload)
+}
+
+// cliBodyLimit：Web 命令行请求体上限（256 KiB 的参数加 JSON 外壳）。
+const cliBodyLimit = 512 << 10
+
+// execCommand：Web 命令行（CLAUDE.md「agent 与安全」中唯一的例外）。
+// 中间件链：developer → writable → stepUp → requireTOTP；此处再查 CliExec 授权与 argv 白名单（与 agent 共用 webcli.Check）。
+// 每条请求（包括被拒绝的请求）都写审计：操作人、部署单元、实例、命令名、参数个数、结果状态；参数值与回复内容不写审计、不写日志。
+func (s *Server) execCommand(c *gin.Context) {
+	u, in, ok := s.unitInstance(c)
+	if !ok {
+		return
+	}
+	if in.Kind != "server" {
+		s.auditCLI(c, u, in, "", 0, "CLI_NOT_SERVER", "")
+		fail(c, http.StatusBadRequest, "CLI_NOT_SERVER", "Web 命令行只能在数据实例上执行")
+		return
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, cliBodyLimit)
+	var req struct {
+		Argv []string `json:"argv"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		s.auditCLI(c, u, in, "", 0, webcli.CodeInvalid, "")
+		fail(c, http.StatusBadRequest, webcli.CodeInvalid, "请求体需要是 {\"argv\": [...]} 形式的 JSON，且不超过 512 KiB")
+		return
+	}
+	name, argc := webcli.CommandName(req.Argv), max(len(req.Argv)-1, 0)
+	user, err := store.First[store.User](s.Store, c.GetUint("uid"))
+	if err != nil {
+		failErr(c, err)
+		return
+	}
+	if !user.CliExec {
+		s.auditCLI(c, u, in, name, argc, "CLI_EXEC_DENIED", "")
+		fail(c, http.StatusForbidden, "CLI_EXEC_DENIED", "未获得命令行授权，请联系管理员")
+		return
+	}
+	if _, err := webcli.Check(req.Argv); err != nil {
+		code, status, msg := webcli.CodeInvalid, http.StatusBadRequest, "命令参数不合法"
+		var we *webcli.Error
+		if errors.As(err, &we) {
+			code, msg = we.Code, we.Msg
+			if we.Code == webcli.CodeDenied {
+				status = http.StatusForbidden
+			}
+		}
+		s.auditCLI(c, u, in, name, argc, code, "")
+		fail(c, status, code, msg)
+		return
+	}
+	send := s.sendCmd
+	if send == nil {
+		send = s.GW.Send
+	}
+	r, err := send(c.Request.Context(), in.HostID, &agentv1.ServerMessage{Body: &agentv1.ServerMessage_ExecCommand{ExecCommand: &agentv1.ExecCommand{Port: in.Port, Argv: req.Argv}}}, 15*time.Second)
+	if err != nil {
+		s.auditCLI(c, u, in, name, argc, "UNAVAILABLE", "")
+		failErr(c, err)
+		return
+	}
+	if r.Status != agentv1.CommandResult_OK {
+		code := r.ErrorCode
+		if code == "" {
+			code = "FAILED"
+		}
+		s.auditCLI(c, u, in, name, argc, code, "")
+		status := http.StatusConflict
+		if r.ErrorCode == webcli.CodeDenied {
+			status = http.StatusForbidden
+		} else if r.ErrorCode == webcli.CodeInvalid {
+			status = http.StatusBadRequest
+		}
+		fail(c, status, code, r.Message)
+		return
+	}
+	var payload any = gin.H{}
+	var replyType struct {
+		Reply struct {
+			Type string `json:"type"`
+		} `json:"reply"`
+	}
+	if len(r.Payload) > 0 && json.Unmarshal(r.Payload, &payload) != nil {
+		s.auditCLI(c, u, in, name, argc, "BAD_REPLY", "")
+		fail(c, http.StatusBadGateway, "BAD_REPLY", "agent 返回的命令结果格式不正确")
+		return
+	}
+	_ = json.Unmarshal(r.Payload, &replyType)
+	s.auditCLI(c, u, in, name, argc, "OK", replyType.Reply.Type)
+	c.JSON(http.StatusOK, payload)
+}
+
+// auditCLI 记录一条 Web 命令行审计。detail 只含命令名与参数个数，不含参数值或回复内容。
+func (s *Server) auditCLI(c *gin.Context, u *store.Unit, in *store.Instance, name string, argc int, status, replyType string) {
+	detail := map[string]any{"unit": u.ID, "instance_id": in.ID, "command": name, "argc": argc, "status": status}
+	if replyType != "" {
+		detail["reply_type"] = replyType
+	}
+	s.audit(c, "unit.cli.exec", "instance", fmt.Sprint(in.ID), detail)
 }
 
 func (s *Server) listBackups(c *gin.Context) {

@@ -148,6 +148,7 @@ agent 沿用 v3.1 第 5 节：Go 单二进制、只主动连控制台、不监�
 - 一台主机可运行多个实例，以端口区分（`instances/<port>/`）。agent 通过 **Unix Socket** 连接本机实例，从不走 TCP。
 - 每个实例预置一个管理账号 `sycache-ops`，密码由 agent 生成、仅存本机（0600）。其 ACL 只授予运维命令：`INFO CONFIG CLIENT SLOWLOG LATENCY MEMORY CLUSTER REPLICAOF FAILOVER BGSAVE BGREWRITEAOF LASTSAVE DBSIZE SCAN TYPE TTL OBJECT MIGRATE ACL`，**不授予任何读取 value 的命令**（GET、HGETALL 等）。
 - 业务数据不经过控制台：Key 浏览器（7 节 M10）需单独授权，走审计，且默认对 value 脱敏。
+- 唯一的受限例外是 Web 命令行（8 节 M10 的 `/units/:id/cli`）：它只把未命中拒绝清单、通过 argv 校验的数据命令经 Unix Socket 发给指定实例，使用独立的内置账号 `sycache-webcli`（ACL 禁用管理、危险、脚本、阻塞、订阅、事务与连接类命令），不触达操作系统；管理账号 `sycache-ops` 的权限不因此放宽。
 
 ### 6.2 gRPC 协议增量（`api/proto/agent/v1/cache.proto`）
 
@@ -243,7 +244,7 @@ sycache-agent ALL=(root) NOPASSWD: /usr/libexec/sycache/sycache-wrapper switch-v
 | M7 性能诊断 | `/diagnose` | 慢日志聚合、延迟事件、客户端连接分析、大 Key / 热 Key 抽样、RDB 离线分析报告、内存碎片建议 | developer | RDB 离线分析为企业版 |
 | M8 备份恢复 | `/backup` | 定时 RDB 备份（本地 / NFS / S3 兼容存储）、保留策略、校验、按时间点恢复到新实例 | operator | 远端存储为企业版 |
 | M9 数据迁移 | `/migrate` | 从 Redis / TongRDS / BCD 等在线同步（全量 + 增量）、校验、切换清单 | operator | 企业版 |
-| M10 Key 浏览器 | `/keys` | 按前缀浏览、TTL、类型、大小；value 默认脱敏，查看明文需单独授权并记审计；禁止 `KEYS *`，一律 SCAN | developer + 单独授权 | — |
+| M10 Key 浏览器 | `/keys` | 按前缀浏览、TTL、类型、大小；value 默认脱敏，查看明文需单独授权并记审计；禁止 `KEYS *`，一律 SCAN；Web 命令行（`/units/:id/cli`）是受限例外：仅授予 CliExec 权限的操作人可用，每次需二次验证，只允许数据命令白名单之外的命令，且逐条审计（不记参数值与返回值），超时 5 秒、返回超过 256 KiB 截断 | developer + 单独授权 | — |
 | M11 数据面账号 | `/acl` | 业务 ACL 用户、命令类别与 Key 前缀授权、密码轮换、危险命令默认禁用（FLUSHALL、KEYS、DEBUG、CONFIG） | operator | — |
 | M12 监控告警（复用框架） | `/monitor` | 指标曲线、告警规则（内存 > 85%、主从断开、复制延迟、命中率骤降、持久化失败、节点离线），推送邮件 / 企业微信 / 钉钉 / Webhook | viewer | 告警通道数 |
 | M13 审计与用户（复用） | `/audit` `/users` | 哈希链审计、RBAC、按部署单元授权、LDAP / OIDC | auditor / admin | LDAP / OIDC 为企业版 |

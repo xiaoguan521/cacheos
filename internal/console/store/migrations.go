@@ -16,7 +16,17 @@ import (
 func migrations() []*gormigrate.Migration {
 	return []*gormigrate.Migration{
 		{ID: "202611010001_init", Migrate: migrateInit},
+		{ID: "202611110001_user_cli_exec", Migrate: migrateUserCliExec},
 	}
+}
+
+// ---- 202611110001_user_cli_exec：用户增加 Web 命令行授权（CliExec）----
+
+func migrateUserCliExec(tx *gorm.DB) error {
+	type User struct {
+		CliExec bool
+	}
+	return tx.Migrator().AddColumn(&User{}, "CliExec")
 }
 
 // Migrate 把数据库升级到最新版本。

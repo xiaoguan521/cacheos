@@ -31,15 +31,16 @@ import (
 
 // Server 汇总 API 依赖。
 type Server struct {
-	Store         *store.Store
-	GW            *gateway.Server
-	Orch          *orch.Service
-	Alerts        *alerts.Service
-	Lic           *licsvc.Service
-	Audit         *audit.Logger
-	Box           *secretbox.Box // 加密 LDAP/OIDC 等配置中的凭据
-	Log           *slog.Logger
-	Web           fs.FS  // 前端构建产物（web/dist）
+	Store  *store.Store
+	GW     *gateway.Server
+	Orch   *orch.Service
+	Alerts *alerts.Service
+	Lic    *licsvc.Service
+	Audit  *audit.Logger
+	Box    *secretbox.Box // 加密 LDAP/OIDC 等配置中的凭据
+	Log    *slog.Logger
+	Web    fs.FS // 前端构建产物（web/dist）
+
 	GRPCAddr      string // agent 连接控制台使用的地址，写入安装命令
 	CAFingerprint string
 	SecureCookie  bool
@@ -166,6 +167,8 @@ func (s *Server) Handler() (http.Handler, error) {
 	a.GET("/units/:id/metrics", s.unitMetrics)
 	a.GET("/units/:id/diagnose", role(store.RoleDeveloper), s.diagnose)
 	a.GET("/units/:id/keys", role(store.RoleDeveloper), s.browseKeys)
+	// Web 命令行（CLAUDE.md 唯一例外）：比明文查看 Key 更严格——需要写可用、每次二次验证、且必须已启用 TOTP
+	a.POST("/units/:id/exec", role(store.RoleDeveloper), s.writable, s.stepUp, s.requireTOTP, s.execCommand)
 	a.GET("/units/:id/backups", role(store.RoleOperator), s.listBackups)
 	a.GET("/units/:id/backup-policy", role(store.RoleOperator), s.getBackupPolicy)
 	a.PUT("/units/:id/backup-policy", role(store.RoleOperator), s.writable, s.stepUp, s.saveBackupPolicy)

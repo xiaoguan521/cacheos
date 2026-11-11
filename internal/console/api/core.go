@@ -315,8 +315,21 @@ func (s *Server) logout(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// requireTOTP：Web 命令行每次请求都必须有已启用的 TOTP。stepUp 只在启用后校验验证码，这里补上未启用时的拒绝（fail-closed）。
+func (s *Server) requireTOTP(c *gin.Context) {
+	if _, enabled := s.loadTOTP(c.GetUint("uid")); !enabled {
+		fail(c, http.StatusForbidden, "TOTP_REQUIRED", "Web 命令行需要先在「系统」中启用身份验证器（TOTP）")
+		return
+	}
+	c.Next()
+}
+
 func (s *Server) me(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"username": c.GetString("user"), "role": c.GetString("role"), "must_change_password": c.GetBool("pc")})
+	cliExec := false
+	if u, err := store.First[store.User](s.Store, c.GetUint("uid")); err == nil {
+		cliExec = u.CliExec
+	}
+	c.JSON(http.StatusOK, gin.H{"username": c.GetString("user"), "role": c.GetString("role"), "must_change_password": c.GetBool("pc"), "cli_exec": cliExec})
 }
 
 // ---------- 授权 ----------

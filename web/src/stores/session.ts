@@ -28,6 +28,7 @@ export const useSession = defineStore('session', {
   state: () => ({
     username: '' as string,
     role: '' as string,
+    cliExec: false as boolean, // Web 命令行授权（管理员单独授予）
     license: null as LicenseView | null,
   }),
   getters: {
@@ -39,6 +40,7 @@ export const useSession = defineStore('session', {
       const me = await api.get('/auth/me')
       this.username = me.username
       this.role = me.role
+      this.cliExec = !!me.cli_exec
     },
     async loadLicense() {
       this.license = await api.get<LicenseView>('/license')
@@ -47,6 +49,7 @@ export const useSession = defineStore('session', {
       await api.post('/auth/logout').catch(() => {})
       this.username = ''
       this.role = ''
+      this.cliExec = false
     },
   },
 })

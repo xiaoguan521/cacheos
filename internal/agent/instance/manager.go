@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -25,11 +26,13 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	agentv1 "github.com/xiaoguan521/cacheos/api/gen/agent/v1"
 	"github.com/xiaoguan521/cacheos/internal/agent/collect"
 	"github.com/xiaoguan521/cacheos/internal/agent/resp"
 	"github.com/xiaoguan521/cacheos/internal/paramcat"
+	"github.com/xiaoguan521/cacheos/internal/webcli"
 )
 
 // Layout 是本机目录布局（生产值见 DefaultLayout）。
@@ -82,6 +85,7 @@ type State struct {
 	ManifestSHA256 string            `json:"manifest_sha256"`
 	AdminPassword  string            `json:"admin_password"`
 	ReadPassword   string            `json:"read_password,omitempty"`
+	WebCLIPassword string            `json:"webcli_password,omitempty"` // Web 命令行专用账号口令（只存本机）
 	CreatedAt      time.Time         `json:"created_at"`
 }
 
@@ -330,7 +334,7 @@ func (m *Manager) Create(ctx context.Context, c *agentv1.CreateInstance) (*agent
 	if kind == agentv1.Kind_KIND_UNSPECIFIED {
 		kind = agentv1.Kind_KIND_SERVER
 	}
-	st := &State{Port: port, Kind: kind, BindAddress: bind, Revision: c.GetRevisionId(), Params: params, AdminPassword: randomSecret(), ReadPassword: randomSecret(), CreatedAt: time.Now().UTC()}
+	st := &State{Port: port, Kind: kind, BindAddress: bind, Revision: c.GetRevisionId(), Params: params, AdminPassword: randomSecret(), ReadPassword: randomSecret(), WebCLIPassword: randomSecret(), CreatedAt: time.Now().UTC()}
 	dir := m.L.InstanceDir(port)
 	if err := os.Mkdir(dir, 0o2770); err != nil {
 		return nil, err
@@ -1067,6 +1071,183 @@ func (m *Manager) Diagnose(ctx context.Context, req *agentv1.Diagnose) ([]byte, 
 		return nil, err
 	}
 	return b, nil
+}
+
+// Web 命令行的时间与返回大小上限（CLAUDE.md「每条命令有超时与返回大小上限，超限截断并标明」）。
+const (
+	webCLITimeout    = 5 * time.Second
+	webCLIMaxPayload = 256 << 10
+	webCLISlack      = 2 << 10 // 为 JSON 外壳与结构开销预留
+)
+
+// ExecCommand 执行 Web 命令行的一条数据命令（CLAUDE.md「agent 与安全」中唯一的例外）。
+//
+// 流程：实例须由本 agent 管理 → argv 校验（与控制台共用 webcli.Check，拒绝清单在发送前再查一次）
+// → 以专用账号 sycache-webcli 经 Unix Socket 连接 → 发送 → 读回复 → 序列化。连接用完即关，不跨请求复用。
+// 引擎返回的错误（含 NOPERM）作为正常结果（reply.type = error）回传，不视为 agent 故障。
+// 返回值第二项为回复类型，供调用方记录结果状态；参数与回复内容不得写入日志。
+func (m *Manager) ExecCommand(ctx context.Context, req *agentv1.ExecCommand) ([]byte, string, error) {
+	port := req.GetPort()
+	defer m.lock(port)()
+	st, err := m.Load(port)
+	if err != nil {
+		return nil, "", err
+	}
+	argv := req.GetArgv()
+	if _, err := webcli.Check(argv); err != nil {
+		var we *webcli.Error
+		if errors.As(err, &we) {
+			return nil, "", errf(we.Code, "%s", we.Msg)
+		}
+		return nil, "", err
+	}
+	if st.Kind == agentv1.Kind_KIND_SENTINEL {
+		return nil, "", errf("UNSUPPORTED", "web cli runs only on data instances")
+	}
+	if st.WebCLIPassword == "" {
+		return nil, "", errf("UNSUPPORTED", "instance has no web cli account; instances created before Web 命令行 need to be recreated")
+	}
+	ctx, cancel := context.WithTimeout(ctx, webCLITimeout)
+	defer cancel()
+	c, err := resp.Dial(ctx, m.L.Socket(port), UserWebCLI, st.WebCLIPassword)
+	if err != nil {
+		return nil, "", err
+	}
+	defer c.Close()
+	v, err := c.Do(ctx, argv...)
+	var engineErr *resp.Error
+	switch {
+	case err == nil:
+	case errors.As(err, &engineErr):
+		// 引擎错误：v 已是 '-' 类型的应答，原样作为结果
+	case errors.Is(err, os.ErrDeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return nil, "", errf("TIMEOUT", "command did not finish within %s", webCLITimeout)
+	default:
+		return nil, "", err
+	}
+	payload, kind, err := encodeReply(v)
+	if err != nil {
+		return nil, "", err
+	}
+	return payload, kind, nil
+}
+
+// replyBudget 控制回复序列化的字节预算，超限时截断并置 truncated。
+type replyBudget struct {
+	left      int
+	truncated bool
+}
+
+// jsonRuneSize 估算一个字符在 JSON 中的最大长度（转义按最坏情况计）。
+func jsonRuneSize(r rune) int {
+	switch {
+	case r == utf8.RuneError || r < 0x20 || r == '"' || r == '\\' || r == '<' || r == '>' || r == '&' || r == 0x2028 || r == 0x2029:
+		return 6
+	default:
+		return utf8.RuneLen(r)
+	}
+}
+
+// text 把 RESP 字符串转为 JSON 文本：合法 UTF-8 原样输出；二进制内容改为 base64 并标明编码。
+func (b *replyBudget) text(s string) (value, encoding string) {
+	if utf8.ValidString(s) {
+		var out strings.Builder
+		for _, r := range s {
+			n := jsonRuneSize(r)
+			if n > b.left {
+				b.truncated = true
+				break
+			}
+			b.left -= n
+			out.WriteRune(r)
+		}
+		return out.String(), ""
+	}
+	enc := base64.StdEncoding.EncodeToString([]byte(s))
+	n := min(len(enc), max(b.left, 0))
+	if n < len(enc) {
+		b.truncated = true
+	}
+	b.left -= n
+	return enc[:n], "base64"
+}
+
+// node 把一个 RESP 应答转为可序列化的结构，类型包括 simple、error、integer、bulk、array、null。
+func (b *replyBudget) node(v resp.Value) map[string]any {
+	const overhead = 32
+	b.left -= overhead
+	switch v.Kind {
+	case '+', '-', '$':
+		kind := map[byte]string{'+': "simple", '-': "error", '$': "bulk"}[v.Kind]
+		if v.Null {
+			return map[string]any{"type": "null"}
+		}
+		value, enc := b.text(v.Str)
+		n := map[string]any{"type": kind, "value": value}
+		if enc != "" {
+			n["encoding"] = enc
+		}
+		return n
+	case ':':
+		b.left -= 24
+		return map[string]any{"type": "integer", "value": v.Int}
+	case '*':
+		if v.Null {
+			return map[string]any{"type": "null"}
+		}
+		items := make([]any, 0, len(v.Array))
+		for _, e := range v.Array {
+			if b.left <= overhead {
+				b.truncated = true
+				break
+			}
+			items = append(items, b.node(e))
+		}
+		return map[string]any{"type": "array", "value": items}
+	}
+	return map[string]any{"type": "unknown"}
+}
+
+// replyKind 返回应答的顶层类型名。
+func replyKind(v resp.Value) string {
+	switch v.Kind {
+	case '+':
+		return "simple"
+	case '-':
+		return "error"
+	case ':':
+		return "integer"
+	case '$':
+		if v.Null {
+			return "null"
+		}
+		return "bulk"
+	case '*':
+		if v.Null {
+			return "null"
+		}
+		return "array"
+	}
+	return "unknown"
+}
+
+// encodeReply 把应答序列化为 {"reply": ..., "truncated": bool}，整体不超过 256 KiB。
+func encodeReply(v resp.Value) ([]byte, string, error) {
+	b := &replyBudget{left: webCLIMaxPayload - webCLISlack}
+	node := b.node(v)
+	out, err := json.Marshal(map[string]any{"reply": node, "truncated": b.truncated})
+	if err != nil {
+		return nil, "", err
+	}
+	kind := replyKind(v)
+	if len(out) > webCLIMaxPayload {
+		// 预算已计入结构开销，正常不会走到这里；兜底返回只含类型的截断标记。
+		out, err = json.Marshal(map[string]any{"reply": map[string]any{"type": kind}, "truncated": true})
+		if err != nil {
+			return nil, "", err
+		}
+	}
+	return out, kind, nil
 }
 
 var keyPatternRe = regexp.MustCompile(`^[A-Za-z0-9:_.\/-]+\*$`)
