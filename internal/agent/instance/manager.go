@@ -1019,9 +1019,16 @@ func (m *Manager) Diagnose(ctx context.Context, req *agentv1.Diagnose) ([]byte, 
 		n = 100
 	}
 	var report any
+	// extra 是报告之外的附加字段（慢日志聚合、内存建议），旧字段 report 的形状保持不变。
+	extra := map[string]any{}
 	switch req.GetWhat() {
 	case agentv1.Diagnose_SLOWLOG:
-		report = m.Status(ctx, req.GetPort()).GetSlowlogTail()
+		v, err := c.Do(ctx, "SLOWLOG", "GET", strconv.Itoa(slowlogDiagSample))
+		if err != nil {
+			return nil, err
+		}
+		report = slowlog(v)
+		extra["aggregate"] = aggregateSlowlog(slowlogRecords(v))
 	case agentv1.Diagnose_LATENCY:
 		v, err := c.Do(ctx, "LATENCY", "LATEST")
 		if err != nil {
@@ -1033,7 +1040,9 @@ func (m *Manager) Diagnose(ctx context.Context, req *agentv1.Diagnose) ([]byte, 
 		if err != nil {
 			return nil, err
 		}
-		report = resp.ParseInfo(v.Text())
+		info := resp.ParseInfo(v.Text())
+		report = info
+		extra["advice"] = MemoryAdvice(info)
 	case agentv1.Diagnose_CLIENTS:
 		v, err := c.Do(ctx, "CLIENT", "LIST")
 		if err != nil {
@@ -1049,7 +1058,11 @@ func (m *Manager) Diagnose(ctx context.Context, req *agentv1.Diagnose) ([]byte, 
 	default:
 		return nil, errf("UNSUPPORTED", "diagnostic %v", req.GetWhat())
 	}
-	b, err := json.Marshal(map[string]any{"kind": req.GetWhat().String(), "sample": n, "report": report})
+	payload := map[string]any{"kind": req.GetWhat().String(), "sample": n, "report": report}
+	for k, v := range extra {
+		payload[k] = v
+	}
+	b, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
