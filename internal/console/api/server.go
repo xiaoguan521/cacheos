@@ -2,6 +2,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 
+	agentv1 "github.com/xiaoguan521/cacheos/api/gen/agent/v1"
 	"github.com/xiaoguan521/cacheos/internal/console/alerts"
 	"github.com/xiaoguan521/cacheos/internal/console/gateway"
 	"github.com/xiaoguan521/cacheos/internal/console/ha"
@@ -43,6 +45,8 @@ type Server struct {
 	SecureCookie  bool
 	WebCAPEM      []byte      // -tls-auto 时的 Web CA 证书，公开下载以便导入浏览器
 	HA            *ha.Elector // 主备选主；nil 视为单机
+	// sendCmd 为指令下发通道，nil 时使用 GW.Send；测试替换它以检查发出的消息。
+	sendCmd func(context.Context, uint, *agentv1.ServerMessage, time.Duration) (*agentv1.CommandResult, error)
 
 	jwtKey        []byte
 	fails         sync.Map // ip -> *loginFail
@@ -135,6 +139,7 @@ func (s *Server) Handler() (http.Handler, error) {
 	a.POST("/hosts/enroll", role(store.RoleOperator), s.writable, s.stepUp, s.enrollToken)
 	a.POST("/hosts/:id/revoke", role(store.RoleAdmin), s.stepUp, s.revokeHost)
 	a.POST("/hosts/:id/switch-version", role(store.RoleOperator), s.writable, s.stepUp, s.switchVersion)
+	a.POST("/hosts/:id/upgrade-agent", role(store.RoleOperator), s.writable, s.stepUp, s.upgradeAgent)
 
 	// 参数目录与模板（M5）
 	a.GET("/params/catalog", s.paramCatalog)

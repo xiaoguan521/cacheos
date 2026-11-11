@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 
 	agentv1 "github.com/xiaoguan521/cacheos/api/gen/agent/v1"
+	"github.com/xiaoguan521/cacheos/internal/console/gateway"
 	"github.com/xiaoguan521/cacheos/internal/console/orch"
 	"github.com/xiaoguan521/cacheos/internal/console/store"
 	"github.com/xiaoguan521/cacheos/internal/license"
@@ -275,6 +277,112 @@ func (s *Server) switchVersion(c *gin.Context) {
 	}
 	s.audit(c, "host.switch_version", "host", fmt.Sprint(id), map[string]string{"from": h.EngineCurrent, "to": req.Version})
 	c.JSON(http.StatusOK, gin.H{"engine_current": req.Version})
+}
+
+// agentPackageName 是版本库中 agent 自升级包的名称（与 pkgsig.Names 一致）。
+const agentPackageName = "sycache-agent"
+
+// agentVersionNewer 与 agent 端 selfupdate 的比较规则一致：比较 N.N.N，再比较 "-" 后的数字。
+// 相等或更低都返回 false；agent 只会切换到比正在运行的版本更新的包。
+func agentVersionNewer(target, current string) bool {
+	pt, pc := agentVersionParts(target), agentVersionParts(current)
+	for i := range pt {
+		if pt[i] != pc[i] {
+			return pt[i] > pc[i]
+		}
+	}
+	return false
+}
+
+func agentVersionParts(v string) [4]int {
+	var out [4]int
+	main, rel, _ := strings.Cut(v, "-")
+	for i, s := range strings.SplitN(main, ".", 3) {
+		out[i], _ = strconv.Atoi(s)
+	}
+	out[3], _ = strconv.Atoi(rel)
+	return out
+}
+
+// upgradeAgent 向在线主机下发 agent 自升级指令（UpgradeAgent）。agent 验签、落盘并退出，由 systemd 重启到新版本；
+// 实例进程不受影响。版本库中的包必须已通过厂商签名导入，agent 使用前还会再次校验。
+func (s *Server) upgradeAgent(c *gin.Context) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Version string `json:"version"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || !versionRe.MatchString(req.Version) {
+		fail(c, http.StatusBadRequest, "BAD_VERSION", "invalid version")
+		return
+	}
+	h, err := store.First[store.Host](s.Store, id)
+	if err != nil {
+		failErr(c, err)
+		return
+	}
+	if h.Status == "offline" || h.Status == "revoked" {
+		fail(c, http.StatusConflict, "HOST_OFFLINE", "主机离线，无法下发 agent 升级")
+		return
+	}
+	if !versionRe.MatchString(h.AgentVersion) {
+		fail(c, http.StatusConflict, "AGENT_VERSION_UNKNOWN", "主机未上报可识别的 agent 版本")
+		return
+	}
+	if !agentVersionNewer(req.Version, h.AgentVersion) {
+		fail(c, http.StatusConflict, "VERSION_NOT_NEWER", fmt.Sprintf("目标版本 %s 不高于当前 agent 版本 %s；不允许降级或重复安装", req.Version, h.AgentVersion))
+		return
+	}
+	arch := h.Arch
+	if arch == "x86_64" {
+		arch = "amd64"
+	} else if arch == "aarch64" {
+		arch = "arm64"
+	}
+	pq := s.q().EnginePackage
+	ctx := c.Request.Context()
+	if n, err := pq.WithContext(ctx).Where(pq.Name.Eq(agentPackageName), pq.Version.Eq(req.Version)).Count(); err != nil {
+		failErr(c, err)
+		return
+	} else if n == 0 {
+		fail(c, http.StatusNotFound, "AGENT_PACKAGE_NOT_FOUND", "版本库中没有该版本的 agent 包")
+		return
+	}
+	pkg, err := pq.WithContext(ctx).Where(pq.Name.Eq(agentPackageName), pq.Version.Eq(req.Version), pq.Arch.Eq(arch)).First()
+	if err != nil {
+		fail(c, http.StatusConflict, "ARCH_MISMATCH", "版本库中的 agent 包架构与主机不匹配")
+		return
+	}
+	send := s.sendCmd
+	if send == nil {
+		send = s.GW.Send
+	}
+	m := &agentv1.ServerMessage{Body: &agentv1.ServerMessage_UpgradeAgent{UpgradeAgent: &agentv1.UpgradeAgent{
+		Version: pkg.Version, Arch: pkg.Arch, Sha256: pkg.SHA256, VendorSignature: []byte(pkg.Sig),
+	}}}
+	// agent 需要先从控制台分片下载升级包（最多 2 分钟），与 switch-version 的等待上限分开。
+	r, err := send(ctx, id, m, 3*time.Minute)
+	detail := func(result, reason string) map[string]string {
+		return map[string]string{"from": h.AgentVersion, "to": req.Version, "result": result, "reason": reason}
+	}
+	switch {
+	case errors.Is(err, gateway.ErrOffline):
+		s.audit(c, "host.upgrade_agent", "host", fmt.Sprint(id), detail("failed", "host offline"))
+		fail(c, http.StatusConflict, "HOST_OFFLINE", "主机离线，无法下发 agent 升级")
+		return
+	case err != nil:
+		s.audit(c, "host.upgrade_agent", "host", fmt.Sprint(id), detail("error", err.Error()))
+		failErr(c, err)
+		return
+	case r.Status != agentv1.CommandResult_OK:
+		s.audit(c, "host.upgrade_agent", "host", fmt.Sprint(id), detail("failed", r.Message))
+		fail(c, http.StatusConflict, "UPGRADE_FAILED", r.Message)
+		return
+	}
+	s.audit(c, "host.upgrade_agent", "host", fmt.Sprint(id), detail("ok", r.Message))
+	c.JSON(http.StatusOK, gin.H{"agent_version": req.Version, "message": r.Message})
 }
 
 // ---------- 参数目录与模板 ----------

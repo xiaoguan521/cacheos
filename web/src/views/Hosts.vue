@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { message } from 'antdv-next'
-import { api, errMsg } from '../api/client'
+import { api, errMsg, http } from '../api/client'
 import { useSession } from '../stores/session'
 
 const session = useSession()
@@ -11,11 +11,18 @@ const enrollOpen = ref(false)
 const commandOpen = ref(false)
 const command = ref<any>(null)
 const form = reactive({ zone: '' })
+const agentPackages = ref<any[]>([])
+const upgradeOpen = ref(false)
+const upgradeHost = ref<any>(null)
+const upgradeTarget = ref<string | undefined>(undefined)
+const upgrading = ref(false)
 
 async function load() {
   loading.value = true
   try {
     hosts.value = await api.get('/hosts')
+    // 版本库列表仅管理员可读；其他角色无法选择 agent 版本，升级入口不显示。
+    agentPackages.value = session.can('admin') ? await api.get('/engine-packages').then((ps: any[]) => ps.filter((p) => p.name === 'sycache-agent')).catch(() => []) : []
   } catch (e) {
     message.error(errMsg(e))
   } finally {
@@ -62,6 +69,58 @@ async function switchVersion(host: any, version: string) {
     await load()
   } catch (e) {
     message.error(errMsg(e))
+  }
+}
+
+// 与控制台 / agent 的版本规则一致：N.N.N，再比较 "-" 后的数字。
+function agentVersionParts(v: string): number[] {
+  const [main, rel] = String(v).split('-', 2)
+  const nums = main.split('.').map((x) => Number.parseInt(x, 10) || 0)
+  return [nums[0] || 0, nums[1] || 0, nums[2] || 0, Number.parseInt(rel ?? '', 10) || 0]
+}
+
+function agentVersionNewer(target: string, current: string): boolean {
+  const a = agentVersionParts(target)
+  const b = agentVersionParts(current)
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return a[i] > b[i]
+  }
+  return false
+}
+
+function agentUpgradeCandidates(host: any): string[] {
+  if (!host.agent_version) return []
+  return agentPackages.value
+    .filter((p) => p.arch === host.arch && agentVersionNewer(p.version, host.agent_version))
+    .map((p) => p.version)
+    .sort((a, b) => (agentVersionNewer(a, b) ? -1 : agentVersionNewer(b, a) ? 1 : 0))
+}
+
+function openUpgrade(host: any) {
+  upgradeHost.value = host
+  upgradeTarget.value = agentUpgradeCandidates(host)[0]
+  upgradeOpen.value = true
+}
+
+async function upgradeAgent() {
+  const host = upgradeHost.value
+  const version = upgradeTarget.value
+  if (!host || !version) {
+    message.error('请选择目标版本')
+    return
+  }
+  if (!window.confirm(`将 ${host.name} 的 agent 从 ${host.agent_version} 升级到 ${version}；agent 验签后自行重启，实例不受影响，继续？`)) return
+  upgrading.value = true
+  try {
+    // 升级包由 agent 从控制台分片下载，耗时可能超过默认 30 秒的请求超时。
+    await http.post(`/hosts/${host.id}/upgrade-agent`, { version }, { timeout: 180000 })
+    message.success(`主机 ${host.name} 的 agent 已升级到 ${version}，重启后生效`)
+    upgradeOpen.value = false
+    await load()
+  } catch (e) {
+    message.error(errMsg(e))
+  } finally {
+    upgrading.value = false
   }
 }
 
@@ -115,13 +174,15 @@ onMounted(load)
             <a-tag v-if="record.warnings?.length" color="orange">调优提醒</a-tag>
           </template>
           <template v-else-if="column.key === 'system'">
-            <div>{{ record.os_release || '—' }}</div><div class="sub">{{ record.arch }} · {{ record.agent_version || 'agent 未上报版本' }}</div>
+            <div>{{ record.os_release || '—' }}</div><div class="sub">{{ record.arch }}</div>
           </template>
           <template v-else-if="column.key === 'version'">
             <a-select size="small" :value="record.engine_current || undefined" :disabled="!session.can('operator') || !session.writable || !record.online || !installedVersions(record).length"
               placeholder="未上报" style="width: 170px" :options="installedVersions(record).map((v) => ({ value: v, label: v }))"
               @change="(v: string) => switchVersion(record, v)" />
             <div class="sub">已安装 {{ installedVersions(record).length }} 个</div>
+            <div class="sub">agent {{ record.agent_version || '未上报' }}</div>
+            <a-button v-if="session.can('operator') && session.writable && record.online && agentUpgradeCandidates(record).length" size="small" type="link" style="padding: 0" @click="openUpgrade(record)">升级 agent</a-button>
           </template>
           <template v-else-if="column.key === 'resource'">
             <div>CPU {{ Math.round(record.cpu_percent || 0) }}% · {{ record.cpu_cores || 0 }} 核</div>
@@ -146,6 +207,16 @@ onMounted(load)
         </a-form-item>
       </a-form>
       <a-alert type="info" show-icon message="接入令牌只在命令中返回，请通过安全渠道传给目标主机。" />
+    </a-modal>
+
+    <a-modal v-model:open="upgradeOpen" title="升级主机 agent" ok-text="升级" :confirm-loading="upgrading" :ok-button-props="{ disabled: !upgradeTarget }" @ok="upgradeAgent">
+      <a-form layout="vertical">
+        <a-form-item label="主机">{{ upgradeHost?.name }}（当前 agent {{ upgradeHost?.agent_version }}）</a-form-item>
+        <a-form-item label="目标版本" extra="只列出版本库中架构相同且高于当前版本的 agent 包；不支持降级。">
+          <a-select v-model:value="upgradeTarget" :options="agentUpgradeCandidates(upgradeHost || {}).map((v) => ({ value: v, label: v }))" />
+        </a-form-item>
+      </a-form>
+      <a-alert type="info" show-icon message="agent 升级只重启 agent 进程，数据面实例不受影响。升级包由 agent 再次验签后才会安装。" />
     </a-modal>
 
     <a-modal v-model:open="commandOpen" title="在目标主机执行以下命令" :footer="null" width="720px">
