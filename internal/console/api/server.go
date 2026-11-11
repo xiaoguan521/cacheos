@@ -156,6 +156,7 @@ func (s *Server) Handler() (http.Handler, error) {
 	a.GET("/units/:id/revisions", role(store.RoleDeveloper), s.listRevisions)
 	a.POST("/units/:id/params/preview", role(store.RoleDeveloper), s.previewParams)
 	a.POST("/units/:id/params", role(store.RoleReleaser), s.writable, s.stepUp, s.applyParams)
+	a.POST("/units/:id/revisions/:revision_id/rollback", role(store.RoleReleaser), s.writable, s.stepUp, s.rollbackParams)
 	a.GET("/units/:id/metrics", s.unitMetrics)
 	a.GET("/units/:id/diagnose", role(store.RoleDeveloper), s.diagnose)
 	a.GET("/units/:id/keys", role(store.RoleDeveloper), s.browseKeys)
@@ -259,6 +260,10 @@ func failErr(c *gin.Context, err error) {
 		fail(c, http.StatusConflict, "UNIT_BUSY", "该部署单元有进行中的变更，请等待其结束")
 	case errors.Is(err, orch.ErrNoChanges):
 		fail(c, http.StatusConflict, "NO_CHANGES", err.Error())
+	case errors.Is(err, orch.ErrRevisionConflict):
+		fail(c, http.StatusConflict, "REVISION_CONFLICT", "参数版本已变化（当前版本已被他人修改），请刷新后重试")
+	case errors.Is(err, orch.ErrSameRevision):
+		fail(c, http.StatusConflict, "SAME_REVISION", "目标版本就是当前版本，无需回滚")
 	case errors.Is(err, orch.ErrNoHosts):
 		fail(c, http.StatusConflict, "NO_HOSTS", err.Error())
 	case errors.Is(err, orch.ErrUnsupported):
