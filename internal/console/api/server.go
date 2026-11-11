@@ -41,8 +41,6 @@ type Server struct {
 	Log    *slog.Logger
 	Web    fs.FS // 前端构建产物（web/dist）
 
-	// execSend 仅供测试替换 Web 命令行的下发通道；为空时经 GW.Send 发给 agent。
-	execSend      func(ctx context.Context, hostID uint, m *agentv1.ServerMessage, timeout time.Duration) (*agentv1.CommandResult, error)
 	GRPCAddr      string // agent 连接控制台使用的地址，写入安装命令
 	CAFingerprint string
 	SecureCookie  bool

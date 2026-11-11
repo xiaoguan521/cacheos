@@ -43,7 +43,7 @@ func newCLIFixture(t *testing.T, cliExec, withTOTP bool) *cliFixture {
 	st := storetest.Open(t)
 	f := &cliFixture{logs: &bytes.Buffer{}}
 	f.s = &Server{Store: st, Audit: &audit.Logger{DB: st.DB}, Log: slog.New(slog.NewTextHandler(f.logs, nil))}
-	f.s.execSend = f.send
+	f.s.sendCmd = f.send
 	f.user = store.User{Username: "dev", Role: store.RoleDeveloper, CliExec: cliExec}
 	if err := st.DB.Create(&f.user).Error; err != nil {
 		t.Fatal(err)

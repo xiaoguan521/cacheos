@@ -1122,7 +1122,7 @@ func (s *Server) execCommand(c *gin.Context) {
 		fail(c, status, code, msg)
 		return
 	}
-	send := s.execSend
+	send := s.sendCmd
 	if send == nil {
 		send = s.GW.Send
 	}
@@ -1144,7 +1144,7 @@ func (s *Server) execCommand(c *gin.Context) {
 		} else if r.ErrorCode == webcli.CodeInvalid {
 			status = http.StatusBadRequest
 		}
-		fail(c, status, r.ErrorCode, r.Message)
+		fail(c, status, code, r.Message)
 		return
 	}
 	var payload any = gin.H{}
