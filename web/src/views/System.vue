@@ -397,6 +397,7 @@ const roleName: Record<string, string> = { admin: '管理员', operator: '运维
             <a-space :size="4">
               <a v-if="record.locked_until && dayjs(record.locked_until).isAfter(dayjs())" @click="updUser(record, { unlock: true })">解锁</a>
               <a v-if="record.role === 'developer' || record.role === 'admin'" @click="updUser(record, { key_reveal: !record.key_reveal })">{{ record.key_reveal ? '取消明文授权' : '授权看值' }}</a>
+              <a v-if="record.role === 'developer' || record.role === 'admin'" @click="updUser(record, { cli_exec: !record.cli_exec })">{{ record.cli_exec ? '取消命令行授权' : '授权命令行' }}</a>
               <a @click="updUser(record, { disabled: !record.disabled })">{{ record.disabled ? '启用' : '停用' }}</a>
               <a v-if="!record.source || record.source === 'local'" @click="resetPw(record)">重置口令</a>
               <a-popconfirm :title="`删除用户 ${record.username}？其 API 令牌一并撤销`" @confirm="delUser(record)"><a class="danger">删除</a></a-popconfirm>

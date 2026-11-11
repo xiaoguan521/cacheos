@@ -20,6 +20,7 @@ const (
 	UserCluster  = "sycache-cluster"
 	UserSentinel = "sycache-sentinel"
 	UserReader   = "sycache-reader"
+	UserWebCLI   = "sycache-webcli"
 )
 
 // AgentRules 是 agent 管理账号的权限：只有运维命令，不授予任何读取 value 的命令（CLAUDE.md「agent 与安全」）。
@@ -59,6 +60,11 @@ var SentinelRules = []string{"allchannels", "-@all", "+ping", "+info", "+role", 
 // ReaderRules 只在显式授权的 Key 查看请求中使用。它与 agent 管理账号分离，
 // 不包含 CONFIG、SCAN 或任意运维命令；默认不会把值返回给控制台。
 var ReaderRules = []string{"~*", "&*", "-@all", "+type", "+ttl", "+pttl", "+memory|usage", "+get", "+hget", "+hgetall", "+lrange", "+smembers", "+zrange", "+xrange"}
+
+// WebCLIRules 是 Web 命令行专用账号 sycache-webcli 的规则（CLAUDE.md「agent 与安全」唯一例外）。
+// 与管理账号分离，不放宽管理账号；禁用管理、危险、脚本、阻塞、订阅、事务与连接类命令。
+// 同一份拒绝清单在 internal/webcli 中由 agent 发送前再校验一次。
+var WebCLIRules = []string{"~*", "resetchannels", "+@all", "-@admin", "-@dangerous", "-@scripting", "-@blocking", "-@pubsub", "-@transaction", "-@connection", "+info", "+dbsize"}
 
 var (
 	hostRe = regexp.MustCompile(`^[A-Za-z0-9.:-]{1,253}$`)
@@ -112,6 +118,9 @@ func ACLFile(st *State, masterauth string, users []*agentv1.AclUser) string {
 	fmt.Fprintf(&b, "user %s on #%s %s\n", UserAgent, sha(st.AdminPassword), strings.Join(AgentRules, " "))
 	if st.ReadPassword != "" {
 		fmt.Fprintf(&b, "user %s on #%s %s\n", UserReader, sha(st.ReadPassword), strings.Join(ReaderRules, " "))
+	}
+	if st.WebCLIPassword != "" {
+		fmt.Fprintf(&b, "user %s on #%s %s\n", UserWebCLI, sha(st.WebCLIPassword), strings.Join(WebCLIRules, " "))
 	}
 	if masterauth != "" {
 		fmt.Fprintf(&b, "user %s on #%s %s\n", UserRepl, sha(masterauth), strings.Join(ReplRules, " "))

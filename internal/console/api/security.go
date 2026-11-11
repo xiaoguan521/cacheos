@@ -120,6 +120,7 @@ func (s *Server) updateUser(c *gin.Context) {
 		Role          *string `json:"role"`
 		Disabled      *bool   `json:"disabled"`
 		KeyReveal     *bool   `json:"key_reveal"`
+		CliExec       *bool   `json:"cli_exec"`
 		Unlock        bool    `json:"unlock"`
 		ResetPassword string  `json:"reset_password"`
 	}
@@ -164,6 +165,14 @@ func (s *Server) updateUser(c *gin.Context) {
 		}
 		u.KeyReveal = *req.KeyReveal
 	}
+	if req.CliExec != nil {
+		// 与明文查看 Key 同级：只有开发者或管理员可以获得授权，且只能由管理员设置
+		if u.Role != store.RoleDeveloper && u.Role != store.RoleAdmin {
+			fail(c, http.StatusBadRequest, "CLI_EXEC_ROLE", "只有开发者或管理员可以获得 Web 命令行授权")
+			return
+		}
+		u.CliExec = *req.CliExec
+	}
 	if req.Unlock {
 		u.LockedUntil, u.FailedLogins = nil, 0
 	}
@@ -188,7 +197,7 @@ func (s *Server) updateUser(c *gin.Context) {
 		failErr(c, err)
 		return
 	}
-	s.audit(c, "user.update", "user", u.Username, map[string]any{"role": req.Role, "disabled": req.Disabled, "key_reveal": req.KeyReveal, "unlock": req.Unlock, "password_reset": req.ResetPassword != ""})
+	s.audit(c, "user.update", "user", u.Username, map[string]any{"role": req.Role, "disabled": req.Disabled, "key_reveal": req.KeyReveal, "cli_exec": req.CliExec, "unlock": req.Unlock, "password_reset": req.ResetPassword != ""})
 	c.JSON(http.StatusOK, u)
 }
 
