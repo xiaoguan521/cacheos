@@ -41,6 +41,11 @@ const rollbackPreview = ref<any>(null)
 const rollbackDiff = ref('')
 const rollbackNote = ref('')
 const rollbackRestart = ref(false)
+const rebalanceOpen = ref(false)
+const rebalanceLoading = ref(false)
+const rebalancePlan = ref<any>(null)
+const canRebalance = computed(() => session.can('releaser') && session.writable && !!session.license?.features?.includes('online_reshard'))
+const rebalanceActionable = computed(() => !!rebalancePlan.value && !rebalancePlan.value.balanced && (rebalancePlan.value.steps || []).length > 0)
 
 const id = computed(() => String(route.params.id))
 const metricRows = computed(() => Object.entries(metrics.value?.instances || {}).flatMap(([instanceID, points]: [string, any]) => (points || []).slice(-20).map((p: any) => ({ instanceID, ...p }))))
@@ -300,6 +305,45 @@ async function reshard() {
   }
 }
 
+async function openRebalance() {
+  rebalanceOpen.value = true
+  await loadRebalancePlan()
+}
+
+// dry_run 只返回基于已保存状态的计划，服务端不会下发任何指令。
+async function loadRebalancePlan() {
+  rebalanceLoading.value = true
+  rebalancePlan.value = null
+  try {
+    const r = await api.post(`/units/${id.value}/rebalance`, { dry_run: true })
+    rebalancePlan.value = r.plan
+  } catch (e) {
+    message.error(errMsg(e))
+  } finally {
+    rebalanceLoading.value = false
+  }
+}
+
+async function rebalance() {
+  try {
+    const r = await api.post(`/units/${id.value}/rebalance`, { dry_run: false })
+    rebalanceOpen.value = false
+    message.success(`再平衡操作 #${r.operation?.id || '—'} 已提交`)
+    await load()
+  } catch (e) {
+    message.error(errMsg(e))
+  }
+}
+
+function onRebalanceOk() {
+  if (rebalanceActionable.value) return rebalance()
+  rebalanceOpen.value = false
+}
+
+function slotText(slots: { start: number; end: number }[]) {
+  return slots.map((x) => (x.start === x.end ? `${x.start}` : `${x.start}-${x.end}`)).join(', ')
+}
+
 function bytes(v: number) {
   if (!v) return '0 B'
   if (v >= 1024 ** 3) return `${(v / 1024 ** 3).toFixed(1)} GiB`
@@ -361,7 +405,7 @@ onUnmounted(() => clearInterval(timer))
     </section>
 
     <section v-if="unit.mode === 'cluster'" class="panel">
-      <div class="phead"><h2>在线迁槽</h2><a-button type="primary" size="small" :disabled="!session.can('releaser') || !session.writable" @click="reshard">提交迁槽计划</a-button></div>
+      <div class="phead"><h2>在线迁槽</h2><span><a-button size="small" :disabled="!canRebalance" @click="openRebalance">再平衡</a-button> <a-button type="primary" size="small" :disabled="!session.can('releaser') || !session.writable" @click="reshard">提交迁槽计划</a-button></span></div>
       <div class="param-foot">
         <a-select v-model:value="reshardForm.source_instance_id" placeholder="源主节点" style="min-width: 190px" :options="unit.instances.filter((x: any) => x.kind === 'server' && (x.role === 'master' || x.desired_role === 'master')).map((x: any) => ({ value: String(x.id), label: `${x.host}:${x.port} · ${x.shard}` }))" />
         <a-select v-model:value="reshardForm.target_instance_id" placeholder="目标主节点" style="min-width: 190px" :options="unit.instances.filter((x: any) => x.kind === 'server' && (x.role === 'master' || x.desired_role === 'master')).map((x: any) => ({ value: String(x.id), label: `${x.host}:${x.port} · ${x.shard}` }))" />
@@ -410,6 +454,25 @@ onUnmounted(() => clearInterval(timer))
         </template>
       </a-table>
     </section>
+
+    <a-modal v-model:open="rebalanceOpen" title="槽位再平衡" width="760px" :ok-text="rebalanceActionable ? '确认执行' : '关闭'" :ok-button-props="{ disabled: rebalanceActionable && (!canRebalance || rebalanceLoading) }" @ok="onRebalanceOk">
+      <a-spin :spinning="rebalanceLoading">
+        <template v-if="rebalancePlan">
+          <a-alert v-if="rebalancePlan.balanced" type="success" show-icon message="各主节点槽数已在目标范围内，无需操作。" />
+          <template v-else>
+            <p class="sub">每个主节点目标为 ⌊16384/N⌋ 或 ⌈16384/N⌉ 个槽，本次共迁移 {{ rebalancePlan.moved }} 个槽，分 {{ rebalancePlan.steps.length }} 步执行。</p>
+            <a-table :data-source="rebalancePlan.steps" row-key="index" size="small" :pagination="false" :columns="[{ title: '步骤', dataIndex: 'index', width: 70 }, { title: '源 → 目标', key: 'route' }, { title: '槽范围', key: 'ranges' }, { title: '槽数', dataIndex: 'count', width: 90 }]">
+              <template #bodyCell="{ column, record }">
+                <template v-if="column.key === 'route'"><span class="code">{{ record.source }}</span> → <span class="code">{{ record.target }}</span></template>
+                <template v-else-if="column.key === 'ranges'"><span class="code">{{ slotText(record.slots) }}</span></template>
+              </template>
+            </a-table>
+          </template>
+          <a-table :data-source="rebalancePlan.nodes" row-key="instance_id" size="small" :pagination="false" :columns="[{ title: '主节点', dataIndex: 'name' }, { title: '再平衡前', dataIndex: 'before', width: 110 }, { title: '目标', dataIndex: 'target', width: 90 }, { title: '再平衡后', dataIndex: 'after', width: 110 }]" />
+          <p class="sub">执行时会重新读取实时槽位并重新计算计划，结果可能与预览略有不同。任一步失败会停止后续步骤，已完成的步骤不回滚，可在操作记录中查看停止的位置。</p>
+        </template>
+      </a-spin>
+    </a-modal>
 
     <a-modal v-model:open="accountOpen" title="保存业务账号" ok-text="保存" @ok="saveAccount">
       <a-form layout="vertical">

@@ -266,7 +266,7 @@ func (s *Service) ResumeOperation(id uint, by string) (*store.Operation, error) 
 		return nil, invalid("the requester and approver must be different")
 	}
 	switch op.Kind {
-	case "params", "restart", "reshard", "upgrade", "scale", "sentinel":
+	case "params", "restart", "reshard", "rebalance", "upgrade", "scale", "sentinel":
 	default:
 		return nil, fmt.Errorf("%w: paused operation kind %q cannot be resumed", ErrUnsupported, op.Kind)
 	}
