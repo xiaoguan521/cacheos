@@ -60,8 +60,8 @@ func (h *upgradeHarness) addPackage(t *testing.T, version, arch, name string) st
 	t.Helper()
 	p := store.EnginePackage{
 		Name: name, Version: version, Arch: arch, SHA256: strings.Repeat("c", 64), Size: 4,
-		KID: "cacheos-demo-pkg-2026", UploadedBy: "admin", Data: []byte("pkg!"),
-		Sig: `{"format":"cacheos-pkg-sig-1","kid":"cacheos-demo-pkg-2026","name":"` + name + `","version":"` + version + `","arch":"` + arch + `","variant":"standard","sha256":"` + strings.Repeat("c", 64) + `","signature":"AAAA"}`,
+		KID: "etos-demo-pkg-2026", UploadedBy: "admin", Data: []byte("pkg!"),
+		Sig: `{"format":"etos-pkg-sig-1","kid":"etos-demo-pkg-2026","name":"` + name + `","version":"` + version + `","arch":"` + arch + `","variant":"standard","sha256":"` + strings.Repeat("c", 64) + `","signature":"AAAA"}`,
 	}
 	if err := h.st.DB.Create(&p).Error; err != nil {
 		t.Fatal(err)
@@ -211,7 +211,7 @@ func TestImportAgentPackageRejectsBadSignature(t *testing.T) {
 	}
 	data := []byte("agent tarball")
 	// 用未受信任的密钥签名：导入必须拒绝（不存在"跳过验签"开关）。
-	sig, err := pkgsig.Sign(priv, "cacheos-pkg-0001", "sycache-agent", "1.1.0", "amd64", "standard", data)
+	sig, err := pkgsig.Sign(priv, "etos-pkg-0001", "sycache-agent", "1.1.0", "amd64", "standard", data)
 	if err != nil {
 		t.Fatal(err)
 	}

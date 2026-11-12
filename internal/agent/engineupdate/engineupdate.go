@@ -85,7 +85,7 @@ func Install(root string, data, sigJSON []byte, arch string, keys map[string]ed2
 	if err := os.MkdirAll(share, 0o755); err != nil {
 		return "", fmt.Errorf("%w: create share directory: %v", ErrRejected, err)
 	}
-	sigPath := filepath.Join(share, "CACHEOS-PKG.sig")
+	sigPath := filepath.Join(share, "ETOS-PKG.sig")
 	if fi, err := os.Lstat(sigPath); err == nil && !fi.Mode().IsRegular() {
 		return "", fmt.Errorf("%w: package signature path is not regular", ErrRejected)
 	}

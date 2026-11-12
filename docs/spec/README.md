@@ -68,7 +68,8 @@
 - [ ] P5 验收遗留：RedisShake 级跨厂商/多分片迁移适配与真实数据校验、S3/NFS 真实对象存储演练、在线迁槽实机压测与跨主机备份恢复演练
 - [ ] Linux 安装包、systemd sandbox 与目标环境浏览器验收：本地 Playwright 冒烟已通过，仍需目标 Linux 实机确认安装、sandbox、NoNewPrivileges 与真实 agent 链路
 - [ ] P6 信创验收：Tongsuo 本机构建 smoke 已通过，仍需 Tongsuo/国密互操作、CPU/OS/数据库组合认证和 PoC 实测
-- [ ] 正式发布密钥仪式：`internal/license` 与 `internal/pkgsig` 目前只有演示 / 空公钥环；`go test -tags release` 需在离线签名机完成公钥入库后通过
+- [x] 正式发布公钥环：安装授权内置 `etos-prod-2027` / `etos-prod-2027-b`，升级包内置 `etos-pkg-2027` / `etos-pkg-2027-b`；CacheOS 升级验签兼容 SyEdge 的 `etos-pkg-sig-1` / `ETOS-PKG-v1`，`go test -tags release` 已通过
+- [ ] 正式产物签名发布链路：仍需在离线签名机完成实际 License / 安装包签名，并将签名步骤接入发布流水线
 
 ### 第二阶段（功能完善）
 

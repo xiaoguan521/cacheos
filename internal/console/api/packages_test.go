@@ -44,7 +44,7 @@ func TestImportEnginePackageRejectsInvalidSignature(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _ = sig.Write([]byte(`{"format":"cacheos-pkg-sig-1"}`))
+	_, _ = sig.Write([]byte(`{"format":"etos-pkg-sig-1"}`))
 	if err := mw.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestEnginePackageListHidesPayloadAndDeleteAudits(t *testing.T) {
 	s := &Server{Store: st, Audit: &audit.Logger{DB: st.DB}}
 	p := &store.EnginePackage{
 		Name: "sycache-agent", Version: "1.0.0", Arch: "amd64", SHA256: strings.Repeat("a", 64),
-		Size: 4, KID: "cacheos-demo-pkg-2026", Sig: `{"format":"cacheos-pkg-sig-1","kid":"cacheos-demo-pkg-2026","name":"sycache-agent","version":"1.0.0","arch":"amd64","variant":"standard"}`,
+		Size: 4, KID: "etos-demo-pkg-2026", Sig: `{"format":"etos-pkg-sig-1","kid":"etos-demo-pkg-2026","name":"sycache-agent","version":"1.0.0","arch":"amd64","variant":"standard"}`,
 		Data: []byte("test"), UploadedBy: "admin",
 	}
 	if err := st.DB.Create(p).Error; err != nil {

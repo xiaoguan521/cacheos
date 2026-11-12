@@ -48,7 +48,7 @@ func releasePackage(t *testing.T, version string) ([]byte, []byte, map[string]ed
 		t.Fatal(err)
 	}
 	data := buf.Bytes()
-	sig, err := pkgsig.Sign(priv, "cacheos-ci-pkg-test", "sycache", version, "amd64", "standard", data)
+	sig, err := pkgsig.Sign(priv, "etos-ci-pkg-test", "sycache", version, "amd64", "standard", data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func releasePackage(t *testing.T, version string) ([]byte, []byte, map[string]ed
 	if err != nil {
 		t.Fatal(err)
 	}
-	return data, sigJSON, map[string]ed25519.PublicKey{"cacheos-ci-pkg-test": pub}
+	return data, sigJSON, map[string]ed25519.PublicKey{"etos-ci-pkg-test": pub}
 }
 
 func TestInstallVerifiesAndAtomicallyPublishesVersion(t *testing.T) {
