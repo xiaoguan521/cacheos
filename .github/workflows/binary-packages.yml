@@ -255,18 +255,23 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: cacheos-sycache-${{ matrix.arch }}
-          path: ${{ runner.temp }}/dist
+          path: ${{ runner.temp }}/artifact
 
       - name: Build images
         shell: bash
         run: |
           set -euo pipefail
           repo="${GITHUB_REPOSITORY,,}"
-          tar_file="$(basename "$(ls "$RUNNER_TEMP"/dist/sycache-[0-9]*-${{ matrix.arch }}.tar.gz)")"
+          # artifact 内的目录层级取决于上传时的公共父目录（含 dist/ 前缀），所以用 find 定位而不是写死路径。
+          tarball="$(find "$RUNNER_TEMP/artifact" -type f -name 'sycache-[0-9]*-${{ matrix.arch }}.tar.gz' ! -name 'sycache-debuginfo-*' | head -n1)"
+          test -n "$tarball" || { echo "data plane tarball not found in artifact:" >&2; find "$RUNNER_TEMP/artifact" -type f >&2; exit 1; }
+          ctx="$RUNNER_TEMP/image-context"
+          mkdir -p "$ctx"
+          cp "$tarball" "$ctx/"
           docker build -f dataplane/docker/Dockerfile \
-            --build-arg "TARBALL=$tar_file" \
+            --build-arg "TARBALL=$(basename "$tarball")" \
             -t "ghcr.io/$repo/sycache:sha-${GITHUB_SHA}-${{ matrix.arch }}" \
-            "$RUNNER_TEMP/dist"
+            "$ctx"
           docker build -f deploy/docker/console.Dockerfile \
             -t "ghcr.io/$repo/sycache-console:sha-${GITHUB_SHA}-${{ matrix.arch }}" .
 
