@@ -1,6 +1,6 @@
 name: dataplane
 
-# 触发：手动（Actions 页面 Run workflow）、推送 v* 标签，以及改动数据面相关路径的 PR（自动）。
+# 触发：手动（Actions 页面 Run workflow），以及改动数据面相关路径的 PR（自动）。
 # 上游 Tcl 测试集耗时长，只在手动勾选时运行。
 on:
   workflow_dispatch:
@@ -9,8 +9,6 @@ on:
         description: "同时运行上游 Tcl 测试集（约 40 分钟）"
         type: boolean
         default: false
-  push:
-    tags: ["v*"]
   pull_request:
     paths:
       - "dataplane/**"
