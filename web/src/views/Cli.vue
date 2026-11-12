@@ -123,9 +123,8 @@ onMounted(load)
 
     <template v-else>
       <section class="panel controls">
-        <a-select v-model:value="instanceId" style="min-width: 220px" placeholder="选择实例" :disabled="servers.length === 0">
-          <a-select-option v-for="s in servers" :key="s.id" :value="s.id">端口 {{ s.port }} · {{ s.role || '—' }} · {{ s.state || '—' }}</a-select-option>
-        </a-select>
+        <a-select v-model:value="instanceId" style="min-width: 220px" placeholder="选择实例" :disabled="servers.length === 0"
+          :options="servers.map((s: any) => ({ value: s.id, label: `端口 ${s.port} · ${s.role || '—'} · ${s.state || '—'}` }))" />
         <a-button @click="clearScreen">清屏</a-button>
         <span class="muted">↑ ↓ 翻阅本页命令历史</span>
       </section>
