@@ -1,0 +1,109 @@
+name: modules
+
+# 扩展数据类型模块构建与烟雾测试（ADR 0002）。
+# 触发：手动（workflow_dispatch），可指定要测试的模块（默认 json）。
+# 策略：先构建 sycache-server，再编译所选模块，最后运行烟雾测试。
+on:
+  workflow_dispatch:
+    inputs:
+      module:
+        description: "要构建和测试的模块（json、search、bloom；默认 json）"
+        type: choice
+        options:
+          - json
+          - search
+          - bloom
+        default: json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: modules-${{ github.ref }}-${{ inputs.module || 'json' }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build ${{ inputs.module || 'json' }} module and run smoke tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libssl-dev libsystemd-dev pkg-config \
+            cmake g++ gcc make git
+          echo "✓ 构建依赖安装完成"
+
+      - name: Fetch upstream Valkey source
+        run: |
+          set -euo pipefail
+          source dataplane/UPSTREAM
+          git -c advice.detachedHead=false clone -q --depth 1 --branch "$UPSTREAM_TAG" "$UPSTREAM_GIT" upstream
+          test "$(git -C upstream rev-parse HEAD)" = "$UPSTREAM_COMMIT"
+          echo "✓ 上游源码已获取，commit: $UPSTREAM_COMMIT"
+
+      - name: Build sycache-server
+        run: |
+          set -euo pipefail
+          make sycache UPSTREAM_SRC="$PWD/upstream" USE_SYSTEMD=yes
+          echo "✓ sycache-server 构建完成"
+          ls -lh dist/sycache-*.tar.gz
+
+      - name: Extract sycache binary
+        run: |
+          set -euo pipefail
+          tar -C dist -xzf dist/sycache-*.tar.gz
+          export SYCACHE_BIN="$PWD/dist/home/atwasoft/sycache/bin/sycache-server"
+          test -f "$SYCACHE_BIN"
+          echo "SYCACHE_BIN=$SYCACHE_BIN" >> "$GITHUB_ENV"
+          echo "✓ sycache-server 二进制已提取"
+
+      - name: Run module checks
+        run: |
+          set -euo pipefail
+          make modules-check
+          make brand
+          echo "✓ 模块清单与品牌检查通过"
+
+      - name: Build module (${{ inputs.module || 'json' }})
+        run: |
+          set -euo pipefail
+          module="${{ inputs.module || 'json' }}"
+          dataplane/build-modules.sh -m "$module" -o dist
+          echo "✓ 模块 $module 构建完成"
+          ls -lh dist/valkey-*.so
+
+      - name: Run smoke tests
+        env:
+          SYCACHE_BIN: ${{ env.SYCACHE_BIN }}
+        run: |
+          set -euo pipefail
+          test/modules/json-smoke.sh "$SYCACHE_BIN"
+          echo "✓ 烟雾测试通过"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: modules-${{ inputs.module || 'json' }}-x86_64
+          path: |
+            dist/valkey-*.so
+            dist/*.log
+            dist/sycache-*.tar.gz
+          retention-days: 7
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: modules-test-logs-${{ inputs.module || 'json' }}
+          path: |
+            /tmp/tmp.*/master*.log
+            /tmp/tmp.*/server.log
+          retention-days: 7
+# 工作流文件已准备
