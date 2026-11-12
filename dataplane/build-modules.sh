@@ -134,9 +134,16 @@ build_module() {
     fi
     echo "  头文件分支 $SERVER_VERSION 与锁定提交一致: $UPSTREAM_COMMIT"
 
-    # 运行 build.sh --release
+    # 运行 build.sh
+    # 注：valkey-search build.sh 默认 release 模式，不接受 --release 参数
+    # valkey-json build.sh 接受 --release 参数
     cd "$src_dir"
-    bash build.sh --release || { echo "ERROR: 编译 $name 失败 (build.sh --release)" >&2; cd - > /dev/null; return 1; }
+    if [[ "$name" == "search" ]]; then
+      bash build.sh --configure || { echo "ERROR: 编译 $name 失败 (build.sh --configure)" >&2; cd - > /dev/null; return 1; }
+      bash build.sh || { echo "ERROR: 编译 $name 失败 (build.sh)" >&2; cd - > /dev/null; return 1; }
+    else
+      bash build.sh --release || { echo "ERROR: 编译 $name 失败 (build.sh --release)" >&2; cd - > /dev/null; return 1; }
+    fi
     cd - > /dev/null
 
     # 查找 .so 文件
