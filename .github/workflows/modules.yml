@@ -57,9 +57,16 @@ jobs:
       - name: Extract sycache binary
         run: |
           set -euo pipefail
-          tar -C dist -xzf dist/sycache-*.tar.gz
+          # 精确匹配主 tarball（不是 debuginfo）
+          tarball=$(ls -1 dist/sycache-[0-9]*.tar.gz 2>/dev/null | head -1)
+          if [[ -z "$tarball" ]]; then
+            echo "ERROR: 未找到 sycache tarball"
+            ls -la dist/ || true
+            exit 1
+          fi
+          tar -C dist -xzf "$tarball"
           export SYCACHE_BIN="$PWD/dist/home/atwasoft/sycache/bin/sycache-server"
-          test -f "$SYCACHE_BIN"
+          test -f "$SYCACHE_BIN" || { echo "ERROR: SYCACHE_BIN 不存在: $SYCACHE_BIN"; exit 1; }
           echo "SYCACHE_BIN=$SYCACHE_BIN" >> "$GITHUB_ENV"
           echo "✓ sycache-server 二进制已提取"
 
