@@ -3,7 +3,8 @@ syntax = "proto3";
 // 控制台 <-> sycache-agent 协议（CacheOS 规格书 6.2）。
 // agent 主动发起连接；除 Enroll 外全部要求 mTLS。
 // 每条 ServerMessage 另带 Ed25519 应用层签名与 cmd_id，用于防伪造和防重放。
-// 协议中只有类型化的运维指令，没有「执行任意命令」「读写任意文件」类消息；
+// 协议中只有类型化的运维指令，没有「执行系统命令 / shell」「读写任意文件」类消息；唯一例外是 ExecCommand（Web 命令行），
+// 它只把数据命令经 Unix Socket 发给指定实例、不触达操作系统，约束见 CLAUDE.md「agent 与安全」。
 // agent 以只授予运维命令的管理账号、经 Unix Socket 访问本机实例。
 package cacheos.agent.v1;
 
@@ -54,7 +55,7 @@ message Hello {
   uint64 mem_total_bytes = 5;
   string os_release = 6;             // /etc/os-release 的 PRETTY_NAME
   string kernel = 7;
-  repeated string engine_versions = 8; // /opt/sycache/versions 下已安装的产品版本
+  repeated string engine_versions = 8; // /home/atwasoft/sycache/versions 下已安装的产品版本
   string engine_current = 9;           // current 软链指向的版本
   string engine_buildinfo = 10;        // 当前版本的 BUILDINFO 原文
   HostTuning tuning = 11;
@@ -73,7 +74,7 @@ message Heartbeat {
   double cpu_percent = 1;
   uint64 mem_used_bytes = 2;
   uint64 mem_total_bytes = 3;
-  uint64 data_disk_free_bytes = 4;   // /opt/sycache/instances 所在分区
+  uint64 data_disk_free_bytes = 4;   // /home/atwasoft/sycache/instances 所在分区
   repeated InstanceStatus instances = 5;
 }
 
@@ -209,6 +210,7 @@ message ServerMessage {
     UpgradeAgent upgrade_agent = 24;
     Probe probe = 25;
     Migrate migrate = 26;
+    ExecCommand exec_command = 27;
   }
 }
 
@@ -458,4 +460,12 @@ message BackupChunk {
 message UploadResult {
   int64 size = 1;
   string sha256 = 2;
+}
+
+// Web 命令行（CLAUDE.md 规定的唯一例外）：以独立内置账号 sycache-webcli 在指定实例上执行一条数据命令。
+// argv[0] 为命令名，必须通过拒绝清单与参数上限校验（agent 与控制台各校验一次）。结果以 JSON 放入 CommandResult.payload；
+// 引擎返回的错误（含 NOPERM）作为正常结果回传，不视为 agent 故障。
+message ExecCommand {
+  uint32 port = 1;
+  repeated string argv = 2;
 }

@@ -22,6 +22,7 @@ const router = createRouter({
         { path: 'units/:id/backups', name: 'backups', component: () => import('../views/Backups.vue'), meta: { title: '备份与恢复' } },
         { path: 'units/:id/migrations', name: 'migrations', component: () => import('../views/Migrate.vue'), meta: { title: '在线迁移' } },
         { path: 'units/:id/keys', name: 'keys', component: () => import('../views/Keys.vue'), meta: { title: 'Key 浏览器' } },
+        { path: 'units/:id/cli', name: 'cli', component: () => import('../views/Cli.vue'), meta: { title: 'Web 命令行' } },
         { path: 'operations', name: 'operations', component: () => import('../views/Operations.vue'), meta: { title: '操作记录' } },
         { path: 'templates', name: 'templates', component: () => import('../views/Templates.vue'), meta: { title: '参数模板' } },
         { path: 'alerts', name: 'alerts', component: () => import('../views/Alerts.vue'), meta: { title: '告警' } },

@@ -8,14 +8,14 @@ Wants=network-online.target
 Type=simple
 User=sycache-agent
 Group=sycache
-ExecStart=/usr/bin/sycache-agent run -state-dir /var/lib/sycache-agent -root /opt/sycache -wrapper "sudo -n /usr/libexec/sycache/sycache-wrapper"
+ExecStart=/usr/bin/sycache-agent run -state-dir /var/lib/sycache-agent -root /home/atwasoft/sycache -wrapper "sudo -n /usr/libexec/sycache/sycache-wrapper"
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=30s
 UMask=0007
 PrivateTmp=yes
 ProtectSystem=strict
-ProtectHome=yes
+ProtectHome=read-only
 ProtectControlGroups=yes
 # agent 必须通过 sudo 进入 root 所有、自带参数校验的 wrapper，因此进程不能带 no_new_privs 标志。
 # systemd 规定：以非 root 用户运行时，只要设置了 RestrictAddressFamilies、ProtectKernelTunables、
@@ -26,7 +26,7 @@ ProtectControlGroups=yes
 RuntimeDirectory=sycache
 RuntimeDirectoryMode=0775
 RuntimeDirectoryPreserve=yes
-ReadWritePaths=/var/lib/sycache-agent /opt/sycache /run/sycache /var/log/sycache
+ReadWritePaths=/var/lib/sycache-agent /home/atwasoft/sycache /run/sycache /var/log/sycache
 
 [Install]
 WantedBy=multi-user.target

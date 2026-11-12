@@ -14,7 +14,7 @@ command -v strings >/dev/null 2>&1 || {
 SPORT=$((PORT + 1))
 ROOT_DIR="$(mktemp -d)"; RUN="$ROOT_DIR/run"; mkdir -p "$RUN"
 tar -C "$ROOT_DIR" -xzf "$PKG"
-P="$ROOT_DIR/opt/sycache"; B="$P/bin"
+P="$ROOT_DIR/home/atwasoft/sycache"; B="$P/bin"
 # macOS Bash 3.2 does not reliably preserve assignments sourced from a
 # /dev/fd process substitution; use a file so the same gate works locally.
 BI_FILE="$ROOT_DIR/buildinfo.vars"

@@ -2,6 +2,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 
+	agentv1 "github.com/xiaoguan521/cacheos/api/gen/agent/v1"
 	"github.com/xiaoguan521/cacheos/internal/console/alerts"
 	"github.com/xiaoguan521/cacheos/internal/console/gateway"
 	"github.com/xiaoguan521/cacheos/internal/console/ha"
@@ -29,20 +31,23 @@ import (
 
 // Server 汇总 API 依赖。
 type Server struct {
-	Store         *store.Store
-	GW            *gateway.Server
-	Orch          *orch.Service
-	Alerts        *alerts.Service
-	Lic           *licsvc.Service
-	Audit         *audit.Logger
-	Box           *secretbox.Box // 加密 LDAP/OIDC 等配置中的凭据
-	Log           *slog.Logger
-	Web           fs.FS  // 前端构建产物（web/dist）
+	Store  *store.Store
+	GW     *gateway.Server
+	Orch   *orch.Service
+	Alerts *alerts.Service
+	Lic    *licsvc.Service
+	Audit  *audit.Logger
+	Box    *secretbox.Box // 加密 LDAP/OIDC 等配置中的凭据
+	Log    *slog.Logger
+	Web    fs.FS // 前端构建产物（web/dist）
+
 	GRPCAddr      string // agent 连接控制台使用的地址，写入安装命令
 	CAFingerprint string
 	SecureCookie  bool
 	WebCAPEM      []byte      // -tls-auto 时的 Web CA 证书，公开下载以便导入浏览器
 	HA            *ha.Elector // 主备选主；nil 视为单机
+	// sendCmd 为指令下发通道，nil 时使用 GW.Send；测试替换它以检查发出的消息。
+	sendCmd func(context.Context, uint, *agentv1.ServerMessage, time.Duration) (*agentv1.CommandResult, error)
 
 	jwtKey        []byte
 	fails         sync.Map // ip -> *loginFail
@@ -116,6 +121,7 @@ func (s *Server) Handler() (http.Handler, error) {
 	a.POST("/api-tokens", s.writable, s.feature(license.FeatureAPIToken), s.createToken)
 	a.DELETE("/api-tokens/:id", s.revokeToken)
 	a.GET("/dashboard", s.dashboard)
+	a.GET("/metrics/prometheus", role(store.RoleViewer), s.prometheusMetrics) // 控制台侧 Prometheus 文本指标（不监听端口）
 
 	a.GET("/license", s.licenseGet)
 	a.GET("/license/request", role(store.RoleAdmin), s.licenseRequest)
@@ -135,6 +141,7 @@ func (s *Server) Handler() (http.Handler, error) {
 	a.POST("/hosts/enroll", role(store.RoleOperator), s.writable, s.stepUp, s.enrollToken)
 	a.POST("/hosts/:id/revoke", role(store.RoleAdmin), s.stepUp, s.revokeHost)
 	a.POST("/hosts/:id/switch-version", role(store.RoleOperator), s.writable, s.stepUp, s.switchVersion)
+	a.POST("/hosts/:id/upgrade-agent", role(store.RoleOperator), s.writable, s.stepUp, s.upgradeAgent)
 
 	// 参数目录与模板（M5）
 	a.GET("/params/catalog", s.paramCatalog)
@@ -156,9 +163,12 @@ func (s *Server) Handler() (http.Handler, error) {
 	a.GET("/units/:id/revisions", role(store.RoleDeveloper), s.listRevisions)
 	a.POST("/units/:id/params/preview", role(store.RoleDeveloper), s.previewParams)
 	a.POST("/units/:id/params", role(store.RoleReleaser), s.writable, s.stepUp, s.applyParams)
+	a.POST("/units/:id/revisions/:revision_id/rollback", role(store.RoleReleaser), s.writable, s.stepUp, s.rollbackParams)
 	a.GET("/units/:id/metrics", s.unitMetrics)
 	a.GET("/units/:id/diagnose", role(store.RoleDeveloper), s.diagnose)
 	a.GET("/units/:id/keys", role(store.RoleDeveloper), s.browseKeys)
+	// Web 命令行（CLAUDE.md 唯一例外）：比明文查看 Key 更严格——需要写可用、每次二次验证、且必须已启用 TOTP
+	a.POST("/units/:id/exec", role(store.RoleDeveloper), s.writable, s.stepUp, s.requireTOTP, s.execCommand)
 	a.GET("/units/:id/backups", role(store.RoleOperator), s.listBackups)
 	a.GET("/units/:id/backup-policy", role(store.RoleOperator), s.getBackupPolicy)
 	a.PUT("/units/:id/backup-policy", role(store.RoleOperator), s.writable, s.stepUp, s.saveBackupPolicy)
@@ -168,6 +178,7 @@ func (s *Server) Handler() (http.Handler, error) {
 	a.POST("/units/:id/migrations", role(store.RoleOperator), s.writable, s.stepUp, s.createMigration)
 	a.POST("/units/:id/migrations/:migration_id/cutover", role(store.RoleOperator), s.writable, s.stepUp, s.cutoverMigration)
 	a.POST("/units/:id/reshard", role(store.RoleReleaser), s.writable, s.stepUp, s.reshard)
+	a.POST("/units/:id/rebalance", role(store.RoleReleaser), s.writable, s.stepUp, s.rebalance)
 	a.GET("/units/:id/accounts", role(store.RoleOperator), s.listAccounts)
 	a.POST("/units/:id/accounts", role(store.RoleOperator), s.writable, s.stepUp, s.saveAccount)
 	a.DELETE("/units/:id/accounts/:name", role(store.RoleOperator), s.writable, s.stepUp, s.deleteAccount)
@@ -259,6 +270,10 @@ func failErr(c *gin.Context, err error) {
 		fail(c, http.StatusConflict, "UNIT_BUSY", "该部署单元有进行中的变更，请等待其结束")
 	case errors.Is(err, orch.ErrNoChanges):
 		fail(c, http.StatusConflict, "NO_CHANGES", err.Error())
+	case errors.Is(err, orch.ErrRevisionConflict):
+		fail(c, http.StatusConflict, "REVISION_CONFLICT", "参数版本已变化（当前版本已被他人修改），请刷新后重试")
+	case errors.Is(err, orch.ErrSameRevision):
+		fail(c, http.StatusConflict, "SAME_REVISION", "目标版本就是当前版本，无需回滚")
 	case errors.Is(err, orch.ErrNoHosts):
 		fail(c, http.StatusConflict, "NO_HOSTS", err.Error())
 	case errors.Is(err, orch.ErrUnsupported):

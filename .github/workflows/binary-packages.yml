@@ -16,9 +16,9 @@ on:
   push:
     tags: ["v*"]
 
+# 默认只读；需要写 GHCR 的 job 在各自 job 内单独声明 packages: write。
 permissions:
   contents: read
-  packages: write
 
 concurrency:
   group: binary-packages-${{ github.ref }}
@@ -27,6 +27,9 @@ concurrency:
 jobs:
   publish-builder:
     name: publish build environment (${{ matrix.arch }})
+    permissions:
+      contents: read
+      packages: write
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
@@ -61,13 +64,18 @@ jobs:
             ARCH=${{ matrix.arch }}
           platforms: ${{ matrix.platform }}
           push: true
+          # 可变标签 el7-<arch> 只在 v* 标签发布时更新，手动运行只产出不可变的 sha 标签，
+          # 避免任意分支覆盖对外文档给出的官方标签。
           tags: |
-            ghcr.io/${{ github.repository }}/build-env:el7-${{ matrix.arch }}
             ghcr.io/${{ github.repository }}/build-env:sha-${{ github.sha }}-${{ matrix.arch }}
+            ${{ startsWith(github.ref, 'refs/tags/v') && format('ghcr.io/{0}/build-env:el7-{1}', github.repository, matrix.arch) || '' }}
 
   build:
     name: ${{ matrix.arch }} packages
     needs: publish-builder
+    permissions:
+      contents: read
+      packages: read
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     strategy:
@@ -186,6 +194,9 @@ jobs:
   publish-builder-manifest:
     name: publish multi-arch build environment tag
     needs: [publish-builder, build]
+    permissions:
+      contents: read
+      packages: write
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -204,9 +215,11 @@ jobs:
         run: |
           set -euo pipefail
           image="ghcr.io/${GITHUB_REPOSITORY,,}/build-env"
+          tags=(--tag "$image:sha-${GITHUB_SHA}")
+          # 可变标签 el7 只在 v* 标签发布时更新。
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then tags+=(--tag "$image:el7"); fi
           docker buildx imagetools create \
-            --tag "$image:el7" \
-            --tag "$image:sha-${GITHUB_SHA}" \
+            "${tags[@]}" \
             "$image:sha-${GITHUB_SHA}-x86_64" \
             "$image:sha-${GITHUB_SHA}-aarch64"
 

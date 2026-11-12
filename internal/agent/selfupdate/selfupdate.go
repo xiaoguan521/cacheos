@@ -27,7 +27,7 @@ import (
 const (
 	maxBinary = 96 << 20
 	binEntry  = "bin/sycache-agent"
-	envGuard  = "ETOS_AGENT_SELFUPDATE_EXEC"
+	envGuard  = "SYCACHE_AGENT_SELFUPDATE_EXEC"
 )
 
 var ErrRejected = errors.New("agent package rejected")

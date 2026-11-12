@@ -127,7 +127,7 @@ def main():
         "creationInfo": {"created": created, "creators": ["Tool: cacheos-gen-sbom"]},
         "hasExtractedLicensingInfos": [{
             "licenseId": "LicenseRef-CacheOS-Proprietary",
-            "extractedText": "Proprietary. See /opt/sycache/licenses/NOTICE for third-party components.",
+            "extractedText": "Proprietary. See /home/atwasoft/sycache/licenses/NOTICE for third-party components.",
         }],
         "packages": packages,
         "relationships": rels,

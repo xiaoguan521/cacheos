@@ -10,6 +10,7 @@ import { CanvasRenderer } from 'echarts/renderers'
 import VChart from 'vue-echarts'
 import { api, errMsg } from '../api/client'
 import { useSession } from '../stores/session'
+import DiffView from '../components/DiffView.vue'
 
 use([HeatmapChart, GridComponent, TooltipComponent, VisualMapComponent, CanvasRenderer])
 
@@ -34,6 +35,17 @@ const scaleForm = reactive({ replicas: 1, shards: 3 })
 const sentinelOpen = ref(false)
 const sentinelForm = reactive({ operation: 'set', down_after_ms: '30000', failover_timeout: '60000', parallel_syncs: '1' })
 const reshardForm = reactive({ source_instance_id: '', target_instance_id: '', slots: '0-100', batch: 100 })
+const rollbackOpen = ref(false)
+const rollbackTarget = ref<any>(null)
+const rollbackPreview = ref<any>(null)
+const rollbackDiff = ref('')
+const rollbackNote = ref('')
+const rollbackRestart = ref(false)
+const rebalanceOpen = ref(false)
+const rebalanceLoading = ref(false)
+const rebalancePlan = ref<any>(null)
+const canRebalance = computed(() => session.can('releaser') && session.writable && !!session.license?.features?.includes('online_reshard'))
+const rebalanceActionable = computed(() => !!rebalancePlan.value && !rebalancePlan.value.balanced && (rebalancePlan.value.steps || []).length > 0)
 
 const id = computed(() => String(route.params.id))
 const metricRows = computed(() => Object.entries(metrics.value?.instances || {}).flatMap(([instanceID, points]: [string, any]) => (points || []).slice(-20).map((p: any) => ({ instanceID, ...p }))))
@@ -202,6 +214,49 @@ async function applyParams() {
   }
 }
 
+// 回滚前先用参数预览接口计算"当前版本 → 目标历史版本"的差异（删除的键按默认值计入差异，与服务端一致）
+async function openRollback(revision: any) {
+  const current = unit.value?.params || {}
+  const target = revision.params || {}
+  const reset = Object.keys(current).filter((key) => !(key in target))
+  try {
+    const pv = await api.post(`/units/${id.value}/params/preview`, { set: target, reset })
+    rollbackPreview.value = pv
+    rollbackDiff.value = Object.keys(pv.changed || {})
+      .sort()
+      .flatMap((key) => [`-${key}=${pv.old?.[key] ?? ''}`, `+${key}=${pv.changed[key]}`])
+      .join('\n')
+    rollbackTarget.value = revision
+    rollbackNote.value = `回滚到 ${revision.id}`
+    rollbackRestart.value = false
+    rollbackOpen.value = true
+  } catch (e) {
+    message.error(errMsg(e))
+  }
+}
+
+async function submitRollback() {
+  if (!rollbackTarget.value || !rollbackPreview.value) return
+  if (!rollbackNote.value.trim()) {
+    message.error('请填写变更说明')
+    return
+  }
+  try {
+    // 父版本取预览时的当前版本：确认的差异与提交时的基线一致，否则服务端返回 REVISION_CONFLICT
+    const r = await api.post(`/units/${id.value}/revisions/${rollbackTarget.value.id}/rollback`, {
+      parent_revision_id: rollbackPreview.value.base_revision,
+      note: rollbackNote.value,
+      restart: rollbackRestart.value,
+      switchover: rollbackRestart.value,
+    })
+    message.success(`回滚操作 #${r.operation?.id || '—'} 已提交`)
+    rollbackOpen.value = false
+    await load()
+  } catch (e) {
+    message.error(errMsg(e))
+  }
+}
+
 function openAccount() {
   Object.assign(accountForm, { name: '', password: '', key_patterns: '*', categories: '+@read,+@write,-@dangerous', enabled: true })
   generatedPassword.value = ''
@@ -250,6 +305,45 @@ async function reshard() {
   }
 }
 
+async function openRebalance() {
+  rebalanceOpen.value = true
+  await loadRebalancePlan()
+}
+
+// dry_run 只返回基于已保存状态的计划，服务端不会下发任何指令。
+async function loadRebalancePlan() {
+  rebalanceLoading.value = true
+  rebalancePlan.value = null
+  try {
+    const r = await api.post(`/units/${id.value}/rebalance`, { dry_run: true })
+    rebalancePlan.value = r.plan
+  } catch (e) {
+    message.error(errMsg(e))
+  } finally {
+    rebalanceLoading.value = false
+  }
+}
+
+async function rebalance() {
+  try {
+    const r = await api.post(`/units/${id.value}/rebalance`, { dry_run: false })
+    rebalanceOpen.value = false
+    message.success(`再平衡操作 #${r.operation?.id || '—'} 已提交`)
+    await load()
+  } catch (e) {
+    message.error(errMsg(e))
+  }
+}
+
+function onRebalanceOk() {
+  if (rebalanceActionable.value) return rebalance()
+  rebalanceOpen.value = false
+}
+
+function slotText(slots: { start: number; end: number }[]) {
+  return slots.map((x) => (x.start === x.end ? `${x.start}` : `${x.start}-${x.end}`)).join(', ')
+}
+
 function bytes(v: number) {
   if (!v) return '0 B'
   if (v >= 1024 ** 3) return `${(v / 1024 ** 3).toFixed(1)} GiB`
@@ -275,6 +369,7 @@ onUnmounted(() => clearInterval(timer))
         <a-button @click="router.push({ name: 'backups', params: { id } })">备份</a-button>
         <a-button v-if="unit.mode !== 'standalone' || session.can('operator')" @click="router.push({ name: 'migrations', params: { id } })">迁移</a-button>
         <a-button @click="router.push({ name: 'keys', params: { id } })">Key 浏览器</a-button>
+        <a-button v-if="session.cliExec" @click="router.push({ name: 'cli', params: { id } })">Web 命令行</a-button>
         <a-button :disabled="!session.can('operator')" @click="action(unit.status === 'stopped' ? 'start' : 'stop')">{{ unit.status === 'stopped' ? '启动' : '停止' }}</a-button>
         <a-button :disabled="!session.can('operator')" @click="action('restart')">重启</a-button>
         <a-button v-if="unit.mode !== 'standalone'" :disabled="!session.can('operator')" @click="failover">故障切换</a-button>
@@ -311,7 +406,7 @@ onUnmounted(() => clearInterval(timer))
     </section>
 
     <section v-if="unit.mode === 'cluster'" class="panel">
-      <div class="phead"><h2>在线迁槽</h2><a-button type="primary" size="small" :disabled="!session.can('releaser') || !session.writable" @click="reshard">提交迁槽计划</a-button></div>
+      <div class="phead"><h2>在线迁槽</h2><span><a-button size="small" :disabled="!canRebalance" @click="openRebalance">再平衡</a-button> <a-button type="primary" size="small" :disabled="!session.can('releaser') || !session.writable" @click="reshard">提交迁槽计划</a-button></span></div>
       <div class="param-foot">
         <a-select v-model:value="reshardForm.source_instance_id" placeholder="源主节点" style="min-width: 190px" :options="unit.instances.filter((x: any) => x.kind === 'server' && (x.role === 'master' || x.desired_role === 'master')).map((x: any) => ({ value: String(x.id), label: `${x.host}:${x.port} · ${x.shard}` }))" />
         <a-select v-model:value="reshardForm.target_instance_id" placeholder="目标主节点" style="min-width: 190px" :options="unit.instances.filter((x: any) => x.kind === 'server' && (x.role === 'master' || x.desired_role === 'master')).map((x: any) => ({ value: String(x.id), label: `${x.host}:${x.port} · ${x.shard}` }))" />
@@ -331,7 +426,7 @@ onUnmounted(() => clearInterval(timer))
       <section class="panel">
         <h2>参数版本</h2>
         <a-timeline>
-          <a-timeline-item v-for="revision in revisions" :key="revision.id" color="blue"><b>{{ revision.id }}</b> · {{ revision.note || '—' }}<div class="sub">{{ revision.created_by }} · {{ dayjs(revision.created_at).format('YYYY-MM-DD HH:mm') }}</div></a-timeline-item>
+          <a-timeline-item v-for="revision in revisions" :key="revision.id" color="blue"><b>{{ revision.id }}</b> · {{ revision.note || '—' }}<div class="sub">{{ revision.created_by }} · {{ dayjs(revision.created_at).format('YYYY-MM-DD HH:mm') }}</div><a-button v-if="revision.id !== unit.revision_id" type="link" size="small" :disabled="!session.can('releaser') || !session.writable" @click="openRollback(revision)">回滚到此版本</a-button></a-timeline-item>
         </a-timeline>
         <a-empty v-if="!revisions.length" description="还没有版本记录" />
       </section>
@@ -361,6 +456,25 @@ onUnmounted(() => clearInterval(timer))
       </a-table>
     </section>
 
+    <a-modal v-model:open="rebalanceOpen" title="槽位再平衡" width="760px" :ok-text="rebalanceActionable ? '确认执行' : '关闭'" :ok-button-props="{ disabled: rebalanceActionable && (!canRebalance || rebalanceLoading) }" @ok="onRebalanceOk">
+      <a-spin :spinning="rebalanceLoading">
+        <template v-if="rebalancePlan">
+          <a-alert v-if="rebalancePlan.balanced" type="success" show-icon message="各主节点槽数已在目标范围内，无需操作。" />
+          <template v-else>
+            <p class="sub">每个主节点目标为 ⌊16384/N⌋ 或 ⌈16384/N⌉ 个槽，本次共迁移 {{ rebalancePlan.moved }} 个槽，分 {{ rebalancePlan.steps.length }} 步执行。</p>
+            <a-table :data-source="rebalancePlan.steps" row-key="index" size="small" :pagination="false" :columns="[{ title: '步骤', dataIndex: 'index', width: 70 }, { title: '源 → 目标', key: 'route' }, { title: '槽范围', key: 'ranges' }, { title: '槽数', dataIndex: 'count', width: 90 }]">
+              <template #bodyCell="{ column, record }">
+                <template v-if="column.key === 'route'"><span class="code">{{ record.source }}</span> → <span class="code">{{ record.target }}</span></template>
+                <template v-else-if="column.key === 'ranges'"><span class="code">{{ slotText(record.slots) }}</span></template>
+              </template>
+            </a-table>
+          </template>
+          <a-table :data-source="rebalancePlan.nodes" row-key="instance_id" size="small" :pagination="false" :columns="[{ title: '主节点', dataIndex: 'name' }, { title: '再平衡前', dataIndex: 'before', width: 110 }, { title: '目标', dataIndex: 'target', width: 90 }, { title: '再平衡后', dataIndex: 'after', width: 110 }]" />
+          <p class="sub">执行时会重新读取实时槽位并重新计算计划，结果可能与预览略有不同。任一步失败会停止后续步骤，已完成的步骤不回滚，可在操作记录中查看停止的位置。</p>
+        </template>
+      </a-spin>
+    </a-modal>
+
     <a-modal v-model:open="accountOpen" title="保存业务账号" ok-text="保存" @ok="saveAccount">
       <a-form layout="vertical">
         <a-form-item label="名称"><a-input v-model:value="accountForm.name" placeholder="例如 app" /></a-form-item>
@@ -372,6 +486,14 @@ onUnmounted(() => clearInterval(timer))
       <a-alert v-if="generatedPassword" type="warning" show-icon style="margin-top: 14px" message="请立即保存以下口令；关闭窗口后不会再次返回。" :description="generatedPassword" />
     </a-modal>
 
+    <a-modal v-model:open="rollbackOpen" :title="`回滚参数到 ${rollbackTarget?.id || ''}`" ok-text="确认回滚" :ok-button-props="{ disabled: !session.can('releaser') || !session.writable || !rollbackDiff }" @ok="submitRollback">
+      <p class="sub">当前版本 <b>{{ rollbackPreview?.base_revision }}</b> → 目标版本 <b>{{ rollbackTarget?.id }}</b>。回滚会生成一个新版本，历史版本保持不变。</p>
+      <DiffView v-if="rollbackDiff" :diff="rollbackDiff" />
+      <a-alert v-else type="info" show-icon message="目标版本与当前参数一致，无需回滚" />
+      <a-input v-model:value="rollbackNote" placeholder="变更说明（必填）" style="margin-top: 14px" />
+      <a-checkbox v-model:checked="rollbackRestart" style="margin-top: 8px">需要时滚动重启</a-checkbox>
+      <p v-if="rollbackPreview?.restart?.length" class="sub">需重启的参数：{{ rollbackPreview.restart.join('、') }}</p>
+    </a-modal>
     <a-modal v-model:open="upgradeOpen" title="滚动升级数据面" ok-text="提交升级" :ok-button-props="{ disabled: !session.can('releaser') || !session.writable }" @ok="upgradeUnit">
       <a-form layout="vertical">
         <a-form-item label="目标版本" extra="版本必须已导入版本库，且覆盖该单元所有主机的架构。"><a-input v-model:value="upgradeVersion" placeholder="例如 1.30.6-1" /></a-form-item>

@@ -335,16 +335,17 @@ const roleName: Record<string, string> = { admin: '管理员', operator: '运维
         <h2>数据面版本库</h2>
         <a-button size="small" :disabled="!session.writable" @click="openPackageImport">导入签名包</a-button>
       </div>
-      <p class="muted">仅接受厂商签名通过的 sycache / sycache-agent 包；agent 下载前会再次校验签名。删除包不会影响已安装版本。</p>
+      <p class="muted">仅接受厂商签名通过的 sycache / sycache-agent 包；agent 下载前会再次校验签名。删除包不会影响已安装版本。sycache-agent 包用于在主机列表中升级主机 agent。</p>
       <a-table v-if="packages.length" :data-source="packages" row-key="id" :pagination="false" size="small"
         :columns="[
-          { title: '包', key: 'name' }, { title: '版本', key: 'version' }, { title: '架构', key: 'arch' },
+          { title: '包', key: 'name' }, { title: '种类', key: 'kind' }, { title: '版本', key: 'version' }, { title: '架构', key: 'arch' },
           { title: '变体', key: 'variant' }, { title: '大小', key: 'size' }, { title: '签名 KID', key: 'kid' },
           { title: '导入人 / 时间', key: 'created' }, { title: '', key: 'op', width: 70 },
         ]">
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'name'"><span class="code">{{ record.name }}</span></template>
           <template v-else-if="column.key === 'version'"><span class="code">{{ record.version }}</span></template>
+          <template v-else-if="column.key === 'kind'">{{ record.name === 'sycache-agent' ? 'agent 自升级' : '数据面引擎' }}</template>
           <template v-else-if="column.key === 'arch'">{{ record.arch }}</template>
           <template v-else-if="column.key === 'variant'">{{ record.variant }}</template>
           <template v-else-if="column.key === 'size'">{{ packageSize(record.size) }}</template>
@@ -396,6 +397,7 @@ const roleName: Record<string, string> = { admin: '管理员', operator: '运维
             <a-space :size="4">
               <a v-if="record.locked_until && dayjs(record.locked_until).isAfter(dayjs())" @click="updUser(record, { unlock: true })">解锁</a>
               <a v-if="record.role === 'developer' || record.role === 'admin'" @click="updUser(record, { key_reveal: !record.key_reveal })">{{ record.key_reveal ? '取消明文授权' : '授权看值' }}</a>
+              <a v-if="record.role === 'developer' || record.role === 'admin'" @click="updUser(record, { cli_exec: !record.cli_exec })">{{ record.cli_exec ? '取消命令行授权' : '授权命令行' }}</a>
               <a @click="updUser(record, { disabled: !record.disabled })">{{ record.disabled ? '启用' : '停用' }}</a>
               <a v-if="!record.source || record.source === 'local'" @click="resetPw(record)">重置口令</a>
               <a-popconfirm :title="`删除用户 ${record.username}？其 API 令牌一并撤销`" @confirm="delUser(record)"><a class="danger">删除</a></a-popconfirm>

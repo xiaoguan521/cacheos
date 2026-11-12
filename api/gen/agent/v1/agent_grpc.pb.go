@@ -7,7 +7,8 @@
 // 控制台 <-> sycache-agent 协议（CacheOS 规格书 6.2）。
 // agent 主动发起连接；除 Enroll 外全部要求 mTLS。
 // 每条 ServerMessage 另带 Ed25519 应用层签名与 cmd_id，用于防伪造和防重放。
-// 协议中只有类型化的运维指令，没有「执行任意命令」「读写任意文件」类消息；
+// 协议中只有类型化的运维指令，没有「执行系统命令 / shell」「读写任意文件」类消息；唯一例外是 ExecCommand（Web 命令行），
+// 它只把数据命令经 Unix Socket 发给指定实例、不触达操作系统，约束见 CLAUDE.md「agent 与安全」。
 // agent 以只授予运维命令的管理账号、经 Unix Socket 访问本机实例。
 
 package agentv1

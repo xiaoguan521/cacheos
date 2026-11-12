@@ -45,7 +45,7 @@
 
 2026-11-06 按规格书逐章核对后的状态。P2 代码主体已完成，但不标记为“已验收”，直到以下遗留项和 Linux 实机验收完成。
 
-- [x] agent 提权链：agent 单元去掉了所有会让 systemd 强制启用 NoNewPrivileges 的选项（显式写 `NoNewPrivileges=no` 无法抵消），并有打包测试防止回退；wrapper 所需的 `/opt/sycache` 写入、`/run/sycache` runtime 目录已声明；wrapper 仍是唯一提权入口。待 Linux 实机确认 `grep NoNewPrivs /proc/$(pidof sycache-agent)/status` 为 0
+- [x] agent 提权链：agent 单元去掉了所有会让 systemd 强制启用 NoNewPrivileges 的选项（显式写 `NoNewPrivileges=no` 无法抵消），并有打包测试防止回退；wrapper 所需的 `/home/atwasoft/sycache` 写入、`/run/sycache` runtime 目录已声明；wrapper 仍是唯一提权入口。待 Linux 实机确认 `grep NoNewPrivs /proc/$(pidof sycache-agent)/status` 为 0
 - [x] agent / console 安装：agent 用户、组和目录由安装脚本创建；新增 console 用户、状态目录和配置目录安装脚本
 - [x] 6.3 / 6.4 数据安全门：创建与参数变更检查 maxmemory 至少高于 `used_memory` 10%，持久化目录按重写双副本检查剩余空间；滚动重启等待复制链路为 up，且从节点已处理偏移（`slave_repl_offset`）追到主节点 `master_repl_offset` 的快照（两端分别探测，快照只取一次）
 - [x] 8 节 M1：初始化绑定 TOTP，并对登录、创建、切换、删除、备份恢复等影响可用性的操作执行二次 TOTP 校验
@@ -70,3 +70,7 @@
 - [ ] P6 信创验收：Tongsuo 本机构建 smoke 已通过，仍需 Tongsuo/国密互操作、CPU/OS/数据库组合认证和 PoC 实测
 - [x] 正式发布公钥环：安装授权内置 `etos-prod-2027` / `etos-prod-2027-b`，升级包内置 `etos-pkg-2027` / `etos-pkg-2027-b`；CacheOS 升级验签兼容 SyEdge 的 `etos-pkg-sig-1` / `ETOS-PKG-v1`，`go test -tags release` 已通过
 - [ ] 正式产物签名发布链路：仍需在离线签名机完成实际 License / 安装包签名，并将签名步骤接入发布流水线
+
+### 第二阶段（功能完善）
+
+- [ ] 扩展数据类型（第二阶段）：按改名流程纳入上游社区 BSD 许可的 JSON、布隆过滤器、搜索/向量模块；需先完成依赖许可审查、ADR 与 CLAUDE.md 规则扩展，再进入构建与打包

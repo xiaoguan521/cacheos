@@ -28,7 +28,7 @@ grep -qx 'tls=tongsuo' "$OUT/BUILDINFO" || {
 package="$(find "$OUT" -maxdepth 1 -type f -name 'sycache-[0-9]*-*.tar.gz' ! -name '*debuginfo*' -print -quit)"
 [[ -n "$package" ]] || { echo "missing Tongsuo release tarball" >&2; exit 1; }
 for binary in sycache-server sycache-cli sycache-benchmark; do
-  tar -tzf "$package" "./opt/sycache/bin/$binary" >/dev/null
+  tar -tzf "$package" "./home/atwasoft/sycache/bin/$binary" >/dev/null
 done
 
 echo "Tongsuo build verified: $OUT"

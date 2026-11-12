@@ -34,6 +34,7 @@ type User struct {
 	FailedLogins       int        `json:"failed_logins"`
 	LockedUntil        *time.Time `json:"locked_until"`
 	KeyReveal          bool       `json:"key_reveal"` // Key 浏览器查看明文的单独授权（规格书 8 节 M10）
+	CliExec            bool       `json:"cli_exec"`   // Web 命令行的单独授权（CLAUDE.md「agent 与安全」唯一例外）
 }
 
 // Host 是一台已注册 agent 的缓存主机（规格书 8 节 M3）。

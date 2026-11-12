@@ -6,6 +6,7 @@
 
 - 设计规格书：[CacheOS 缓存中间件商业方案 v1.0](https://claude.ai/artifact/EXSjwWRU3s5Dsyfh221yNV)（索引与进度见 [`docs/spec/`](docs/spec/README.md)）
 - 编码规则：[`CLAUDE.md`](CLAUDE.md)（所有编码 Agent 与开发者必读）
+- 快速开始：[`docs/quickstart.md`](docs/quickstart.md)（从安装控制台到连接第一个实例）
 - 改名边界：[`docs/adr/0001-rename-boundaries.md`](docs/adr/0001-rename-boundaries.md)
 
 ## 组件
@@ -60,7 +61,7 @@ cd web && pnpm install --offline && pnpm run build
 cd .. && node web/e2e/ui-acceptance.cjs       # 需要已初始化控制台与 Playwright
 
 # P4 单机数据面演示：6 个集群实例 + 3 个哨兵；仅清理脚本自己创建的临时目录
-SYCACHE_BIN=/opt/sycache/bin scripts/demo-local.sh
+SYCACHE_BIN=/home/atwasoft/sycache/bin scripts/demo-local.sh
 
 # Linux 部署（需 root；agent 先 enroll，console 先配置 env）
 deploy/install-agent.sh <sycache-agent> <sycache-wrapper>

@@ -28,9 +28,9 @@ func releasePackage(t *testing.T, version string) ([]byte, []byte, map[string]ed
 		mode int64
 		body string
 	}{
-		{"./opt/sycache/bin/sycache-server", 0o755, "server"},
-		{"./opt/sycache/bin/sycache-sentinel", 0o755, "server"},
-		{"./opt/sycache/share/BUILDINFO", 0o644, "product_version=" + version + "\n"},
+		{"./home/atwasoft/sycache/bin/sycache-server", 0o755, "server"},
+		{"./home/atwasoft/sycache/bin/sycache-sentinel", 0o755, "server"},
+		{"./home/atwasoft/sycache/share/BUILDINFO", 0o644, "product_version=" + version + "\n"},
 		{"./usr/lib/systemd/system/sycache@.service", 0o644, "ignored"},
 	}
 	for _, e := range entries {
@@ -81,7 +81,7 @@ func TestInstallRejectsTraversalAndBuildInfoMismatch(t *testing.T) {
 	zw := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(zw)
 	body := []byte("escape")
-	if err := tw.WriteHeader(&tar.Header{Name: "./opt/sycache/../../escape", Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg}); err != nil {
+	if err := tw.WriteHeader(&tar.Header{Name: "./home/atwasoft/sycache/../../../escape", Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg}); err != nil {
 		t.Fatal(err)
 	}
 	_, _ = tw.Write(body)

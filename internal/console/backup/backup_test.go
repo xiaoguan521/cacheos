@@ -173,10 +173,10 @@ func TestBackupIncludesMetricsWhenAsked(t *testing.T) {
 	}
 }
 
-// SQLite → PostgreSQL：备份恢复也是迁移数据库的方式（需要 ETOS_TEST_DB 指向 PostgreSQL）。
+// SQLite → PostgreSQL：备份恢复也是迁移数据库的方式（需要 CACHEOS_TEST_DB 指向 PostgreSQL）。
 func TestMigrateSQLiteToPostgres(t *testing.T) {
-	if os.Getenv("ETOS_TEST_DB") == "" {
-		t.Skip("set ETOS_TEST_DB to a PostgreSQL DSN")
+	if os.Getenv("CACHEOS_TEST_DB") == "" {
+		t.Skip("set CACHEOS_TEST_DB to a PostgreSQL DSN")
 	}
 	srcDir := t.TempDir()
 	src, err := store.Open(filepath.Join(srcDir, "console.db"))

@@ -29,7 +29,15 @@ type ParamChange struct {
 	Restart bool              `json:"restart"` // 有需重启参数时是否立即滚动重启；否则实例停在 pending_restart
 	// Switchover 滚动重启到主节点时先做协调切换（从节点追平后互换角色），避免主节点重启期间不可写
 	Switchover bool `json:"switchover"`
+	// ParentRevisionID 乐观锁：非空时部署单元当前参数版本必须等于它，否则返回 ErrRevisionConflict
+	ParentRevisionID string `json:"parent_revision_id,omitempty"`
 }
+
+// 参数版本相关错误（API 层映射为 409）。
+var (
+	ErrRevisionConflict = errors.New("parameter revision changed, refresh and retry")
+	ErrSameRevision     = errors.New("target revision is the current revision")
+)
 
 // Preview 是变更预检结果（规格书 6.3 第 2 步：diff、可热改 / 需重启分组）。
 type Preview struct {
@@ -181,6 +189,9 @@ func (s *Service) ApplyParams(unitID uint, ch ParamChange, by string) (*store.Op
 	if err != nil {
 		return nil, err
 	}
+	if ch.ParentRevisionID != "" && pv.Revision != ch.ParentRevisionID {
+		return nil, ErrRevisionConflict
+	}
 	if len(pv.Changed) == 0 {
 		return nil, ErrNoChanges
 	}
@@ -206,6 +217,17 @@ func (s *Service) ApplyParams(unitID uint, ch ParamChange, by string) (*store.Op
 		if run, e = s.start(tx, unitID, "params", ch, by); e != nil {
 			return e
 		}
+		// 单元锁已由 start 获取：此处重读当前版本，确认乐观锁仍成立（与预检之间不能被其他变更抢先）
+		if ch.ParentRevisionID != "" {
+			uq := tx.Unit
+			cur, e := uq.WithContext(context.Background()).Where(uq.ID.Eq(unitID)).First()
+			if e != nil {
+				return e
+			}
+			if cur.RevisionID != ch.ParentRevisionID {
+				return ErrRevisionConflict
+			}
+		}
 		rev, e = s.newRevision(tx, unitID, pv.Revision, next, ch.Note, by)
 		return e
 	})
@@ -214,6 +236,57 @@ func (s *Service) ApplyParams(unitID uint, ch ParamChange, by string) (*store.Op
 	}
 	s.background(run, func(ctx context.Context, r *opRun) error { return s.runParams(ctx, r, unitID, pv, rev, ch, targetMB) })
 	return run.op, nil
+}
+
+// RollbackParams 把部署单元参数回滚到历史版本 target。做法是把目标版本的全量参数作为一次新的参数变更
+// 交给 ApplyParams：生成新版本（不改写历史），并走同一套操作记录、单元锁与审批流程。
+func (s *Service) RollbackParams(unitID uint, target string, ch ParamChange, by string) (*store.Operation, error) {
+	if strings.TrimSpace(ch.ParentRevisionID) == "" {
+		return nil, invalid("parent_revision_id is required")
+	}
+	if strings.TrimSpace(ch.Note) == "" {
+		return nil, invalid("note is required")
+	}
+	u, err := store.First[store.Unit](s.Store, unitID)
+	if err != nil {
+		return nil, err
+	}
+	if target == u.RevisionID {
+		return nil, ErrSameRevision
+	}
+	if ch.ParentRevisionID != u.RevisionID {
+		return nil, ErrRevisionConflict
+	}
+	rq := s.q().ParamRevision
+	rev, err := rq.WithContext(context.Background()).Where(rq.ID.Eq(target), rq.UnitID.Eq(unitID)).First()
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, store.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	want := map[string]string{}
+	if err := json.Unmarshal([]byte(rev.Params), &want); err != nil {
+		return nil, err
+	}
+	// 历史版本中若含当前参数目录之外的参数，明确拒绝，不静默丢弃
+	if _, err := paramcat.NormalizeAll(want); err != nil {
+		return nil, fmt.Errorf("%w: 历史版本 %s 含有当前参数目录之外的参数（%v），无法回滚", ErrInvalid, target, err)
+	}
+	cur, err := s.revParams(u.RevisionID)
+	if err != nil {
+		return nil, err
+	}
+	var reset []string
+	for k := range cur {
+		if _, ok := want[k]; !ok {
+			reset = append(reset, k)
+		}
+	}
+	sort.Strings(reset)
+	ch.Set = want
+	ch.Reset = reset
+	return s.ApplyParams(unitID, ch, by)
 }
 
 func (s *Service) runParams(ctx context.Context, r *opRun, unitID uint, pv *Preview, rev *store.ParamRevision, ch ParamChange, targetMemoryMB uint32) error {

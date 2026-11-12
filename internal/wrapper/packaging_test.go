@@ -55,7 +55,7 @@ func TestAgentPackagingIsPresentAndHardened(t *testing.T) {
 	}
 
 	service := readPackaging(t, "dataplane/packaging/sycache-agent.service")
-	for _, want := range []string{"User=sycache-agent", "Group=sycache", "ExecStart=/usr/bin/sycache-agent run", "Restart=on-failure", "ProtectSystem=strict", "UMask=0007", "RuntimeDirectory=sycache", "ReadWritePaths=/var/lib/sycache-agent /opt/sycache /run/sycache"} {
+	for _, want := range []string{"User=sycache-agent", "Group=sycache", "ExecStart=/usr/bin/sycache-agent run", "Restart=on-failure", "ProtectSystem=strict", "UMask=0007", "RuntimeDirectory=sycache", "ReadWritePaths=/var/lib/sycache-agent /home/atwasoft/sycache /run/sycache"} {
 		if !strings.Contains(service, want) {
 			t.Errorf("agent service missing %q", want)
 		}
@@ -99,7 +99,7 @@ func TestAgentPackagingIsPresentAndHardened(t *testing.T) {
 	}
 
 	pre := readPackaging(t, "dataplane/packaging/agent-scripts/preinstall.sh")
-	for _, want := range []string{"groupadd", "useradd", "sycache-agent", "/var/lib/sycache-agent", "/opt/sycache"} {
+	for _, want := range []string{"groupadd", "useradd", "sycache-agent", "/var/lib/sycache-agent", "/home/atwasoft/sycache"} {
 		if !strings.Contains(pre, want) {
 			t.Errorf("agent preinstall missing %q", want)
 		}
@@ -116,5 +116,74 @@ func TestAgentPackagingIsPresentAndHardened(t *testing.T) {
 		if !strings.Contains(consoleService, want) {
 			t.Errorf("console service missing %q", want)
 		}
+	}
+}
+
+// 安装根位于 /home 之下：ProtectHome=yes 会让单元看不到整个 /home，引擎二进制与实例目录都不可达，
+// ProtectHome=tmpfs 同样会把安装根遮住。只允许 read-only，写入范围仍由 ReadWritePaths 限定。
+func TestUnitsCanReachInstallRootUnderHome(t *testing.T) {
+	root := Default().Root
+	if root != "/home/atwasoft/sycache" {
+		t.Fatalf("default install root = %q", root)
+	}
+	for _, path := range []string{
+		"dataplane/packaging/sycache@.service",
+		"dataplane/packaging/sycache-sentinel@.service",
+		"dataplane/packaging/sycache-agent.service",
+		"deploy/sycache-agent.service",
+	} {
+		body := readPackaging(t, path)
+		if !strings.Contains(body, "\nProtectHome=read-only\n") {
+			t.Errorf("%s must set ProtectHome=read-only: install root %s lives under /home", path, root)
+		}
+		if !strings.Contains(body, root) {
+			t.Errorf("%s does not reference install root %s", path, root)
+		}
+		rw := false
+		for _, line := range strings.Split(body, "\n") {
+			if strings.HasPrefix(line, "ReadWritePaths=") && strings.Contains(line, root) {
+				rw = true
+			}
+		}
+		if !rw {
+			t.Errorf("%s: ReadWritePaths does not cover %s", path, root)
+		}
+	}
+}
+
+// sycache-cli 入口：安装时在 /usr/bin 建软链指向当前版本，卸载时只删除指向本产品路径的软链（不得 rm -rf）。
+func TestSycacheCliSymlinkLifecycle(t *testing.T) {
+	const target = "/home/atwasoft/sycache/current/bin/sycache-cli"
+	const link = "/usr/bin/sycache-cli"
+
+	post := readPackaging(t, "dataplane/packaging/scripts/postinstall.sh")
+	if !strings.Contains(post, "ln -sfn "+target+" "+link) {
+		t.Errorf("postinstall.sh must create %s -> %s with ln -sfn", link, target)
+	}
+	if !strings.Contains(post, "[ -L "+link+" ]") || !strings.Contains(post, "! -e "+link) {
+		t.Errorf("postinstall.sh must only overwrite %s when it is absent or already a symlink", link)
+	}
+
+	postrm := readPackaging(t, "dataplane/packaging/scripts/postremove.sh")
+	if !strings.Contains(postrm, `[ "$1" = "remove" ] || exit 0`) {
+		t.Errorf("postremove.sh must do nothing on upgrade")
+	}
+	if !strings.Contains(postrm, "[ -L "+link+" ]") || !strings.Contains(postrm, "readlink "+link+`)" = `+target+" ]") {
+		t.Errorf("postremove.sh must remove %s only when it is a symlink to %s", link, target)
+	}
+	if strings.Contains(postrm, "rm -rf") {
+		t.Errorf("postremove.sh contains destructive recursive removal")
+	}
+
+	debBuild := readPackaging(t, "dataplane/packaging/build-deb.sh")
+	if !strings.Contains(debBuild, `DEBIAN/postrm"`) || !strings.Contains(debBuild, "scripts/postremove.sh") {
+		t.Errorf("build-deb.sh must install postremove.sh as DEBIAN/postrm")
+	}
+	if !strings.Contains(debBuild, "remove|purge) set -- remove") {
+		t.Errorf("build-deb.sh must map dpkg remove/purge to remove")
+	}
+	rpmBuild := readPackaging(t, "dataplane/packaging/build-rpm.sh")
+	if !strings.Contains(rpmBuild, "%postun") || !strings.Contains(rpmBuild, "script postremove.sh") {
+		t.Errorf("build-rpm.sh must add a %%postun section running postremove.sh")
 	}
 }

@@ -12,7 +12,7 @@ R="$WORK/root"; mkdir -p "$R"
 tar -C "$R" -xzf "$TAR"
 # shellcheck disable=SC1091
 BI_FILE="$WORK/buildinfo.vars"
-sed 's/^/BI_/' "$R/opt/sycache/share/BUILDINFO" > "$BI_FILE"
+sed 's/^/BI_/' "$R/home/atwasoft/sycache/share/BUILDINFO" > "$BI_FILE"
 source "$BI_FILE"
 
 # 版本：1.0.0-rc.1 → 1.0.0~rc.1（~ 使预发布版排在正式版之前）
@@ -33,7 +33,7 @@ while read -r lib; do
   [[ -v "MAP[$lib]" ]] || { echo "unmapped shared library dependency: $lib" >&2; exit 3; }
   [[ -n "${MAP[$lib]}" ]] && deps+=("${MAP[$lib]}")
 done < <(for b in sycache-server sycache-cli sycache-benchmark; do
-           readelf -d "$R/opt/sycache/bin/$b" | sed -nE 's/.*NEEDED.*\[(.*)\]/\1/p'; done | sort -u)
+           readelf -d "$R/home/atwasoft/sycache/bin/$b" | sed -nE 's/.*NEEDED.*\[(.*)\]/\1/p'; done | sort -u)
 DEPENDS="$(printf '%s\n' "${deps[@]}" | sort -u | paste -sd, - | sed 's/,/, /g')"
 
 mkdir -p "$R/DEBIAN"
@@ -49,7 +49,7 @@ Depends: $DEPENDS
 Installed-Size: $(du -sk --exclude=DEBIAN "$R" | cut -f1)
 Description: CacheOS sycache - Redis-compatible in-memory data store
  Data plane of CacheOS: standalone, replication, sentinel and native cluster.
- Engine $BI_upstream_version ($BI_upstream_commit), TLS: $BI_tls. Provenance: /opt/sycache/share/BUILDINFO.
+ Engine $BI_upstream_version ($BI_upstream_commit), TLS: $BI_tls. Provenance: /home/atwasoft/sycache/share/BUILDINFO.
 EOF
 echo /etc/logrotate.d/sycache > "$R/DEBIAN/conffiles"
 
@@ -58,7 +58,9 @@ echo /etc/logrotate.d/sycache > "$R/DEBIAN/conffiles"
 { echo '#!/bin/sh'; echo 'set -e'; echo '[ "$1" = "configure" ] || exit 0'; sed '1d' "$HERE/scripts/postinstall.sh"; } > "$R/DEBIAN/postinst"
 { echo '#!/bin/sh'; echo 'set -e'; echo 'case "$1" in remove) set -- remove ;; *) set -- upgrade ;; esac'
   sed '1d' "$HERE/scripts/preremove.sh"; } > "$R/DEBIAN/prerm"
-chmod 0755 "$R/DEBIAN/preinst" "$R/DEBIAN/postinst" "$R/DEBIAN/prerm"
+{ echo '#!/bin/sh'; echo 'set -e'; echo 'case "$1" in remove|purge) set -- remove ;; *) set -- upgrade ;; esac'
+  sed '1d' "$HERE/scripts/postremove.sh"; } > "$R/DEBIAN/postrm"
+chmod 0755 "$R/DEBIAN/preinst" "$R/DEBIAN/postinst" "$R/DEBIAN/prerm" "$R/DEBIAN/postrm"
 
 DEB="$OUT/sycache_${DEB_VERSION}_${DEB_ARCH}.deb"
 dpkg-deb --root-owner-group -Zxz --build "$R" "$DEB" >/dev/null

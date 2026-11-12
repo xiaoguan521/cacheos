@@ -5,7 +5,7 @@
 设置 VALKEY_BIN 时额外验证与上游 Valkey 的混合复制与 RDB 互读（证明协议与磁盘格式未被改名破坏）。
 
 用法：
-  SYCACHE_BIN=/opt/sycache/bin [VALKEY_BIN=<上游 valkey src 目录>] python3 test/compat/compat_test.py -v
+  SYCACHE_BIN=/home/atwasoft/sycache/bin [VALKEY_BIN=<上游 valkey src 目录>] python3 test/compat/compat_test.py -v
 """
 import os
 import shutil
@@ -16,7 +16,7 @@ import tempfile
 import time
 import unittest
 
-SYCACHE_BIN = os.environ.get("SYCACHE_BIN", "/opt/sycache/bin")
+SYCACHE_BIN = os.environ.get("SYCACHE_BIN", "/home/atwasoft/sycache/bin")
 VALKEY_BIN = os.environ.get("VALKEY_BIN", "")
 BASE_PORT = int(os.environ.get("COMPAT_BASE_PORT", "18100"))
 

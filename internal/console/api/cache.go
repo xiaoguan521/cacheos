@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -16,10 +17,12 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 
 	agentv1 "github.com/xiaoguan521/cacheos/api/gen/agent/v1"
+	"github.com/xiaoguan521/cacheos/internal/console/gateway"
 	"github.com/xiaoguan521/cacheos/internal/console/orch"
 	"github.com/xiaoguan521/cacheos/internal/console/store"
 	"github.com/xiaoguan521/cacheos/internal/license"
 	"github.com/xiaoguan521/cacheos/internal/paramcat"
+	"github.com/xiaoguan521/cacheos/internal/webcli"
 )
 
 // ---------- 主机 ----------
@@ -275,6 +278,112 @@ func (s *Server) switchVersion(c *gin.Context) {
 	}
 	s.audit(c, "host.switch_version", "host", fmt.Sprint(id), map[string]string{"from": h.EngineCurrent, "to": req.Version})
 	c.JSON(http.StatusOK, gin.H{"engine_current": req.Version})
+}
+
+// agentPackageName 是版本库中 agent 自升级包的名称（与 pkgsig.Names 一致）。
+const agentPackageName = "sycache-agent"
+
+// agentVersionNewer 与 agent 端 selfupdate 的比较规则一致：比较 N.N.N，再比较 "-" 后的数字。
+// 相等或更低都返回 false；agent 只会切换到比正在运行的版本更新的包。
+func agentVersionNewer(target, current string) bool {
+	pt, pc := agentVersionParts(target), agentVersionParts(current)
+	for i := range pt {
+		if pt[i] != pc[i] {
+			return pt[i] > pc[i]
+		}
+	}
+	return false
+}
+
+func agentVersionParts(v string) [4]int {
+	var out [4]int
+	main, rel, _ := strings.Cut(v, "-")
+	for i, s := range strings.SplitN(main, ".", 3) {
+		out[i], _ = strconv.Atoi(s)
+	}
+	out[3], _ = strconv.Atoi(rel)
+	return out
+}
+
+// upgradeAgent 向在线主机下发 agent 自升级指令（UpgradeAgent）。agent 验签、落盘并退出，由 systemd 重启到新版本；
+// 实例进程不受影响。版本库中的包必须已通过厂商签名导入，agent 使用前还会再次校验。
+func (s *Server) upgradeAgent(c *gin.Context) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Version string `json:"version"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || !versionRe.MatchString(req.Version) {
+		fail(c, http.StatusBadRequest, "BAD_VERSION", "invalid version")
+		return
+	}
+	h, err := store.First[store.Host](s.Store, id)
+	if err != nil {
+		failErr(c, err)
+		return
+	}
+	if h.Status == "offline" || h.Status == "revoked" {
+		fail(c, http.StatusConflict, "HOST_OFFLINE", "主机离线，无法下发 agent 升级")
+		return
+	}
+	if !versionRe.MatchString(h.AgentVersion) {
+		fail(c, http.StatusConflict, "AGENT_VERSION_UNKNOWN", "主机未上报可识别的 agent 版本")
+		return
+	}
+	if !agentVersionNewer(req.Version, h.AgentVersion) {
+		fail(c, http.StatusConflict, "VERSION_NOT_NEWER", fmt.Sprintf("目标版本 %s 不高于当前 agent 版本 %s；不允许降级或重复安装", req.Version, h.AgentVersion))
+		return
+	}
+	arch := h.Arch
+	if arch == "x86_64" {
+		arch = "amd64"
+	} else if arch == "aarch64" {
+		arch = "arm64"
+	}
+	pq := s.q().EnginePackage
+	ctx := c.Request.Context()
+	if n, err := pq.WithContext(ctx).Where(pq.Name.Eq(agentPackageName), pq.Version.Eq(req.Version)).Count(); err != nil {
+		failErr(c, err)
+		return
+	} else if n == 0 {
+		fail(c, http.StatusNotFound, "AGENT_PACKAGE_NOT_FOUND", "版本库中没有该版本的 agent 包")
+		return
+	}
+	pkg, err := pq.WithContext(ctx).Where(pq.Name.Eq(agentPackageName), pq.Version.Eq(req.Version), pq.Arch.Eq(arch)).First()
+	if err != nil {
+		fail(c, http.StatusConflict, "ARCH_MISMATCH", "版本库中的 agent 包架构与主机不匹配")
+		return
+	}
+	send := s.sendCmd
+	if send == nil {
+		send = s.GW.Send
+	}
+	m := &agentv1.ServerMessage{Body: &agentv1.ServerMessage_UpgradeAgent{UpgradeAgent: &agentv1.UpgradeAgent{
+		Version: pkg.Version, Arch: pkg.Arch, Sha256: pkg.SHA256, VendorSignature: []byte(pkg.Sig),
+	}}}
+	// agent 需要先从控制台分片下载升级包（最多 2 分钟），与 switch-version 的等待上限分开。
+	r, err := send(ctx, id, m, 3*time.Minute)
+	detail := func(result, reason string) map[string]string {
+		return map[string]string{"from": h.AgentVersion, "to": req.Version, "result": result, "reason": reason}
+	}
+	switch {
+	case errors.Is(err, gateway.ErrOffline):
+		s.audit(c, "host.upgrade_agent", "host", fmt.Sprint(id), detail("failed", "host offline"))
+		fail(c, http.StatusConflict, "HOST_OFFLINE", "主机离线，无法下发 agent 升级")
+		return
+	case err != nil:
+		s.audit(c, "host.upgrade_agent", "host", fmt.Sprint(id), detail("error", err.Error()))
+		failErr(c, err)
+		return
+	case r.Status != agentv1.CommandResult_OK:
+		s.audit(c, "host.upgrade_agent", "host", fmt.Sprint(id), detail("failed", r.Message))
+		fail(c, http.StatusConflict, "UPGRADE_FAILED", r.Message)
+		return
+	}
+	s.audit(c, "host.upgrade_agent", "host", fmt.Sprint(id), detail("ok", r.Message))
+	c.JSON(http.StatusOK, gin.H{"agent_version": req.Version, "message": r.Message})
 }
 
 // ---------- 参数目录与模板 ----------
@@ -722,6 +831,32 @@ func (s *Server) applyParams(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"operation": op})
 }
 
+// rollbackParams 把参数回滚到历史版本 :revision_id：以该版本的全量参数生成一个新版本（走与"应用参数"相同的操作流程）。
+func (s *Server) rollbackParams(c *gin.Context) {
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		ParentRevisionID string `json:"parent_revision_id"`
+		Note             string `json:"note"`
+		Restart          bool   `json:"restart"`
+		Switchover       bool   `json:"switchover"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		failErr(c, err)
+		return
+	}
+	target := c.Param("revision_id")
+	op, err := s.Orch.RollbackParams(id, target, orch.ParamChange{ParentRevisionID: req.ParentRevisionID, Note: req.Note, Restart: req.Restart, Switchover: req.Switchover}, c.GetString("user"))
+	if err != nil {
+		failErr(c, err)
+		return
+	}
+	s.audit(c, "unit.params.rollback", "unit", fmt.Sprint(id), gin.H{"from": req.ParentRevisionID, "to": target, "note": req.Note, "restart": req.Restart, "operation": op.ID})
+	c.JSON(http.StatusAccepted, gin.H{"operation": op})
+}
+
 type metricPoint struct {
 	Minute     int64   `json:"minute"`
 	OpsPerSec  uint64  `json:"ops_per_sec"`
@@ -860,14 +995,6 @@ func (s *Server) diagnose(c *gin.Context) {
 		}
 	}
 
-	type instanceReport struct {
-		InstanceID uint   `json:"instance_id"`
-		HostID     uint   `json:"host_id"`
-		Port       uint32 `json:"port"`
-		Role       string `json:"role,omitempty"`
-		Report     any    `json:"report,omitempty"`
-		Error      string `json:"error,omitempty"`
-	}
 	reports := make([]instanceReport, 0, len(instances))
 	for _, in := range instances {
 		r, err := s.GW.Send(c.Request.Context(), in.HostID, &agentv1.ServerMessage{Body: &agentv1.ServerMessage_Diagnose{Diagnose: &agentv1.Diagnose{Port: in.Port, What: kind, Sample: uint32(sample)}}}, time.Minute)
@@ -885,11 +1012,8 @@ func (s *Server) diagnose(c *gin.Context) {
 			reports = append(reports, item)
 			continue
 		}
-		var payload struct {
-			Report any `json:"report"`
-		}
-		if len(r.Payload) > 0 && json.Unmarshal(r.Payload, &payload) == nil {
-			item.Report = payload.Report
+		if p, ok := decodeDiagnosePayload(r.Payload); ok {
+			item.Report, item.Aggregate, item.Advice = p.Report, p.Aggregate, p.Advice
 		} else {
 			item.Report = gin.H{"raw": string(r.Payload)}
 		}
@@ -898,10 +1022,39 @@ func (s *Server) diagnose(c *gin.Context) {
 
 	s.audit(c, "unit.diagnose", "unit", fmt.Sprint(id), map[string]any{"kind": kind.String(), "instances": len(instances)})
 	if c.Query("instance_id") != "" {
-		c.JSON(http.StatusOK, gin.H{"kind": kind.String(), "sample": sample, "report": reports[0].Report, "error": reports[0].Error})
+		c.JSON(http.StatusOK, gin.H{"kind": kind.String(), "sample": sample, "report": reports[0].Report,
+			"aggregate": reports[0].Aggregate, "advice": reports[0].Advice, "error": reports[0].Error})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"kind": kind.String(), "sample": sample, "instances": reports})
+}
+
+// instanceReport 是诊断接口对单个实例的回传；Aggregate 与 Advice 仅在对应诊断类型下存在。
+type instanceReport struct {
+	InstanceID uint   `json:"instance_id"`
+	HostID     uint   `json:"host_id"`
+	Port       uint32 `json:"port"`
+	Role       string `json:"role,omitempty"`
+	Report     any    `json:"report,omitempty"`
+	Aggregate  any    `json:"aggregate,omitempty"`
+	Advice     any    `json:"advice,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+// diagnosePayload 是 agent 诊断 JSON 负载的控制台侧视图；旧 agent 只有 report 字段。
+type diagnosePayload struct {
+	Report    any `json:"report"`
+	Aggregate any `json:"aggregate,omitempty"`
+	Advice    any `json:"advice,omitempty"`
+}
+
+// decodeDiagnosePayload 解析 agent 回传的诊断负载；非 JSON 时返回 false，调用方保留原始输出。
+func decodeDiagnosePayload(raw []byte) (diagnosePayload, bool) {
+	var p diagnosePayload
+	if len(raw) == 0 || json.Unmarshal(raw, &p) != nil {
+		return diagnosePayload{}, false
+	}
+	return p, true
 }
 
 func (s *Server) browseKeys(c *gin.Context) {
@@ -936,6 +1089,105 @@ func (s *Server) browseKeys(c *gin.Context) {
 	}
 	s.audit(c, "unit.keys.browse", "instance", fmt.Sprint(in.ID), map[string]any{"pattern": c.Query("pattern"), "reveal": reveal, "unit": u.ID})
 	c.JSON(http.StatusOK, payload)
+}
+
+// cliBodyLimit：Web 命令行请求体上限（256 KiB 的参数加 JSON 外壳）。
+const cliBodyLimit = 512 << 10
+
+// execCommand：Web 命令行（CLAUDE.md「agent 与安全」中唯一的例外）。
+// 中间件链：developer → writable → stepUp → requireTOTP；此处再查 CliExec 授权与 argv 白名单（与 agent 共用 webcli.Check）。
+// 每条请求（包括被拒绝的请求）都写审计：操作人、部署单元、实例、命令名、参数个数、结果状态；参数值与回复内容不写审计、不写日志。
+func (s *Server) execCommand(c *gin.Context) {
+	u, in, ok := s.unitInstance(c)
+	if !ok {
+		return
+	}
+	if in.Kind != "server" {
+		s.auditCLI(c, u, in, "", 0, "CLI_NOT_SERVER", "")
+		fail(c, http.StatusBadRequest, "CLI_NOT_SERVER", "Web 命令行只能在数据实例上执行")
+		return
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, cliBodyLimit)
+	var req struct {
+		Argv []string `json:"argv"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		s.auditCLI(c, u, in, "", 0, webcli.CodeInvalid, "")
+		fail(c, http.StatusBadRequest, webcli.CodeInvalid, "请求体需要是 {\"argv\": [...]} 形式的 JSON，且不超过 512 KiB")
+		return
+	}
+	name, argc := webcli.CommandName(req.Argv), max(len(req.Argv)-1, 0)
+	user, err := store.First[store.User](s.Store, c.GetUint("uid"))
+	if err != nil {
+		failErr(c, err)
+		return
+	}
+	if !user.CliExec {
+		s.auditCLI(c, u, in, name, argc, "CLI_EXEC_DENIED", "")
+		fail(c, http.StatusForbidden, "CLI_EXEC_DENIED", "未获得命令行授权，请联系管理员")
+		return
+	}
+	if _, err := webcli.Check(req.Argv); err != nil {
+		code, status, msg := webcli.CodeInvalid, http.StatusBadRequest, "命令参数不合法"
+		var we *webcli.Error
+		if errors.As(err, &we) {
+			code, msg = we.Code, we.Msg
+			if we.Code == webcli.CodeDenied {
+				status = http.StatusForbidden
+			}
+		}
+		s.auditCLI(c, u, in, name, argc, code, "")
+		fail(c, status, code, msg)
+		return
+	}
+	send := s.sendCmd
+	if send == nil {
+		send = s.GW.Send
+	}
+	r, err := send(c.Request.Context(), in.HostID, &agentv1.ServerMessage{Body: &agentv1.ServerMessage_ExecCommand{ExecCommand: &agentv1.ExecCommand{Port: in.Port, Argv: req.Argv}}}, 15*time.Second)
+	if err != nil {
+		s.auditCLI(c, u, in, name, argc, "UNAVAILABLE", "")
+		failErr(c, err)
+		return
+	}
+	if r.Status != agentv1.CommandResult_OK {
+		code := r.ErrorCode
+		if code == "" {
+			code = "FAILED"
+		}
+		s.auditCLI(c, u, in, name, argc, code, "")
+		status := http.StatusConflict
+		if r.ErrorCode == webcli.CodeDenied {
+			status = http.StatusForbidden
+		} else if r.ErrorCode == webcli.CodeInvalid {
+			status = http.StatusBadRequest
+		}
+		fail(c, status, code, r.Message)
+		return
+	}
+	var payload any = gin.H{}
+	var replyType struct {
+		Reply struct {
+			Type string `json:"type"`
+		} `json:"reply"`
+	}
+	if len(r.Payload) > 0 && json.Unmarshal(r.Payload, &payload) != nil {
+		s.auditCLI(c, u, in, name, argc, "BAD_REPLY", "")
+		fail(c, http.StatusBadGateway, "BAD_REPLY", "agent 返回的命令结果格式不正确")
+		return
+	}
+	_ = json.Unmarshal(r.Payload, &replyType)
+	s.auditCLI(c, u, in, name, argc, "OK", replyType.Reply.Type)
+	c.JSON(http.StatusOK, payload)
+}
+
+// auditCLI 记录一条 Web 命令行审计。detail 只含命令名与参数个数，不含参数值或回复内容。
+func (s *Server) auditCLI(c *gin.Context, u *store.Unit, in *store.Instance, name string, argc int, status, replyType string) {
+	detail := map[string]any{"unit": u.ID, "instance_id": in.ID, "command": name, "argc": argc, "status": status}
+	if replyType != "" {
+		detail["reply_type"] = replyType
+	}
+	s.audit(c, "unit.cli.exec", "instance", fmt.Sprint(in.ID), detail)
 }
 
 func (s *Server) listBackups(c *gin.Context) {
@@ -1381,6 +1633,43 @@ func (s *Server) reshard(c *gin.Context) {
 		return
 	}
 	s.audit(c, "unit.reshard", "unit", fmt.Sprint(id), map[string]any{"source_instance_id": spec.SourceInstanceID, "target_instance_id": spec.TargetInstanceID, "slots": spec.Slots, "operation": op.ID})
+	c.JSON(http.StatusAccepted, gin.H{"operation": op})
+}
+
+// rebalance：dry_run 只返回基于已保存状态的计划，不下发指令；否则登记并后台执行再平衡。
+func (s *Server) rebalance(c *gin.Context) {
+	if !s.Lic.Snapshot().Feature(license.FeatureReshard) {
+		fail(c, http.StatusPaymentRequired, "LICENSE_FEATURE_DENIED", "当前授权不包含在线迁槽")
+		return
+	}
+	id, ok := parseID(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		DryRun    bool   `json:"dry_run"`
+		Batch     uint32 `json:"batch"`
+		Tolerance uint32 `json:"tolerance"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		failErr(c, err)
+		return
+	}
+	if req.DryRun {
+		plan, err := s.Orch.PreviewRebalance(id, req.Tolerance)
+		if err != nil {
+			failErr(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"dry_run": true, "plan": plan})
+		return
+	}
+	op, err := s.Orch.Rebalance(id, orch.RebalanceSpec{Batch: req.Batch, Tolerance: req.Tolerance}, c.GetString("user"))
+	if err != nil {
+		failErr(c, err)
+		return
+	}
+	s.audit(c, "unit.rebalance", "unit", fmt.Sprint(id), map[string]any{"batch": req.Batch, "tolerance": req.Tolerance, "operation": op.ID})
 	c.JSON(http.StatusAccepted, gin.H{"operation": op})
 }
 

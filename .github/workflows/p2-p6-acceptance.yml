@@ -2,6 +2,7 @@ name: p2-p6-acceptance
 
 # P2/P3/P5/P6 的可自动化验收入口。真实 Kylin/UOS、跨主机网络、正式
 # 证书签名和 CPU/OS 互认证仍需要在发布前的目标环境中完成。
+# 触发：手动，以及改动控制台、agent、前端、接口相关路径的 PR（自动，只跑 P2/P3/P5；铜锁变体仅手动）。
 on:
   workflow_dispatch:
     inputs:
@@ -17,6 +18,15 @@ on:
         description: "运行铜锁国密变体构建（耗时较长）"
         type: boolean
         default: false
+  pull_request:
+    paths:
+      - "cmd/**"
+      - "internal/**"
+      - "api/**"
+      - "web/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/p2-p6-acceptance.yml"
 
 permissions:
   contents: read
@@ -47,6 +57,7 @@ jobs:
         run: |
           corepack enable
           corepack pnpm install --frozen-lockfile
+          corepack pnpm run lint
           corepack pnpm run build
       - name: Install Playwright Chromium
         run: |
@@ -109,7 +120,7 @@ jobs:
           root="$RUNNER_TEMP/sycache-package"
           mkdir -p "$root"
           tar -xzf "$package" -C "$root"
-          SYCACHE_BIN="$root/opt/sycache/bin" scripts/demo-local.sh
+          SYCACHE_BIN="$root/home/atwasoft/sycache/bin" scripts/demo-local.sh
 
   p5-object-store:
     name: P5 S3-compatible backup round trip

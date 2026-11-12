@@ -40,6 +40,7 @@ import (
 	"github.com/xiaoguan521/cacheos/internal/cmdsig"
 	"github.com/xiaoguan521/cacheos/internal/license"
 	"github.com/xiaoguan521/cacheos/internal/version"
+	"github.com/xiaoguan521/cacheos/internal/webcli"
 )
 
 // Config 是 agent 的运行参数。
@@ -524,6 +525,13 @@ func (a *Agent) handle(ctx context.Context, client agentv1.AgentGatewayClient, m
 		r := result(m.CmdId, a.M.Status(ctx, b.Keys.Port), err)
 		r.Payload = payload
 		sendResult(r)
+	case *agentv1.ServerMessage_ExecCommand:
+		start := time.Now()
+		payload, kind, err := a.M.ExecCommand(ctx, b.ExecCommand)
+		a.logExec(b.ExecCommand, start, kind, err)
+		r := result(m.CmdId, nil, err)
+		r.Payload = payload
+		sendResult(r)
 	case *agentv1.ServerMessage_Backup:
 		var payload []byte
 		var err error
@@ -590,6 +598,25 @@ func (a *Agent) handle(ctx context.Context, client agentv1.AgentGatewayClient, m
 	default:
 		fail("UNSUPPORTED", "command not supported by this agent version")
 	}
+}
+
+// logExec 记录 Web 命令行命令：只含命令名、参数个数（不含命令名）、耗时与结果状态。
+// 参数值与回复内容不得出现在日志中（CLAUDE.md「agent 与安全」）。
+func (a *Agent) logExec(req *agentv1.ExecCommand, start time.Time, kind string, err error) {
+	status := "ok"
+	if err != nil {
+		status = "INTERNAL"
+		var ie *instance.Error
+		if errors.As(err, &ie) {
+			status = ie.Code
+		}
+	}
+	argc := 0
+	if n := len(req.GetArgv()); n > 0 {
+		argc = n - 1
+	}
+	a.log.Info("web cli command", "port", req.GetPort(), "command", webcli.CommandName(req.GetArgv()), "argc", argc,
+		"elapsed_ms", time.Since(start).Milliseconds(), "status", status, "reply", kind)
 }
 
 func (a *Agent) logResult(what string, port uint32, err error) {
