@@ -694,7 +694,31 @@ sycache-ctl --ca-file /etc/sycache/ca.pem hosts ls     # 主机在线
 sycache-ctl --ca-file /etc/sycache/ca.pem units ls     # 部署单元 health 为 ok
 ```
 
-### 7.9 上线验收清单
+### 7.9 命令支持情况自动验证（`test/compat/cmdcheck.py`）
+
+只依赖 Python 3.8+ 标准库，**不需要安装任何客户端库**。对同一套用例（98 项，覆盖连接、字符串、键、哈希、列表、集合、有序集合、位图、HyperLogLog、地理、流、发布订阅、事务、脚本与函数、服务器、集群，加可选的管理类）逐一执行并给出结果，可以同时对比 Redis 与 sycache。
+
+```bash
+# 只测一个实例（口令只读环境变量，不接受命令行参数）
+CMDCHECK_PASSWORD='口令' python3 test/compat/cmdcheck.py -t sycache=10.0.0.2:6379
+
+# 同一套用例对比 Redis 与 sycache，并输出 JSON 明细
+CMDCHECK_PASSWORD_REDIS='口令A' CMDCHECK_PASSWORD_SYCACHE='口令B' \
+  python3 test/compat/cmdcheck.py -t redis=10.0.0.1:6379 -t sycache=10.0.0.2:6379 --json result.json
+
+python3 test/compat/cmdcheck.py --list                       # 列出全部用例
+python3 test/compat/cmdcheck.py -t x=127.0.0.1:6379 --group string,hash -v
+python3 test/compat/cmdcheck.py -t x=127.0.0.1:6379 --admin  # 含 CONFIG SET / BGSAVE / ACL 等会改状态的用例
+```
+
+- 状态含义：`PASS` 通过；`FAIL` 命令存在但行为不符；`UNSUPPORTED` 服务端不认识该命令；`NA` 新版本 / 扩展命令不支持（不算失败）；`NOPERM` 账号无权限；`SKIP` 前置条件不满足。
+- 默认只打印失败项和两个实例结果不一致的项，`-v` 打印全部；对比多个实例时还会列出 `COMMAND LIST` 的差异。
+- 退出码：0 全部通过，1 有失败，2 参数或连接错误，可直接放进巡检脚本。
+- 安全：测试键都带随机前缀 `{cmdcheck-<随机>}:`，用例结束即清理；脚本**不会**执行 `FLUSHDB`、`FLUSHALL`、`SHUTDOWN`、`DEBUG`、`SAVE`；改动状态的用例必须显式加 `--admin`，且 `CONFIG SET` 会还原。
+- 用管理账号之外的最小权限账号运行时，无权限的用例会显示 `NOPERM`，不会误报为失败。
+- 开启数据面 TLS 的实例加 `--tls --tls-ca <CA 文件>`。
+
+### 7.10 上线验收清单
 
 | 项目 | 命令 / 方法 | 通过标准 |
 | --- | --- | --- |
