@@ -558,8 +558,8 @@ diff -ruN a/src/server.c b/src/server.c
                  "io_threads_active:%i\r\n", server.active_io_threads_num > 1,
                  "availability_zone:%s\r\n", server.availability_zone));
 -
-+        /* Redis-compatible cluster mode alias in branded mode. */
-+        if (!server.extended_redis_compat && server.cluster_enabled) {
++        /* Redis-compatible mode alias in branded mode. */
++        if (!server.extended_redis_compat) {
 +            info = sdscatfmt(info, "redis_mode:%s\r\n", mode);
 +        }
          /* Conditional properties */

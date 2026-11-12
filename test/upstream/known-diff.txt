@@ -1,4 +1,5 @@
 # 上游 Tcl 测试集没有预期失败。
 #
-# 品牌断言由 test/upstream/apply-brand-expectations.sh 在临时测试副本中按精确
-# 出现次数同步到 sycache；产品源码、协议行为和 RDB 字段不在此处修改。
+# 品牌及有意提供的 redis_mode 兼容字段断言由
+# test/upstream/apply-brand-expectations.sh 在临时测试副本中按精确出现次数同步；
+# 产品源码、协议行为和 RDB 字段不在此处修改。

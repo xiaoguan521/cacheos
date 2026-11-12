@@ -96,11 +96,7 @@ expect_has "INFO sycache_version 为产品版本" "$info" "sycache_version:$VER"
 expect_has "INFO sycache_engine_version 为上游版本" "$info" "sycache_engine_version:$BI_upstream_version"
 expect_has "INFO redis_version 保持兼容值" "$info" "redis_version:7.2.4"
 expect_has "INFO server_mode 保持产品字段" "$info" "server_mode:standalone"
-if grep -qF "redis_mode:" <<<"$info"; then
-  fail "INFO standalone 不应泄漏 redis_mode"
-else
-  ok "INFO standalone 保持上游字段形状"
-fi
+expect_has "INFO redis_mode 单机兼容字段" "$info" "redis_mode:standalone"
 no_brand "INFO all" "$("$B/sycache-cli" -p "$PORT" info all | grep -v '^executable:')"
 hello="$("$B/sycache-cli" -p "$PORT" -3 hello 3)"
 expect_has "HELLO server" "$hello" "server sycache"
@@ -127,7 +123,9 @@ printf 'port %s\ndir %s\nsentinel monitor golden 127.0.0.1 %s 1\n' "$SPORT" "$RU
 for _ in $(seq 50); do "$B/sycache-cli" -p "$SPORT" ping >/dev/null 2>&1 && break; sleep 0.1; done
 spid="$(cat "$RUN/sentinel.pid")"
 expect_has "哨兵进程标题" "$(proc_cmdline "$spid")" "[sentinel]"
-expect_has "哨兵模式" "$("$B/sycache-cli" -p "$SPORT" info server | tr -d '\r')" "server_mode:sentinel"
+sentinel_info="$("$B/sycache-cli" -p "$SPORT" info server | tr -d '\r')"
+expect_has "哨兵模式" "$sentinel_info" "server_mode:sentinel"
+expect_has "INFO redis_mode 哨兵兼容字段" "$sentinel_info" "redis_mode:sentinel"
 no_brand "哨兵日志" "$(cat "$RUN/sentinel.log")"
 
 echo

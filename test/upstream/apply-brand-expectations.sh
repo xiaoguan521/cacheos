@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 将上游 Tcl 测试中与产品公开品牌强绑定的断言同步到 sycache。
+# 将上游 Tcl 测试中与产品公开品牌或兼容约定强绑定的断言同步到 sycache。
 #
 # 这是测试适配层，不修改产品源码或协议行为。每个替换都校验精确出现次数，
 # 上游源码变化时立即失败，避免把真实行为差异静默吞掉。
@@ -34,6 +34,12 @@ replace_exact \
   tests/unit/other.tcl \
   'assert_equal "valkey" [dict get $hello server]' \
   'assert_equal "sycache" [dict get $hello server]' \
+  1
+# 默认模式也提供 Redis 客户端使用的模式别名；保留断言并明确检查其值。
+replace_exact \
+  tests/unit/other.tcl \
+  'assert_no_match "*redis_mode:*" $info' \
+  'assert_match "*redis_mode:standalone*" $info' \
   1
 replace_exact \
   tests/unit/other.tcl \

@@ -159,6 +159,34 @@ class CompatBase(unittest.TestCase):
         self.env.stop()
 
 
+class InfoModeTest(CompatBase):
+    def check_mode(self, binary, mode, conf_lines=()):
+        for extended in ("no", "yes"):
+            with self.subTest(mode=mode, extended_redis_compatibility=extended):
+                p = self.next_port()
+                self.env.start(sy(binary), p, conf_lines=[
+                    *conf_lines, f"extended-redis-compatibility {extended}"])
+                c = Conn(p)
+                try:
+                    for section in ((), ("server",), ("all",)):
+                        lines = c.cmd("INFO", *section).splitlines()
+                        redis_modes = [line for line in lines if line.startswith("redis_mode:")]
+                        server_modes = [line for line in lines if line.startswith("server_mode:")]
+                        self.assertEqual(redis_modes, [f"redis_mode:{mode}"], section)
+                        self.assertEqual(server_modes, [f"server_mode:{mode}"] if extended == "no" else [], section)
+                finally:
+                    c.close()
+
+    def test_standalone_mode(self):
+        self.check_mode("sycache-server", "standalone")
+
+    def test_cluster_mode(self):
+        self.check_mode("sycache-server", "cluster", ["cluster-enabled yes"])
+
+    def test_sentinel_mode(self):
+        self.check_mode("sycache-sentinel", "sentinel")
+
+
 class StandaloneTest(CompatBase):
     def test_commands_and_scripts(self):
         p = self.next_port()
