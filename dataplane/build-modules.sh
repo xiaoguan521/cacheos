@@ -122,13 +122,17 @@ build_module() {
       echo "  使用本地 Valkey 头文件: $VALKEY_MODULE_H_PATH"
     fi
 
-    # 设置编译版本（从 UPSTREAM_VERSION 读取完整版本号，固定到上游标签）
-    # valkey-json 的 build.sh 使用 SERVER_VERSION 从对应的 GitHub 分支下载预编译头文件
-    # 由于只支持分支名（如 9.1），我们设置为主版本，构建后校验 commit 等于 UPSTREAM_COMMIT
-    export SERVER_VERSION="${UPSTREAM_TAG%.*}"  # 从 9.1.3 提取 9.1
-    export UPSTREAM_COMMIT  # 传递给 build.sh 以便验证
-
-    echo "  使用上游标签: $UPSTREAM_TAG (commit: $UPSTREAM_COMMIT)"
+    # 上游 build.sh 只能按分支名（如 9.1）克隆 Valkey 头文件，无法直接指定标签。
+    # 因此构建前校验该分支当前指向的提交必须等于 dataplane/UPSTREAM 锁定的提交，
+    # 不一致就失败，避免头文件悄悄漂移到比锁定版本更新的代码。
+    export SERVER_VERSION="${UPSTREAM_TAG%.*}"  # 9.1.3 -> 9.1
+    local branch_head
+    branch_head=$(git ls-remote "$UPSTREAM_GIT" "refs/heads/$SERVER_VERSION" | cut -f1)
+    if [[ "$branch_head" != "$UPSTREAM_COMMIT" ]]; then
+      echo "ERROR: 上游分支 $SERVER_VERSION 当前提交 ${branch_head:-未知} 与锁定的 $UPSTREAM_COMMIT 不一致，模块头文件无法固定，请先更新 dataplane/UPSTREAM 或模块构建方式" >&2
+      return 1
+    fi
+    echo "  头文件分支 $SERVER_VERSION 与锁定提交一致: $UPSTREAM_COMMIT"
 
     # 运行 build.sh --release
     cd "$src_dir"
