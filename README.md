@@ -7,6 +7,7 @@
 - 设计规格书：[CacheOS 缓存中间件商业方案 v1.0](https://claude.ai/artifact/EXSjwWRU3s5Dsyfh221yNV)（索引与进度见 [`docs/spec/`](docs/spec/README.md)）
 - 编码规则：[`CLAUDE.md`](CLAUDE.md)（所有编码 Agent 与开发者必读）
 - 快速开始：[`docs/quickstart.md`](docs/quickstart.md)（从安装控制台到连接第一个实例）
+- 部署手册（独立 / 控制台 / Docker、验证与排障）：[`docs/deployment.md`](docs/deployment.md)
 - 发布包与下载安装说明：[`docs/release-assets.md`](docs/release-assets.md)
 - 改名边界：[`docs/adr/0001-rename-boundaries.md`](docs/adr/0001-rename-boundaries.md)
 
