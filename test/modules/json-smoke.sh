@@ -52,7 +52,7 @@ LOG_FILE="$TMPDIR_TEST/server.log"
 
 # 检查依赖
 check_deps() {
-  echo "[1/6] 检查依赖..."
+  echo "[1/7] 检查依赖..."
 
   if [[ ! -f "$SYCACHE_BIN" ]]; then
     echo "✗ sycache-server 不存在: $SYCACHE_BIN"
@@ -76,7 +76,7 @@ check_deps() {
 
 # 启动主实例
 start_master() {
-  echo "[2/6] 启动主实例 (端口 $PORT_MASTER)..."
+  echo "[2/7] 启动主实例 (端口 $PORT_MASTER)..."
 
   "$SYCACHE_BIN" \
     --port "$PORT_MASTER" \
@@ -115,7 +115,7 @@ stop_instance() {
 
 # 基础功能测试
 test_basic_commands() {
-  echo "[3/6] 测试基础命令..."
+  echo "[4/7] 测试基础命令..."
 
   # JSON.SET
   result=$("$SYCACHE_CLI" -p "$PORT_MASTER" JSON.SET mykey . '{"name":"John","age":30}' 2>&1)
@@ -154,7 +154,7 @@ test_basic_commands() {
 
 # RDB 往返测试
 test_rdb_roundtrip() {
-  echo "[4/6] 测试 RDB 往返..."
+  echo "[5/7] 测试 RDB 往返..."
 
   # 写入数据
   "$SYCACHE_CLI" -p "$PORT_MASTER" JSON.SET key1 . '{"data":"test"}' > /dev/null
@@ -205,7 +205,7 @@ test_rdb_roundtrip() {
 
 # 模块加载验证
 test_module_loaded() {
-  echo "[5/6] 验证模块加载..."
+  echo "[3/7] 验证模块加载..."
 
   result=$("$SYCACHE_CLI" -p "$PORT_MASTER" INFO modules 2>&1)
   if [[ ! "$result" =~ "json" ]]; then
@@ -217,10 +217,105 @@ test_module_loaded() {
   return 0
 }
 
+# 主从复制测试
+test_replication() {
+  echo "[6/7] 测试主从复制..."
+
+  # 启动从实例（独立端口）
+  "$SYCACHE_BIN" \
+    --port "$PORT_SLAVE" \
+    --loadmodule "$JSON_SO" \
+    --dir "$TMPDIR_TEST" \
+    --dbfilename "dump-slave.rdb" \
+    --logfile "$LOG_FILE" \
+    --loglevel notice \
+    --daemonize no \
+    --save "" \
+    > "$TMPDIR_TEST/slave.log" 2>&1 &
+
+  local slave_pid=$!
+  sleep 1
+
+  if ! kill -0 $slave_pid 2>/dev/null; then
+    echo "✗ 从实例启动失败 (PID: $slave_pid)"
+    cat "$TMPDIR_TEST/slave.log"
+    return 1
+  fi
+  echo "$slave_pid" > "$TMPDIR_TEST/slave.pid"
+  echo "  ✓ 从实例启动成功 (端口 $PORT_SLAVE, PID: $slave_pid)"
+
+  # 在从实例上执行 REPLICAOF 建立复制关系
+  result=$("$SYCACHE_CLI" -p "$PORT_SLAVE" REPLICAOF 127.0.0.1 "$PORT_MASTER" 2>&1)
+  if [[ ! "$result" =~ "OK" ]]; then
+    echo "✗ REPLICAOF 失败: $result"
+    return 1
+  fi
+  echo "  ✓ REPLICAOF 成功"
+
+  # 等待从实例建立连接（带超时轮询）
+  local max_retries=30
+  local retry=0
+  while [[ $retry -lt $max_retries ]]; do
+    result=$("$SYCACHE_CLI" -p "$PORT_SLAVE" INFO replication 2>&1)
+    if [[ "$result" =~ "master_link_status:up" ]]; then
+      echo "  ✓ 复制链接已建立"
+      break
+    fi
+    retry=$((retry + 1))
+    sleep 0.5
+  done
+
+  if [[ $retry -ge $max_retries ]]; then
+    echo "✗ 等待从实例连接超时"
+    return 1
+  fi
+
+  # 在主实例上设置 JSON 数据
+  "$SYCACHE_CLI" -p "$PORT_MASTER" JSON.SET repkey . '{"value":"initial"}' > /dev/null
+  sleep 1
+
+  # 在从实例上验证数据已复制
+  result=$("$SYCACHE_CLI" -p "$PORT_SLAVE" JSON.GET repkey . 2>&1)
+  if [[ ! "$result" =~ "initial" ]]; then
+    echo "✗ 从实例数据复制失败: $result"
+    return 1
+  fi
+  echo "  ✓ 从实例收到初始数据"
+
+  # 在主实例上修改数据
+  "$SYCACHE_CLI" -p "$PORT_MASTER" JSON.SET repkey $.value '"modified"' > /dev/null
+  sleep 1
+
+  # 验证从实例收到修改
+  result=$("$SYCACHE_CLI" -p "$PORT_SLAVE" JSON.GET repkey $.value 2>&1)
+  if [[ ! "$result" =~ "modified" ]]; then
+    echo "✗ 从实例数据修改复制失败: $result"
+    return 1
+  fi
+  echo "  ✓ 从实例收到修改数据"
+
+  # 在主实例上删除字段
+  "$SYCACHE_CLI" -p "$PORT_MASTER" JSON.DEL repkey $.value > /dev/null
+  sleep 1
+
+  # 验证从实例收到删除
+  result=$("$SYCACHE_CLI" -p "$PORT_SLAVE" JSON.GET repkey . 2>&1)
+  if [[ "$result" =~ "null" ]]; then
+    echo "  ✓ 从实例收到删除操作"
+  fi
+
+  # 清理从实例
+  stop_instance "$TMPDIR_TEST/slave.pid"
+  sleep 1
+
+  return 0
+}
+
 # 清理
 cleanup() {
-  echo "[6/6] 清理..."
+  echo "[7/7] 清理..."
   stop_instance "$TMPDIR_TEST/master.pid"
+  stop_instance "$TMPDIR_TEST/slave.pid"
   echo "✓ 清理完成"
 }
 
@@ -235,6 +330,7 @@ check_deps || all_pass=1
 [[ $all_pass -eq 0 ]] && test_module_loaded || all_pass=1
 [[ $all_pass -eq 0 ]] && test_basic_commands || all_pass=1
 [[ $all_pass -eq 0 ]] && test_rdb_roundtrip || all_pass=1
+[[ $all_pass -eq 0 ]] && test_replication || all_pass=1
 cleanup
 
 echo "========================================="

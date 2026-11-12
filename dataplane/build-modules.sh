@@ -16,6 +16,9 @@ OUT_DIR="$HERE/../dist"
 CACHE_DIR="${CACHE_DIR:-$HERE/modules/build}"
 SYCACHE_SRC=""  # 可指定已检出的 sycache 源码
 
+# 从 dataplane/UPSTREAM 读取上游版本
+source "$HERE/UPSTREAM"  # 载入 UPSTREAM_TAG, UPSTREAM_COMMIT, UPSTREAM_VERSION 等
+
 # 构建参数
 MODULES_TO_BUILD=""
 while getopts "m:o:s:" opt; do
@@ -119,8 +122,13 @@ build_module() {
       echo "  使用本地 Valkey 头文件: $VALKEY_MODULE_H_PATH"
     fi
 
-    # 设置编译版本（为了 valkey-json/search 能找到正确的头文件）
-    export SERVER_VERSION="9.1"
+    # 设置编译版本（从 UPSTREAM_VERSION 读取完整版本号，固定到上游标签）
+    # valkey-json 的 build.sh 使用 SERVER_VERSION 从对应的 GitHub 分支下载预编译头文件
+    # 由于只支持分支名（如 9.1），我们设置为主版本，构建后校验 commit 等于 UPSTREAM_COMMIT
+    export SERVER_VERSION="${UPSTREAM_TAG%.*}"  # 从 9.1.3 提取 9.1
+    export UPSTREAM_COMMIT  # 传递给 build.sh 以便验证
+
+    echo "  使用上游标签: $UPSTREAM_TAG (commit: $UPSTREAM_COMMIT)"
 
     # 运行 build.sh --release
     cd "$src_dir"
