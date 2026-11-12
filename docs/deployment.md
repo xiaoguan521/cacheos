@@ -14,6 +14,7 @@
 1. [部署形态与选型](#1-部署形态与选型)
 2. [前置条件与主机准备](#2-前置条件与主机准备)
 3. [获取安装包并校验](#3-获取安装包并校验)
+   - [3.1 发版与打 tag 构建（维护者）](#31-发版与打-tag-构建维护者)
 4. [形态 A：独立部署（仅数据面，不带控制台）](#4-形态-a独立部署仅数据面不带控制台)
 5. [形态 B：带控制台部署（生产推荐）](#5-形态-b带控制台部署生产推荐)
 6. [形态 C：Docker 部署](#6-形态-cdocker-部署)
@@ -109,6 +110,49 @@ sha256sum -c SHA256SUMS --ignore-missing      # 必须看到 OK 再安装
 ```
 
 > 注意：当前 Release 只发布数据面 `sycache` 包。控制台 `sycache-console`、`sycache-agent`、`sycache-wrapper` 三个二进制不在 Release 资产内，请使用交付渠道提供的文件，或从源码构建（见 5.1）。
+
+---
+
+## 3.1 发版与打 tag 构建（维护者）
+
+发版由 `.github/workflows/binary-packages.yml` 完成，**只在 `v*` 标签或 Actions 手动触发时运行**，不随 PR 或日常提交触发。
+
+**发版步骤**
+
+```bash
+# 1. dataplane/versions.yaml 的 current 必须等于要发布的版本，且对应真实代码变化
+# 2. 本地先跑完整校验
+make ci UPSTREAM_SRC=/tmp/valkey-src
+# 3. 打标签（标签去掉 v 必须等于 versions.yaml 的 current，否则构建在校验步骤失败）
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+预发布版本用带连字符的版本号（如 `v1.0.0-rc1`），Release 会标记为 prerelease，且不成为 latest。
+
+**工作流做了什么**
+
+| 阶段 | 内容 | 产物 |
+| --- | --- | --- |
+| `publish-builder` | x86_64、aarch64 各构建一次 glibc 2.17 兼容**编译环境**镜像并推送 GHCR | `ghcr.io/xiaoguan521/cacheos/build-env:sha-<提交>-<架构>`；v* 标签时另加 `el7-<架构>` |
+| `build` | 拉取并校验上游源码哈希，在该编译环境内构建，运行 VEX、改名黄金验收、版本一致性门禁，生成校验和 | tar.gz、DEB、RPM、调试符号包、SPDX SBOM、BUILDINFO、SHA256SUMS（Actions artifact，保留 90 天） |
+| `publish-builder-manifest` | 合并多架构清单 | `build-env:sha-<提交>`；v* 标签时另加 `build-env:el7` |
+| `publish-release`（仅 v* 标签） | 创建 GitHub Release，上传全部资产并重新生成全量 `SHA256SUMS` | 见 [`release-assets.md`](release-assets.md) |
+
+**关于 GHCR 镜像（重要）**：目前推送到 GHCR 的**只有 `build-env` 编译环境镜像**，它用来在 CentOS 7 级别的 glibc 上编译，不含 `sycache-server`，不能用来运行服务。**项目没有构建或推送 sycache / 控制台的运行时镜像**，第 6 节的 Docker 部署需要自行构建。
+
+**使用已发布的编译环境，跳过本机构建**
+
+```bash
+CACHEOS_BUILD_IMAGE=ghcr.io/xiaoguan521/cacheos/build-env:el7 make compat-build
+```
+
+GHCR 包首次发布后，需要在 Package settings 里设为 Public，匿名用户才能 `docker pull`。
+
+**本地构建（等价于工作流的 build 阶段）**
+
+```bash
+make compat-build            # 需要 docker，产出 dist/ 下的 tar.gz / RPM / DEB
+```
 
 ---
 
@@ -402,7 +446,7 @@ sycache-cli -h <主机> -p <实例端口> --user <账号> -a '<口令>' ping
 
 **现状（务必先读）**
 
-- 项目**没有发布**控制台或数据面的运行时镜像。GHCR 上唯一发布的镜像是 `ghcr.io/xiaoguan521/cacheos/build-env:el7`，它是**编译环境**，不能用来运行服务。
+- 项目**没有发布**控制台或数据面的运行时镜像。GHCR 上唯一发布的镜像是 `ghcr.io/xiaoguan521/cacheos/build-env:el7`，它是**编译环境**，不能用来运行服务（见 3.1）。
 - agent 通过 systemd 与 root wrapper 管理本机实例，**不能在容器内运行**。所以容器里的实例不会被控制台纳管。
 - 以下做法都**【未经项目 CI 验证】**，仅作为测试与演示参考。生产环境请使用第 4、5 节的安装方式。
 
