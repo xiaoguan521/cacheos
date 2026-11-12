@@ -7,6 +7,7 @@
 - 设计规格书：[CacheOS 缓存中间件商业方案 v1.0](https://claude.ai/artifact/EXSjwWRU3s5Dsyfh221yNV)（索引与进度见 [`docs/spec/`](docs/spec/README.md)）
 - 编码规则：[`CLAUDE.md`](CLAUDE.md)（所有编码 Agent 与开发者必读）
 - 快速开始：[`docs/quickstart.md`](docs/quickstart.md)（从安装控制台到连接第一个实例）
+- 部署手册（独立 / 控制台 / Docker、发版与镜像、验证与排障）：[`docs/deployment.md`](docs/deployment.md)
 - 发布包与下载安装说明：[`docs/release-assets.md`](docs/release-assets.md)
 - 改名边界：[`docs/adr/0001-rename-boundaries.md`](docs/adr/0001-rename-boundaries.md)
 
@@ -51,8 +52,8 @@ make compat-build                           # glibc 2.17 容器中兼容构建�
 
 # GitHub Actions：标签 v* 或 Actions → binary-packages 手动触发，
 # 为 x86_64 / aarch64 生成可交付的 tar.gz、RPM、DEB、调试符号包、SBOM、BUILDINFO 与 SHA256SUMS；
-# 标签构建还会创建 GitHub Release 并上传这些资产，同时将兼容构建环境发布到 GHCR
-#（ghcr.io/xiaoguan521/cacheos/build-env:el7）。详见 docs/release-assets.md。
+# 标签构建还会创建 GitHub Release 并上传这些资产，同时将兼容构建环境（ghcr.io/xiaoguan521/cacheos/build-env:el7）
+# 与运行时镜像（ghcr.io/xiaoguan521/cacheos/sycache、sycache-console）发布到 GHCR。详见 docs/release-assets.md。
 # 发布后可复用构建环境，跳过本机 Dockerfile 构建：
 CACHEOS_BUILD_IMAGE=ghcr.io/xiaoguan521/cacheos/build-env:el7 make compat-build
 # GHCR 包首次发布后需在 Package settings 中设为 Public，匿名用户才能直接 pull。

@@ -28,6 +28,17 @@
 使用 `-1` 作为 RPM Release 和 DEB 修订号；预发布版本以实际 Release 页面
 资产名为准。
 
+## 容器镜像
+
+`v*` 标签还会向 GHCR 推送运行时镜像（x86_64 / aarch64 多架构）：
+
+```bash
+docker pull ghcr.io/xiaoguan521/cacheos/sycache:<版本>          # 数据面
+docker pull ghcr.io/xiaoguan521/cacheos/sycache-console:<版本>  # 控制台
+```
+
+预发布版本不更新 `latest`。使用方式见 [`docs/deployment.md`](https://github.com/xiaoguan521/cacheos/blob/main/docs/deployment.md) 第 6 节。
+
 ## 下载并校验
 
 下面以 `v0.1.0`、x86_64 为例。下载 ARM64 时将 `amd64`/`x86_64` 替换为
