@@ -33,7 +33,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-fail() { echo "  ✗ $*" >&2; exit 1; }
+fail() {
+  echo "  ✗ $*" >&2
+  for f in "$TMPDIR_TEST"/*.log; do
+    [[ -f "$f" ]] && { echo "--- $(basename "$f") (末尾 40 行) ---"; tail -40 "$f"; }
+  done
+  exit 1
+}
 
 # vcmd <port> <cmd...>：发送一条命令，每个回复元素一行输出；错误回复以 ERR: 开头
 vcmd() {
