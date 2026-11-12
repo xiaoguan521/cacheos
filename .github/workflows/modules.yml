@@ -106,3 +106,4 @@ jobs:
             /tmp/tmp.*/master*.log
             /tmp/tmp.*/server.log
           retention-days: 7
+# 工作流文件已准备
