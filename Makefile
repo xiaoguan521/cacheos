@@ -6,10 +6,14 @@ JOBS         ?= $(shell if command -v nproc >/dev/null 2>&1; then nproc; elif co
 # 发布构建必须 USE_SYSTEMD=yes（sycache@.service 使用 Type=notify）
 export USE_SYSTEMD
 
-.PHONY: all patch patch-check sycache golden compat compat-interop compat-deps brand test ci versions vex compat-build deb clients upstream-suite demo-local clean
+.PHONY: all patch patch-check sycache golden compat compat-interop compat-deps brand test ci versions vex compat-build deb clients upstream-suite demo-local modules modules-check clean
+
+# 模块清单与版本一致性检查（轻量，可加入 ci）
+modules-check:
+	dataplane/modules/check.sh
 
 # 本地完整校验（与 CI 的 build-and-verify 相同），提交前执行，避免反复占用 GitHub Actions
-ci: patch-check brand sycache versions vex golden compat-interop clients
+ci: patch-check brand modules-check sycache versions vex golden compat-interop clients
 
 # versions.yaml、UPSTREAM、patches、BUILDINFO 与 SBOM 一致
 versions:
@@ -53,6 +57,10 @@ patch-check:
 # 构建安装包：$(DIST)/sycache-<版本>-<架构>.tar.gz
 sycache:
 	dataplane/build-sycache.sh $(SRC_OPT) -o $(DIST)
+
+# 编译扩展数据类型模块（json、search、bloom）；耗时，非 make ci 必需项
+modules:
+	dataplane/build-modules.sh -o $(DIST)
 
 # 改名黄金验收
 golden:

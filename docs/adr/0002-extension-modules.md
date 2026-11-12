@@ -1,0 +1,237 @@
+# ADR 0002：扩展数据类型模块纳入
+
+- 状态：已采纳（2026-11-12：JSON、布隆过滤器、搜索三个模块均纳入；valkey-search 固定 1.2.1；规则已写入 CLAUDE.md）
+- 关联：规格书 2、5 节；ADR 0001（改名边界）；CLAUDE.md（许可与品牌）
+
+## 背景
+
+Phase 2 目标是对标 Redis 8 的 JSON、布隆过滤器、搜索/向量能力，使用 Valkey 社区维护的 BSD 许可模块而非 Redis 官方产品级模块（后者采用 RSAL / SSPL 许可，符合开源定义但不适合企业版产品）。本 ADR 明确纳入的模块、许可审查结果、改名流程边界、构建打包思路与授权影响。
+
+## 许可审查结果
+
+| 模块 | 官方仓库 | 最新发布 | 主 LICENSE | 版本要求 | 兼容性评分 | 结论 | 备注 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| valkey-json | [valkey-io/valkey-json](https://github.com/valkey-io/valkey-json) | 1.0.3（2026-08-31） | BSD-3-Clause | Valkey ≥8.0（推测） | 高 | **通过** | 依赖 RapidJSON (MIT)；C++ 模块；无第三方 GPL/AGPL 依赖 |
+| valkey-bloom | [valkey-io/valkey-bloom](https://github.com/valkey-io/valkey-bloom) | 1.0.1（2026-02-24） | BSD-3-Clause | Valkey 8.0/8.1（明确） | 中 | **暂缓** | Rust 模块；仅支持 8.0/8.1，未声称 9.1 兼容；后续可按需升级 |
+| valkey-search | [valkey-io/valkey-search](https://github.com/valkey-io/valkey-search) | 1.3.0-rc2（2026-10-26） + 1.2.1 稳定 | BSD-3-Clause | 1.2.1: ≥9.0.1；1.3.0-rc2: ≥9.1.0 | 高 | **通过** | C++ 模块；1.3.0-rc2 明确支持 Valkey 9.1；预发布需风险评估 |
+
+### 许可详情
+
+**valkey-json RapidJSON 依赖：**
+- RapidJSON (https://github.com/Tencent/rapidjson) 采用 MIT 许可，头文件唯一库，无外部 C++ 依赖
+- 许可证验证：https://github.com/Tencent/rapidjson 仓库明确标识 "Licensed under the MIT License"
+
+**valkey-bloom Rust 依赖：**
+根据 Cargo.toml（已验证），主要依赖：
+- `valkey-module` / `valkey-module-macros`（Valkey 官方，BSD-3-Clause 同源）
+- `bloomfilter` (3.0.1)：需二次验证许可（MIT / Apache-2.0）
+- `lazy_static` / `serde` / `bincode` / `libc`：均为 MIT / Apache-2.0 生态标准库
+
+**valkey-search C++ 依赖：**
+根据 README，CMake 依赖为系统开发工具（GCC/Clang、OpenSSL、systemd 开发库等）；无已知专有或 GPL 依赖。OpenSSL 采用 Apache-2.0 / BSD，systemd 采用 LGPL-2.1+（仅头文件集成）。
+
+### 未核实项
+
+1. valkey-json 与 valkey-search 模块 ABI 是否以 `valkeymodule.h` 为基础（假设是，待代码审查确认）
+2. valkey-bloom 在 Valkey 9.1 上是否可编译（版本声称为 8.x，可能需小改动或标准库更新）
+3. 三个模块在 9.1.3 数据面上的集成测试覆盖（功能正确性、RDB 序列化向前兼容）
+
+## 决策
+
+### 决策：三个模块均纳入
+
+- **valkey-json** 1.0.3：JSON 文档存储与 JSONPath 查询。
+- **valkey-search** 固定 1.2.1（稳定，兼容 Valkey ≥9.0.1）：向量搜索与二级索引。不使用 1.3.0-rc2；1.3.0 正式版发布后另立评审再升级。
+- **valkey-bloom** 1.0.1：布隆过滤器。上游仅声明支持 Valkey 8.0/8.1，纳入以下列门禁为前提：
+  1. 在 Valkey 9.1 上编译并通过其全部测试与本仓库模块验收（见 CLAUDE.md「扩展数据类型模块」）；
+  2. 逐一核对其 Rust 依赖（含 `bloomfilter` 等 crate）许可，仅限 MIT / BSD / Apache-2.0；
+  3. 若需适配，只能以 `dataplane/patches/` 下可复现 patch 的形式提供，不得手改。
+  任一门禁未通过，则该模块不进入发布包，不影响另外两个模块。
+
+建议实施顺序：valkey-json → valkey-search → valkey-bloom。
+
+## 改名流程与边界
+
+沿用 ADR 0001 的改名原则：「给人看的字」改名，「给程序读的字」保留上游值。
+
+### 各模块的改名适用性
+
+| 变更点 | 改名范围 | 模块适用 | 规则 |
+| --- | --- | --- | --- |
+| 二进制模块文件名 | `valkey-json.so` → `sycache-json.so` 等 | json、search | 不改；保持 `valkey-json.so` 原名（模块加载器按字面匹配） |
+| 命令名 | `JSON.*`、`FT.*` 等 | json、search | **不改**；命令语义由数据面协议保证，客户端按字面调用 |
+| INFO 模块字段 | `info modules` 中模块名 | json、search、bloom | 模块 ABI 字段保留上游值（如 `name: "json"`）；补充 sycache 品牌字段走控制面 |
+| 模块加载日志 | "loaded module" 后的模块名 | json、search、bloom | 保留上游值 |
+| RDB 数据类型 ID | 模块的内部类型识别码 | json、search、bloom | **不改**；RDB 格式由模块定义，互通与向前兼容依赖它 |
+| 产品级 UI 展示 | 控制台中模块能力的分类名 | json、search | sycache 品牌化：「JSON 存储」「向量搜索」等（不涉及代码） |
+| 文档与品牌文案 | 规格书、README、关于页 | json、search、bloom | 沿用 「sycache 集成 Valkey JSON 模块」表述（见品牌规则） |
+
+**核心原则：**
+- 模块命令、RDB 格式、模块 ABI 符号保持不变 → sycache 用户可用标准客户端
+- 产品层面的品牌化（文案、UI、打包描述）由控制面与部署文档承载
+
+## 构建与打包思路
+
+### 编译与模块独立性
+
+```
+dataplane/modules/
+├── json/
+│   ├── Makefile / build.sh （valkey-json 上游改造）
+│   └── patch/ （暂无）
+├── search/
+│   ├── Makefile / build.sh （valkey-search 上游改造）
+│   └── patch/ （暂无）
+└── (bloom/ - 后续)
+
+make 阶段：
+  1. dataplane/build-sycache.sh 调用 sycache-server 编译
+  2. 顺序编译 modules/{json,search}/
+  3. 将 *.so 输出到 dataplane/modules/dist/
+```
+
+### 加载与模块白名单
+
+- sycache.conf 新增 `modules` 配置段（或通过 CONFIG SET）
+- 默认不加载任何模块（白名单机制）
+- 用户/operator 显式启用：`loadmodule /path/to/sycache-json.so`
+- 打包时可选：安装包含 `--enable-modules=json,search` 变体
+
+### 版本与 SBOM
+
+- dataplane/versions.yaml 新增 `modules` 章节：
+
+```yaml
+current: 0.1.0
+
+releases:
+  - product: 0.1.0
+    upstream: valkey 9.1.3
+    modules:
+      - name: json
+        version: 1.0.3
+        upstream_url: https://github.com/valkey-io/valkey-json/releases/tag/v1.0.3
+      - name: search
+        version: 1.2.1
+        upstream_url: https://github.com/valkey-io/valkey-search/releases/tag/v1.2.1
+    cves: []
+```
+
+- SBOM 中增补模块及其 RapidJSON 等依赖的 SPDX 记录
+
+## 授权与 ACL 影响
+
+### 管理账号权限审查
+
+根据 CLAUDE.md agent 与安全规则，新增命令需评估是否落入管理禁令：
+
+| 命令类别 | JSON 模块 | Search 模块 | 结论 |
+| --- | --- | --- | --- |
+| 数据写入 (`JSON.SET`、`FT.CREATE` 等) | 数据面命令，无问题 | 数据面命令，无问题 | 允许 ACL 中 `+@write` 涵盖 |
+| 执行系统命令 | 无 | 无 | 允许 |
+| 读取 value | JSON.GET（数据读取，非管理命令） | FT.GET（数据读取） | 允许用户 ACL，不限于管理账号 |
+
+### Web 命令行（ExecCommand）拒绝清单
+
+新增命令无需特别限制（JSON/Search 都是数据操作，无执行系统命令能力）。现有拒绝清单保持不变。
+
+### ACL 测试用例
+
+添加到 `test/compat/acl_*` 套件：
+- `JSON.*` 命令在不同 ACL 等级下的行为
+- `FT.*` 索引创建、查询、删除的权限隔离
+
+## 构建与 CI 验证策略
+
+### 本地验收（`make ci`）
+
+新增检查项：
+1. 模块构建：`make modules` 通过，输出 `.so` 文件
+2. 模块加载：sycache-server 启动时成功 `loadmodule` 各模块
+3. 功能测试：
+   - valkey-json: 基础 `JSON.SET/GET/DEL` 与 JSONPath 查询
+   - valkey-search: 向量索引创建、增删查，与上游 1.2.1 Tcl 套件对标
+4. RDB 往返：模块数据写入后 `BGSAVE`，重启后数据完整
+5. 复制与持久化：主从同步、哨兵切换、集群迁槽中的模块数据一致性
+
+### GitHub Actions 流程
+
+- 模块构建与单元测试：PR 路径触发（`dataplane/modules/**`）
+- 完整集成与上游套件：手动或 `v*` 标签触发（保持现状）
+
+### 上游兼容性追踪
+
+- 记录 valkey-json 1.0.3、valkey-search 1.2.1/1.3.0 与 Valkey 9.1.3 的已知不兼容项（如有）到 `test/upstream/known-diff.txt`
+- 模块官方更新时走 ADR 小版本或评审流程
+
+## 风险与未决问题
+
+### 已识别风险
+
+1. **valkey-bloom 兼容性**：版本声称仅 8.0/8.1，9.1 编译/运行未验证。
+   - 缓解：纳入前必须通过上述三项门禁，未通过则不进入发布包。
+
+2. **预发布 valkey-search 1.3.0-rc2**：RC 版本可能有突破性变化。
+   - 缓解：建议产品版 0.1.0 基于 1.2.1 LTS；1.3.0 GA 后可升级。
+
+3. **第三方 Rust 依赖许可**：`bloomfilter` 等 crate 许可未逐一验证。
+   - 缓解：bloom 纳入前逐一核对 Rust 依赖许可（门禁 2）；json 无 Rust 依赖，search 为 C++。
+
+4. **RDB 格式演进**：模块新增命令可能改变 RDB 数据类型 ID。
+   - 缓解：与模块上游同步版本固定；迁移工具需按模块版本检测并转换。
+
+### 未决问题
+
+1. 模块参数热配置：CONFIG SET 对某些模块参数（如 JSON 最大路径深度、Search 索引粒度）是否生效，需代码审查。
+2. 模块内存计数：sycache INFO memory 中是否包含模块数据的 `used_memory`；否则需补充模块级别的 memory audit。
+3. 集群槽迁移中的模块数据：Search 索引是否支持 DUMP/RESTORE 或需要通过 SCAN 重建。
+4. 许可证作为产品交付物：SBOM、NOTICE、安装包内是否需包含各模块的 LICENSE 文本。
+
+## 拟议的 CLAUDE.md 规则扩展
+
+### 新增章节：扩展数据类型模块
+
+#### 模块许可与纳入
+
+- 新增依赖模块必须采用 BSD-3-Clause / Apache-2.0 / MIT 许可（同主产品需求）。
+- 第三方 C/C++/Rust 依赖的许可必须经过审查，不得包含 RSAL / SSPL / AGPL / GPL 递归依赖。
+- 纳入决策与许可审查结果必须记录于 docs/adr/000X-extension-modules.md；每个模块版本变化需补充已知兼容性问题到 `test/upstream/known-diff.txt`。
+
+#### 改名与协议
+
+- 模块命令名、RDB 数据类型 ID、模块 ABI 符号保留上游值，不改。
+- 模块加载日志、INFO modules 字段保留上游名字，不改。
+- 产品文档和 UI 中对模块能力的描述可品牌化（如「sycache JSON 存储」），但严禁改动代码中的字符串字面量和模块内部标识符。
+- 模块 patch（如适配 Valkey 9.1）走与数据面同一流程：`dataplane/patches/000X-module-compat-*.patch`，可复现且与规则同提交。
+
+#### ACL 与安全
+
+- 模块新增命令纳入 sycache agent 的管理账号 ACL 评估（同 CLAUDE.md 现有规则）。
+- 如模块涉及脚本执行或危险操作，需单独加入 Web 命令行（ExecCommand）的拒绝清单。
+- 模块 module-level 的参数与配置必须支持 CONFIG REWRITE 持久化（无模块 reload 能力下）。
+
+#### 测试与验收
+
+- 模块首次纳入需通过的检查项：
+  1. `make modules` 编译成功，.so 输出可用。
+  2. sycache-server `--loadmodule` 加载成功，无崩溃或内存泄漏。
+  3. 模块基础功能（创建、读写、删除数据）单测通过。
+  4. RDB 往返测试：模块数据 BGSAVE → 重启 → 数据完整。
+  5. 复制与集群：主从同步、哨兵切换、集群迁槽中的模块数据一致性。
+  6. 客户端兼容性：标准 Redis 客户端能调用模块命令并获取预期结果。
+
+- 每个 PR 需附可运行的模块测试命令（同 CLAUDE.md 现有规则）。
+
+#### 版本与 SBOM
+
+- dataplane/versions.yaml 新增 `modules` 章节，记录纳入的模块及版本。
+- SBOM 中必须包含模块及其直接第三方依赖的许可证。
+- GitHub Actions 发布产物需包含各模块的 LICENSE 文本副本。
+
+---
+
+**后续步骤：**
+1. ~~本 ADR 架构评审与批准~~ 已完成。
+2. ~~更新 CLAUDE.md~~ 已完成。
+3. 启动 dataplane/modules/ 目录初始化，按 json → search → bloom 顺序适配。
+4. 本地 `make ci` 增补模块验证流程。
