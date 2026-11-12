@@ -1,6 +1,7 @@
 name: dataplane
 
-# 只手动触发（Actions 页面 Run workflow）或推送 v* 标签时运行，日常验证在本地执行 `make ci`。
+# 触发：手动（Actions 页面 Run workflow）、推送 v* 标签，以及改动数据面相关路径的 PR（自动）。
+# 上游 Tcl 测试集耗时长，只在手动勾选时运行。
 on:
   workflow_dispatch:
     inputs:
@@ -10,6 +11,14 @@ on:
         default: false
   push:
     tags: ["v*"]
+  pull_request:
+    paths:
+      - "dataplane/**"
+      - "test/**"
+      - "scripts/**"
+      - "security/**"
+      - "Makefile"
+      - ".github/workflows/dataplane.yml"
 
 permissions:
   contents: read
