@@ -7,6 +7,6 @@
 # - 版本与标签必须与 dataplane/versions.yaml 中的 modules 章节一致。
 # - commit 或 sha256 取自上游官方发布标签，由 gh api 或 git ls-remote 获取。
 #
-json	1.0.3	https://github.com/valkey-io/valkey-json.git	v1.0.3	BSD-3-Clause	c839dcccc3570d24f2764c7025ca4cb8698e4ab6
-search	1.2.1	https://github.com/valkey-io/valkey-search.git	v1.2.1	BSD-3-Clause	788e8c90063abab69d0d3fff32206f8491c633ca
-bloom	1.0.1	https://github.com/valkey-io/valkey-bloom.git	v1.0.1	BSD-3-Clause	43b4e704bc8d6bd5f65529c8bd7e8488f2d54080
+json	1.0.3	https://github.com/valkey-io/valkey-json.git	1.0.3	BSD-3-Clause	c839dcccc3570d24f2764c7025ca4cb8698e4ab6
+search	1.2.1	https://github.com/valkey-io/valkey-search.git	1.2.1	BSD-3-Clause	788e8c90063abab69d0d3fff32206f8491c633ca
+bloom	1.0.1	https://github.com/valkey-io/valkey-bloom.git	1.0.1	BSD-3-Clause	43b4e704bc8d6bd5f65529c8bd7e8488f2d54080
