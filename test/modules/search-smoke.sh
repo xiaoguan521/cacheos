@@ -36,7 +36,7 @@ trap cleanup EXIT
 fail() {
   echo "  ✗ $*" >&2
   for f in "$TMPDIR_TEST"/*.log; do
-    [[ -f "$f" ]] && { echo "--- $(basename "$f") (末尾 40 行) ---"; tail -40 "$f"; }
+    [[ -f "$f" ]] && { echo "--- $(basename "$f") (末尾 40 行) ---"; grep -v "Defined Info Field" "$f" | tail -60 | cut -c1-300; }
   done
   exit 1
 }
@@ -171,7 +171,10 @@ for i in $(seq 1 60); do
   if vcmd "$PORT_REPLICA" INFO replication | grep -q 'master_link_status:up'; then linked=1; break; fi
   sleep 0.5
 done
-[[ $linked -eq 1 ]] || fail "从实例未能与主实例建立链接"
+if [[ $linked -ne 1 ]]; then
+  echo "--- 从实例 INFO replication ---"; vcmd "$PORT_REPLICA" INFO replication || true
+  fail "从实例未能与主实例建立链接"
+fi
 echo "  ✓ 复制链接已建立"
 vcmd "$PORT_MASTER" HSET doc:4 embedding @vec:0,0,0,1 category B >/dev/null
 knn_expect "$PORT_REPLICA" '*=>[KNN 1 @embedding $q]' doc:4 "0,0,0,0.9" \
