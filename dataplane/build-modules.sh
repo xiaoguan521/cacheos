@@ -16,6 +16,9 @@ OUT_DIR="$HERE/../dist"
 CACHE_DIR="${CACHE_DIR:-$HERE/modules/build}"
 SYCACHE_SRC=""  # 可指定已检出的 sycache 源码
 
+# 从 dataplane/UPSTREAM 读取上游版本
+source "$HERE/UPSTREAM"  # 载入 UPSTREAM_TAG, UPSTREAM_COMMIT, UPSTREAM_VERSION 等
+
 # 构建参数
 MODULES_TO_BUILD=""
 while getopts "m:o:s:" opt; do
@@ -119,8 +122,17 @@ build_module() {
       echo "  使用本地 Valkey 头文件: $VALKEY_MODULE_H_PATH"
     fi
 
-    # 设置编译版本（为了 valkey-json/search 能找到正确的头文件）
-    export SERVER_VERSION="9.1"
+    # 上游 build.sh 只能按分支名（如 9.1）克隆 Valkey 头文件，无法直接指定标签。
+    # 因此构建前校验该分支当前指向的提交必须等于 dataplane/UPSTREAM 锁定的提交，
+    # 不一致就失败，避免头文件悄悄漂移到比锁定版本更新的代码。
+    export SERVER_VERSION="${UPSTREAM_TAG%.*}"  # 9.1.3 -> 9.1
+    local branch_head
+    branch_head=$(git ls-remote "$UPSTREAM_GIT" "refs/heads/$SERVER_VERSION" | cut -f1)
+    if [[ "$branch_head" != "$UPSTREAM_COMMIT" ]]; then
+      echo "ERROR: 上游分支 $SERVER_VERSION 当前提交 ${branch_head:-未知} 与锁定的 $UPSTREAM_COMMIT 不一致，模块头文件无法固定，请先更新 dataplane/UPSTREAM 或模块构建方式" >&2
+      return 1
+    fi
+    echo "  头文件分支 $SERVER_VERSION 与锁定提交一致: $UPSTREAM_COMMIT"
 
     # 运行 build.sh --release
     cd "$src_dir"
