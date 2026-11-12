@@ -1,9 +1,9 @@
 // Package pkgsig 是数据面 / agent 升级包的厂商签名（规格书 12.6）。
 //
-// 升级包签名密钥与 License 签名密钥分开（kid 前缀 cacheos-pkg-），同样只在离线签名机上以口令加密文件存在。
+// 升级包签名密钥与 License 签名密钥分开（kid 前缀 etos-pkg-），同样只在离线签名机上以口令加密文件存在。
 // 签名对象带域分隔前缀，与 License、吊销列表的签名互不可替换：
 //
-//	"CACHEOS-PKG-v1\n" + name + "\n" + version + "\n" + arch + "\n" + variant + "\n" + sha256(包)
+//	"ETOS-PKG-v1\n" + name + "\n" + version + "\n" + arch + "\n" + variant + "\n" + sha256(包)
 //
 // 校验方：控制台导入版本库时、wrapper 以 root 使用升级包之前。
 package pkgsig
@@ -20,14 +20,14 @@ import (
 )
 
 // Format 是签名文件格式标识。
-const Format = "cacheos-pkg-sig-1"
+const Format = "etos-pkg-sig-1"
 
-const domain = "CACHEOS-PKG-v1\n"
+const domain = "ETOS-PKG-v1\n"
 
 var (
 	VersionRe = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.]+)?$`)
-	KIDRe     = regexp.MustCompile(`^cacheos-pkg-[0-9]{4}(-[0-9a-z]{1,8})?$`)
-	kidAnyRe  = regexp.MustCompile(`^cacheos-(pkg|demo-pkg|ci-pkg)-[0-9a-z-]{1,20}$`)
+	KIDRe     = regexp.MustCompile(`^etos-pkg-[0-9]{4}(-[0-9a-z]{1,8})?$`)
+	kidAnyRe  = regexp.MustCompile(`^etos-(pkg|demo-pkg|ci-pkg)-[0-9a-z-]{1,20}$`)
 
 	ErrSignature = errors.New("package signature invalid")
 )
@@ -117,7 +117,7 @@ func Verify(s *Sig, data []byte, keys map[string]ed25519.PublicKey) error {
 var ciKey string
 
 // CIKeyID 是 CI 临时升级包签名密钥的编号。
-const CIKeyID = "cacheos-ci-pkg-ephemeral"
+const CIKeyID = "etos-ci-pkg-ephemeral"
 
 // Keys 返回内置的升级包签名公钥（正式公钥在 keys.go，演示公钥只在非 release 构建中）。
 func Keys() map[string]ed25519.PublicKey {

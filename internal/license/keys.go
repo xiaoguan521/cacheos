@@ -15,7 +15,13 @@ import (
 // 绝不进入代码仓库、CI 或授权后台。新增或轮换密钥的步骤见 docs/license-ops.md。
 //
 // 演示密钥在 keys_demo.go 中，正式版本（-tags release）不包含它。
-var builtinKeys = map[string]string{}
+//
+// 2026-11-06 密钥仪式：etos-prod-2027 为安装授权主密钥，-b 为备用密钥。
+// 这里只内置公钥；对应私钥只保存在离线签名机上。
+var builtinKeys = map[string]string{
+	"etos-prod-2027":   "yOMQJB+/TEePp8sZxvA5D8D2C6RVI9/ki4yrY1RKOSc=",
+	"etos-prod-2027-b": "67ObZdr/97DZ6Q250AYJ5u8MRXBzDqIwZ0HUy44jKDs=",
+}
 
 // revokedKIDs 是随控制台版本内置的已吊销签名密钥（私钥泄露或退役后加入，规格书 8.7）。
 // 这里的 kid 即使出现在 builtinKeys 中也不会进入公钥环。
