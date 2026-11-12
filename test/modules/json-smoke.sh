@@ -39,7 +39,7 @@ fi
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 MODULES_DIR="$ROOT/dataplane/modules"
-JSON_SO="$MODULES_DIR/dist/valkey-json.so"
+JSON_SO="${JSON_SO:-$MODULES_DIR/dist/valkey-json.so}"
 
 # 临时工作目录
 TMPDIR_TEST=$(mktemp -d)

@@ -90,7 +90,7 @@ jobs:
           SYCACHE_BIN: ${{ env.SYCACHE_BIN }}
         run: |
           set -euo pipefail
-          test/modules/json-smoke.sh "$SYCACHE_BIN"
+          JSON_SO="$PWD/dist/valkey-json.so" test/modules/json-smoke.sh "$SYCACHE_BIN"
           echo "✓ 烟雾测试通过"
 
       - name: Upload artifacts
