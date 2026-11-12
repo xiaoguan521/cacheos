@@ -87,13 +87,28 @@ jobs:
           make brand
           echo "✓ 模块清单与品牌检查通过"
 
+      - name: Restore built module cache
+        id: modcache
+        uses: actions/cache/restore@v4
+        with:
+          path: dist/valkey-*.so
+          key: module-${{ inputs.module || 'json' }}-${{ hashFiles('dataplane/modules/MODULES', 'dataplane/build-modules.sh', 'dataplane/UPSTREAM') }}
+
       - name: Build module (${{ inputs.module || 'json' }})
+        if: steps.modcache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           module="${{ inputs.module || 'json' }}"
           dataplane/build-modules.sh -m "$module" -o dist
           echo "✓ 模块 $module 构建完成"
           ls -lh dist/valkey-*.so
+
+      - name: Save built module cache
+        if: steps.modcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: dist/valkey-*.so
+          key: module-${{ inputs.module || 'json' }}-${{ hashFiles('dataplane/modules/MODULES', 'dataplane/build-modules.sh', 'dataplane/UPSTREAM') }}
 
       - name: Run smoke tests
         env:

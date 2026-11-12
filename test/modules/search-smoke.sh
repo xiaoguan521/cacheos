@@ -1,359 +1,192 @@
 #!/usr/bin/env bash
 # valkey-search 1.2.1 模块烟雾测试（ADR 0002）。
 #
-# 用法：test/modules/search-smoke.sh [<sycache-server-binary>]
+# 用法：SEARCH_SO=<path> test/modules/search-smoke.sh <sycache-server-binary>
 #
-# 测试项：
-#   1. 启动 sycache-server 并加载 valkey-search.so 模块
-#   2. 基础功能：FT.CREATE（带向量字段）、HSET、FT.SEARCH（KNN 查询）
-#   3. FT.INFO 验证索引信息
-#   4. RDB 往返：BGSAVE → 重启 → 数据/索引完整性（如支持）
-#   5. 主从复制一致性（从实例也加载模块，主上 HSET 后从上 FT.SEARCH 能查到）
+# 严格模式：任何一项不符合预期都直接失败，不降级为警告。
+#   1. 加载模块
+#   2. FT.CREATE（VECTOR HNSW + TAG）、HSET、FT.SEARCH KNN 的最近邻顺序、TAG 过滤的混合查询
+#   3. FT.INFO 看到索引
+#   4. 主从复制：从实例也加载模块，主上新增文档后，从上 KNN 能查到
+#   5. RDB 往返：BGSAVE → 重启 → 索引与数据仍可 KNN 查询
 #
-# 注意：
-#   - valkey-search 1.2.1 的 RDB 持久化行为以上游实际为准
-#   - 如索引不随 RDB 持久化，测试会如实记录
-#   - 复制支持参考上游文档
-#
+# 命令通过内嵌 python3 的最小 RESP 客户端发送，以便传递二进制向量；
+# 参数写成 @vec:a,b,c,d 会被转换为 float32 小端字节串。
 set -euo pipefail
 
 SYCACHE_BIN="${1:-}"
-if [[ -z "$SYCACHE_BIN" ]]; then
-  # 尝试常见的位置
-  for path in /home/atwasoft/sycache/bin/sycache-server /usr/local/bin/sycache-server; do
-    if [[ -x "$path" ]]; then
-      SYCACHE_BIN="$path"
-      break
-    fi
-  done
-fi
-
-SYCACHE_CLI=""
-if [[ -n "$SYCACHE_BIN" ]]; then
-  SYCACHE_CLI="${SYCACHE_BIN%sycache-server}/redis-cli"
-  if [[ ! -x "$SYCACHE_CLI" ]]; then
-    SYCACHE_CLI="${SYCACHE_BIN%sycache-server}/sycache-cli"
-  fi
-fi
-# 备用：直接用 redis-cli
-if [[ -z "$SYCACHE_CLI" ]] || [[ ! -x "$SYCACHE_CLI" ]]; then
-  SYCACHE_CLI="redis-cli"
-fi
-
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-MODULES_DIR="$ROOT/dataplane/modules"
-SEARCH_SO="${SEARCH_SO:-$MODULES_DIR/dist/valkey-search.so}"
+SEARCH_SO="${SEARCH_SO:-$ROOT/dataplane/modules/dist/valkey-search.so}"
 
-# 临时工作目录
 TMPDIR_TEST=$(mktemp -d)
-trap "rm -rf '$TMPDIR_TEST'" EXIT
-
 PORT_MASTER=7381
-PORT_SLAVE=7382
-RDB_FILE="$TMPDIR_TEST/dump.rdb"
-LOG_FILE="$TMPDIR_TEST/server.log"
+PORT_REPLICA=7382
+PIDS=()
 
-# 检查依赖
-check_deps() {
-  echo "[1/8] 检查依赖..."
-
-  if [[ ! -f "$SYCACHE_BIN" ]]; then
-    echo "✗ sycache-server 不存在: $SYCACHE_BIN"
-    return 1
-  fi
-
-  if [[ ! -f "$SEARCH_SO" ]]; then
-    echo "✗ valkey-search.so 不存在: $SEARCH_SO"
-    echo "  请先运行: dataplane/build-modules.sh -m search"
-    return 1
-  fi
-
-  if ! command -v "$SYCACHE_CLI" >/dev/null 2>&1 && ! command -v redis-cli >/dev/null 2>&1; then
-    echo "✗ 未找到 redis-cli 或 sycache-cli"
-    return 1
-  fi
-
-  echo "✓ 依赖检查通过"
-  return 0
-}
-
-# 启动主实例
-start_master() {
-  echo "[2/8] 启动主实例 (端口 $PORT_MASTER)..."
-
-  "$SYCACHE_BIN" \
-    --port "$PORT_MASTER" \
-    --loadmodule "$SEARCH_SO" \
-    --dir "$TMPDIR_TEST" \
-    --dbfilename "dump.rdb" \
-    --logfile "$LOG_FILE" \
-    --loglevel notice \
-    --daemonize no \
-    --save "" \
-    > "$TMPDIR_TEST/master.log" 2>&1 &
-
-  local pid=$!
-  sleep 2  # 等待启动并模块加载
-
-  if ! kill -0 $pid 2>/dev/null; then
-    echo "✗ sycache-server 启动失败 (PID: $pid)"
-    cat "$TMPDIR_TEST/master.log"
-    return 1
-  fi
-
-  echo "✓ 主实例启动成功 (PID: $pid)"
-  echo "$pid" > "$TMPDIR_TEST/master.pid"
-  return 0
-}
-
-# 停止实例
-stop_instance() {
-  local pid_file="$1"
-  if [[ -f "$pid_file" ]]; then
-    local pid=$(cat "$pid_file")
-    kill $pid 2>/dev/null || true
-    sleep 1
-  fi
-}
-
-# 模块加载验证
-test_module_loaded() {
-  echo "[3/8] 验证模块加载..."
-
-  result=$("$SYCACHE_CLI" -p "$PORT_MASTER" INFO modules 2>&1)
-  if [[ ! "$result" =~ "search" ]]; then
-    echo "✗ 模块未在 INFO modules 中: $result"
-    return 1
-  fi
-  echo "  ✓ 模块已正确加载"
-
-  return 0
-}
-
-# 基础功能测试：创建索引、写入数据、KNN 查询
-test_basic_commands() {
-  echo "[4/8] 测试基础命令..."
-
-  # 创建一个简单的索引（文本和标签字段）
-  # FT.CREATE <index> ON HASH [SCHEMA] <field> <type> ...
-  result=$("$SYCACHE_CLI" -p "$PORT_MASTER" \
-    FT.CREATE myindex ON HASH \
-    SCHEMA \
-      name TEXT \
-      category TAG \
-    2>&1)
-  if [[ ! "$result" =~ "OK" ]]; then
-    echo "✗ FT.CREATE 失败: $result"
-    return 1
-  fi
-  echo "  ✓ FT.CREATE 成功（创建文本和标签索引）"
-
-  # 写入几条 HASH 数据
-  "$SYCACHE_CLI" -p "$PORT_MASTER" \
-    HSET doc1 name "Alice" category "A" \
-    > /dev/null 2>&1 || true
-
-  "$SYCACHE_CLI" -p "$PORT_MASTER" \
-    HSET doc2 name "Bob" category "B" \
-    > /dev/null 2>&1 || true
-
-  "$SYCACHE_CLI" -p "$PORT_MASTER" \
-    HSET doc3 name "Charlie" category "A" \
-    > /dev/null 2>&1 || true
-
-  echo "  ✓ HSET 写入 3 条数据成功"
-
-  # 尝试基础搜索查询
-  result=$("$SYCACHE_CLI" -p "$PORT_MASTER" \
-    FT.SEARCH myindex "Alice" \
-    2>&1) || true
-
-  if [[ "$result" =~ "Alice" ]] || [[ "$result" =~ "doc1" ]] || [[ "$result" == "1" ]]; then
-    echo "  ✓ FT.SEARCH 返回结果"
-  else
-    echo "  ⚠ FT.SEARCH 返回: $result（可能需要特定参数，但命令已执行）"
-  fi
-
-  echo "  ✓ 基础命令测试完成"
-  return 0
-}
-
-# FT.INFO 验证索引信息
-test_ft_info() {
-  echo "[5/8] 测试 FT.INFO..."
-
-  result=$("$SYCACHE_CLI" -p "$PORT_MASTER" FT.INFO myindex 2>&1)
-  if [[ ! "$result" =~ "myindex" ]]; then
-    echo "✗ FT.INFO 失败或索引不存在: $result"
-    return 1
-  fi
-  echo "  ✓ FT.INFO 返回索引信息"
-
-  return 0
-}
-
-# RDB 往返测试
-test_rdb_roundtrip() {
-  echo "[6/8] 测试 RDB 往返..."
-
-  # 触发 BGSAVE
-  "$SYCACHE_CLI" -p "$PORT_MASTER" BGSAVE > /dev/null
-  sleep 2  # 等待 RDB 保存
-
-  # 验证 RDB 文件存在
-  if [[ ! -f "$RDB_FILE" ]]; then
-    echo "✗ RDB 文件未生成: $RDB_FILE"
-    return 1
-  fi
-  echo "  ✓ RDB 文件生成成功"
-
-  # 关闭主实例
-  stop_instance "$TMPDIR_TEST/master.pid"
+cleanup() {
+  for pid in "${PIDS[@]:-}"; do
+    [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
+  done
   sleep 1
+  rm -rf "$TMPDIR_TEST"
+}
+trap cleanup EXIT
 
-  # 重启主实例
-  "$SYCACHE_BIN" \
-    --port "$PORT_MASTER" \
-    --loadmodule "$SEARCH_SO" \
-    --dir "$TMPDIR_TEST" \
-    --dbfilename "dump.rdb" \
-    --logfile "$LOG_FILE" \
-    > "$TMPDIR_TEST/master-restart.log" 2>&1 &
+fail() { echo "  ✗ $*" >&2; exit 1; }
 
-  local pid=$!
-  sleep 2
-
-  if ! kill -0 $pid 2>/dev/null; then
-    echo "✗ 重启 sycache-server 失败"
-    return 1
-  fi
-  echo "$pid" > "$TMPDIR_TEST/master.pid"
-
-  # 验证数据恢复（FT.INFO 能看到索引）
-  result=$("$SYCACHE_CLI" -p "$PORT_MASTER" FT.INFO myindex 2>&1)
-  if [[ ! "$result" =~ "myindex" ]]; then
-    echo "⚠ 警告：RDB 重启后索引未恢复（可能是 search 1.2.1 不支持索引 RDB 持久化）"
-    echo "    但 HASH 数据应该恢复。验证 HASH 数据..."
-    result=$("$SYCACHE_CLI" -p "$PORT_MASTER" HGET doc1 name 2>&1)
-    if [[ "$result" =~ "Alice" ]]; then
-      echo "  ✓ HASH 数据恢复成功（索引需重建）"
-      return 0
-    else
-      echo "✗ HASH 数据未恢复"
-      return 1
-    fi
-  fi
-  echo "  ✓ RDB 往返完成，索引已恢复"
-
-  return 0
+# vcmd <port> <cmd...>：发送一条命令，每个回复元素一行输出；错误回复以 ERR: 开头
+vcmd() {
+  python3 -I - "$@" <<'PY'
+import socket, struct, sys
+port = int(sys.argv[1]); args = sys.argv[2:]
+def enc(a):
+    if a.startswith("@vec:"):
+        vals = [float(x) for x in a[5:].split(",")]
+        return struct.pack("<%df" % len(vals), *vals)
+    return a.encode()
+s = socket.create_connection(("127.0.0.1", port), timeout=10)
+payload = b"*%d\r\n" % len(args)
+for a in args:
+    b = enc(a)
+    payload += b"$%d\r\n" % len(b) + b + b"\r\n"
+s.sendall(payload)
+f = s.makefile("rb")
+out = []
+def read():
+    line = f.readline().rstrip(b"\r\n")
+    t, rest = line[:1], line[1:]
+    if t in (b"+", b":"):
+        out.append(rest.decode())
+    elif t == b"-":
+        out.append("ERR:" + rest.decode())
+    elif t == b"$":
+        n = int(rest)
+        if n < 0:
+            out.append("(nil)")
+        else:
+            data = f.read(n + 2)[:n]
+            out.append(data.decode("latin1") if all(32 <= c < 127 for c in data) else "<bin>")
+    elif t == b"*":
+        for _ in range(max(int(rest), 0)):
+            read()
+    elif t in (b"%", b"~"):
+        for _ in range(int(rest) * (2 if t == b"%" else 1)):
+            read()
+    elif t == b"_":
+        out.append("(nil)")
+    else:
+        out.append("?:" + line.decode("latin1"))
+read()
+print("\n".join(out))
+PY
 }
 
-# 主从复制测试
-test_replication() {
-  echo "[7/8] 测试主从复制..."
-
-  # 启动从实例（独立端口）
-  "$SYCACHE_BIN" \
-    --port "$PORT_SLAVE" \
-    --loadmodule "$SEARCH_SO" \
-    --dir "$TMPDIR_TEST" \
-    --dbfilename "dump-slave.rdb" \
-    --logfile "$LOG_FILE" \
-    --loglevel notice \
-    --daemonize no \
-    --save "" \
-    > "$TMPDIR_TEST/slave.log" 2>&1 &
-
-  local slave_pid=$!
-  sleep 2
-
-  if ! kill -0 $slave_pid 2>/dev/null; then
-    echo "✗ 从实例启动失败 (PID: $slave_pid)"
-    cat "$TMPDIR_TEST/slave.log"
-    return 1
-  fi
-  echo "$slave_pid" > "$TMPDIR_TEST/slave.pid"
-  echo "  ✓ 从实例启动成功 (端口 $PORT_SLAVE, PID: $slave_pid)"
-
-  # 在从实例上执行 REPLICAOF 建立复制关系
-  result=$("$SYCACHE_CLI" -p "$PORT_SLAVE" REPLICAOF 127.0.0.1 "$PORT_MASTER" 2>&1)
-  if [[ ! "$result" =~ "OK" ]]; then
-    echo "✗ REPLICAOF 失败: $result"
-    return 1
-  fi
-  echo "  ✓ REPLICAOF 成功"
-
-  # 等待从实例建立连接（带超时轮询）
-  local max_retries=30
-  local retry=0
-  while [[ $retry -lt $max_retries ]]; do
-    result=$("$SYCACHE_CLI" -p "$PORT_SLAVE" INFO replication 2>&1)
-    if [[ "$result" =~ "master_link_status:up" ]]; then
-      echo "  ✓ 复制链接已建立"
-      break
-    fi
-    retry=$((retry + 1))
+wait_ready() {
+  local port="$1" i
+  for i in $(seq 1 60); do
+    if [[ "$(vcmd "$port" PING 2>/dev/null || true)" == "PONG" ]]; then return 0; fi
     sleep 0.5
   done
-
-  if [[ $retry -ge $max_retries ]]; then
-    echo "✗ 等待从实例连接超时"
-    return 1
-  fi
-
-  # 在主实例上新增 HASH（search 索引应该使用已有的 HASH）
-  "$SYCACHE_CLI" -p "$PORT_MASTER" \
-    HSET doc_rep1 name "David" category "C" \
-      embedding "$(printf '\\x00\\x00\\x00\\x3f\\x00\\x00\\x00\\x3f\\x00\\x00\\x00\\x3f\\x00\\x00\\x00\\x3f')" \
-    > /dev/null
-  sleep 1
-
-  # 在从实例上验证数据已复制
-  result=$("$SYCACHE_CLI" -p "$PORT_SLAVE" HGET doc_rep1 name 2>&1)
-  if [[ "$result" =~ "David" ]]; then
-    echo "  ✓ 从实例收到新增数据"
-  else
-    echo "✗ 从实例数据复制失败: $result"
-    return 1
-  fi
-
-  # 清理从实例
-  stop_instance "$TMPDIR_TEST/slave.pid"
-  sleep 1
-
-  echo "  ✓ 主从复制测试完成"
-  return 0
+  return 1
 }
 
-# 清理
-cleanup() {
-  echo "[8/8] 清理..."
-  stop_instance "$TMPDIR_TEST/master.pid"
-  stop_instance "$TMPDIR_TEST/slave.pid"
-  echo "✓ 清理完成"
+start_instance() { # <port> <name> [extra args...]
+  local port="$1" name="$2"; shift 2
+  mkdir -p "$TMPDIR_TEST/$name"
+  "$SYCACHE_BIN" --port "$port" --dir "$TMPDIR_TEST/$name" --dbfilename dump.rdb \
+    --loadmodule "$SEARCH_SO" --save "" --daemonize no "$@" \
+    >"$TMPDIR_TEST/$name.log" 2>&1 &
+  PIDS+=("$!")
+  if ! wait_ready "$port"; then
+    echo "--- $name.log ---"; tail -50 "$TMPDIR_TEST/$name.log"
+    fail "$name 启动或模块加载失败"
+  fi
 }
 
-# 主流程
+# 轮询 KNN 查询，直到输出包含期望的 key（索引回填是异步的）
+knn_expect() { # <port> <query> <expected-first-key> [vec]
+  local port="$1" query="$2" want="$3" vec="${4:-0.9,0.1,0,0}" out i first
+  for i in $(seq 1 40); do
+    out=$(vcmd "$port" FT.SEARCH idx "$query" PARAMS 2 q "@vec:$vec" DIALECT 2 2>&1 || true)
+    first=$(printf '%s\n' "$out" | grep -m1 '^doc:' || true)
+    if [[ "$first" == "$want" ]]; then return 0; fi
+    sleep 0.5
+  done
+  echo "--- 最后一次输出 ---"; printf '%s\n' "$out"
+  return 1
+}
+
 echo "========================================="
 echo "valkey-search 1.2.1 烟雾测试"
 echo "========================================="
 
-all_pass=0
-check_deps || all_pass=1
-[[ $all_pass -eq 0 ]] && start_master || all_pass=1
-[[ $all_pass -eq 0 ]] && test_module_loaded || all_pass=1
-[[ $all_pass -eq 0 ]] && test_basic_commands || all_pass=1
-[[ $all_pass -eq 0 ]] && test_ft_info || all_pass=1
-[[ $all_pass -eq 0 ]] && test_rdb_roundtrip || all_pass=1
-[[ $all_pass -eq 0 ]] && test_replication || all_pass=1
-cleanup
+echo "[1/6] 检查依赖..."
+[[ -x "$SYCACHE_BIN" ]] || fail "sycache-server 不可执行: $SYCACHE_BIN"
+[[ -f "$SEARCH_SO" ]] || fail "模块不存在: $SEARCH_SO"
+command -v python3 >/dev/null || fail "需要 python3"
+echo "  ✓ 依赖检查通过"
+
+echo "[2/6] 启动主实例并确认模块已加载..."
+start_instance "$PORT_MASTER" master
+mods=$(vcmd "$PORT_MASTER" MODULE LIST)
+grep -qi 'search' <<<"$mods" || fail "MODULE LIST 中没有 search: $mods"
+echo "  ✓ 模块已加载"
+
+echo "[3/6] FT.CREATE、写入、KNN 与混合查询..."
+res=$(vcmd "$PORT_MASTER" FT.CREATE idx ON HASH PREFIX 1 doc: SCHEMA \
+  embedding VECTOR HNSW 6 TYPE FLOAT32 DIM 4 DISTANCE_METRIC L2 category TAG)
+[[ "$res" == "OK" ]] || fail "FT.CREATE 失败: $res"
+vcmd "$PORT_MASTER" HSET doc:1 embedding @vec:1,0,0,0 category A >/dev/null
+vcmd "$PORT_MASTER" HSET doc:2 embedding @vec:0,1,0,0 category B >/dev/null
+vcmd "$PORT_MASTER" HSET doc:3 embedding @vec:0,0,1,0 category A >/dev/null
+knn_expect "$PORT_MASTER" '*=>[KNN 2 @embedding $q]' doc:1 || fail "KNN 最近邻不是 doc:1"
+echo "  ✓ KNN 最近邻正确（doc:1）"
+out=$(vcmd "$PORT_MASTER" FT.SEARCH idx '*=>[KNN 2 @embedding $q]' PARAMS 2 q @vec:0.9,0.1,0,0 DIALECT 2)
+second=$(printf '%s\n' "$out" | grep '^doc:' | sed -n 2p)
+[[ "$second" == "doc:2" ]] || fail "KNN 第二近邻应为 doc:2，实际: $second"
+echo "  ✓ KNN 第二近邻正确（doc:2）"
+out=$(vcmd "$PORT_MASTER" FT.SEARCH idx '(@category:{A})=>[KNN 2 @embedding $q]' PARAMS 2 q @vec:0.9,0.1,0,0 DIALECT 2)
+grep -q '^doc:1$' <<<"$out" || fail "TAG 过滤结果缺少 doc:1: $out"
+if grep -q '^doc:2$' <<<"$out"; then fail "TAG=A 的混合查询不应返回 doc:2: $out"; fi
+echo "  ✓ TAG 过滤的混合查询正确"
+
+echo "[4/6] FT.INFO..."
+info=$(vcmd "$PORT_MASTER" FT.INFO idx)
+grep -q 'idx' <<<"$info" || fail "FT.INFO 没有索引 idx: $info"
+echo "  ✓ FT.INFO 返回索引信息"
+
+echo "[5/6] 主从复制..."
+start_instance "$PORT_REPLICA" replica
+res=$(vcmd "$PORT_REPLICA" REPLICAOF 127.0.0.1 "$PORT_MASTER")
+[[ "$res" == "OK" ]] || fail "REPLICAOF 失败: $res"
+linked=0
+for i in $(seq 1 60); do
+  if vcmd "$PORT_REPLICA" INFO replication | grep -q 'master_link_status:up'; then linked=1; break; fi
+  sleep 0.5
+done
+[[ $linked -eq 1 ]] || fail "从实例未能与主实例建立链接"
+echo "  ✓ 复制链接已建立"
+vcmd "$PORT_MASTER" HSET doc:4 embedding @vec:0,0,0,1 category B >/dev/null
+knn_expect "$PORT_REPLICA" '*=>[KNN 1 @embedding $q]' doc:4 "0,0,0,0.9" \
+  || fail "从实例上 KNN 未能查到主上新增的 doc:4（索引或数据未复制）"
+echo "  ✓ 从实例 KNN 查到主上新增的文档"
+
+echo "[6/6] RDB 往返..."
+vcmd "$PORT_MASTER" BGSAVE >/dev/null
+for i in $(seq 1 60); do
+  if vcmd "$PORT_MASTER" INFO persistence | grep -q 'rdb_bgsave_in_progress:0'; then break; fi
+  sleep 0.5
+done
+[[ -s "$TMPDIR_TEST/master/dump.rdb" ]] || fail "RDB 文件未生成"
+vcmd "$PORT_MASTER" SHUTDOWN NOSAVE >/dev/null 2>&1 || true
+sleep 1
+start_instance "$PORT_MASTER" master
+info=$(vcmd "$PORT_MASTER" FT.INFO idx)
+grep -q 'idx' <<<"$info" || fail "重启后索引 idx 未恢复: $info"
+knn_expect "$PORT_MASTER" '*=>[KNN 2 @embedding $q]' doc:1 \
+  || fail "重启后 KNN 查询结果不正确"
+echo "  ✓ 重启后索引与数据恢复，KNN 正确"
 
 echo "========================================="
-if [[ $all_pass -eq 0 ]]; then
-  echo "✓ 所有测试通过"
-  exit 0
-else
-  echo "✗ 测试失败"
-  exit 1
-fi
+echo "✓ 所有测试通过"
