@@ -2,7 +2,8 @@ name: binary-packages
 
 # 商业方案 5.3 的发布构建：在 glibc 2.17 兼容环境中生成
 # sycache 的 tar.gz、RPM、DEB、调试符号包、BUILDINFO、SBOM 与校验清单；
-# 同时把 glibc 2.17 兼容构建环境镜像发布到 GHCR。
+# 同时把 glibc 2.17 兼容构建环境镜像发布到 GHCR，并在版本标签上创建
+# GitHub Release，上传可下载的安装包与全量校验清单。
 #
 # 日常代码门禁由 dataplane.yml / p1-verify.yml 负责；本工作流只负责
 # 可交付的二进制包，避免把宿主机临时构建产物误当成发布包。
@@ -222,6 +223,125 @@ jobs:
             "${tags[@]}" \
             "$image:sha-${GITHUB_SHA}-x86_64" \
             "$image:sha-${GITHUB_SHA}-aarch64"
+
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    name: publish GitHub Release
+    needs: build
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE: ${{ github.ref_name }}
+    steps:
+      - name: Checkout release notes
+        uses: actions/checkout@v4
+
+      - name: Create draft release
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE#v}"
+          if ! gh release view "$RELEASE" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE" \
+              -R "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --draft \
+              --generate-notes \
+              --notes-file docs/release-assets.md \
+              --title "CacheOS $version"
+          fi
+
+      - name: Download package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cacheos-sycache-*
+          path: ${{ runner.temp }}/cacheos-artifacts
+          merge-multiple: false
+
+      - name: Collect release assets and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_dir="$RUNNER_TEMP/cacheos-artifacts"
+          assets="$RUNNER_TEMP/release-assets"
+          mkdir -p "$assets"
+
+          while IFS= read -r -d '' file; do
+            relative="${file#"$source_dir/"}"
+            artifact_name="${relative%%/*}"
+            name="$(basename "$file")"
+            case "$name" in
+              SHA256SUMS)
+                # 每个架构产物都有自己的清单；Release 使用下面重新生成的全量清单。
+                continue
+                ;;
+              BUILDINFO)
+                arch="${artifact_name#cacheos-sycache-}"
+                destination="$assets/BUILDINFO-$arch"
+                ;;
+              *)
+                destination="$assets/$name"
+                ;;
+            esac
+
+            if [[ -e "$destination" ]]; then
+              cmp -s "$file" "$destination" || {
+                echo "duplicate release asset differs: $name" >&2
+                exit 1
+              }
+            else
+              cp "$file" "$destination"
+            fi
+          done < <(find "$source_dir" -type f -print0 | sort -z)
+
+          test -s "$assets/BUILDINFO-x86_64"
+          test -s "$assets/BUILDINFO-aarch64"
+          test -n "$(find "$assets" -maxdepth 1 -type f -name 'sycache-*.tar.gz' -print -quit)"
+          test -n "$(find "$assets" -maxdepth 1 -type f -name 'sycache_*.deb' -print -quit)"
+          test -n "$(find "$assets" -maxdepth 1 -type f -name 'sycache-*.rpm' -print -quit)"
+
+          (
+            cd "$assets"
+            sha256sum -- * | tee SHA256SUMS
+            sha256sum -c SHA256SUMS
+          )
+          ls -lh "$assets"
+
+      - name: Upload release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in "$RUNNER_TEMP/release-assets"/*; do
+            gh release upload "$RELEASE" -R "$GITHUB_REPOSITORY" --clobber "$file"
+          done
+
+      - name: Publish release
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE#v}"
+          if [[ "$version" == *-* ]]; then
+            gh release edit "$RELEASE" -R "$GITHUB_REPOSITORY" \
+              --draft=false --prerelease=true --latest=false
+          else
+            gh release edit "$RELEASE" -R "$GITHUB_REPOSITORY" \
+              --draft=false --prerelease=false --latest=true
+          fi
+
+          {
+            echo "## CacheOS $version"
+            echo
+            echo "Release: https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE"
+            echo
+            echo '### SHA256SUMS'
+            echo
+            echo '```text'
+            cat "$RUNNER_TEMP/release-assets/SHA256SUMS"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   upstream-suite:
     if: inputs.upstream_suite
