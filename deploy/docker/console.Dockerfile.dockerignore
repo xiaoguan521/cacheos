@@ -1,0 +1,9 @@
+.git
+dist
+upstream
+upstream-build
+test
+docs
+web/node_modules
+web/dist
+web/portal/dist

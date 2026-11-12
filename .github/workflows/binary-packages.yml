@@ -224,6 +224,133 @@ jobs:
             "$image:sha-${GITHUB_SHA}-x86_64" \
             "$image:sha-${GITHUB_SHA}-aarch64"
 
+  publish-images:
+    name: runtime images (${{ matrix.arch }})
+    needs: build
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download data plane tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: cacheos-sycache-${{ matrix.arch }}
+          path: ${{ runner.temp }}/dist
+
+      - name: Build images
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY,,}"
+          tar_file="$(basename "$(ls "$RUNNER_TEMP"/dist/sycache-[0-9]*-${{ matrix.arch }}.tar.gz)")"
+          docker build -f dataplane/docker/Dockerfile \
+            --build-arg "TARBALL=$tar_file" \
+            -t "ghcr.io/$repo/sycache:sha-${GITHUB_SHA}-${{ matrix.arch }}" \
+            "$RUNNER_TEMP/dist"
+          docker build -f deploy/docker/console.Dockerfile \
+            -t "ghcr.io/$repo/sycache-console:sha-${GITHUB_SHA}-${{ matrix.arch }}" .
+
+      - name: Smoke test images
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY,,}"
+          dp="ghcr.io/$repo/sycache:sha-${GITHUB_SHA}-${{ matrix.arch }}"
+          co="ghcr.io/$repo/sycache-console:sha-${GITHUB_SHA}-${{ matrix.arch }}"
+          trap 'docker rm -f smoke-dp smoke-console >/dev/null 2>&1 || true' EXIT
+
+          docker run -d --name smoke-dp "$dp" --requirepass smoke-pass
+          for _ in $(seq 30); do
+            [ "$(docker exec smoke-dp sycache-cli -a smoke-pass ping 2>/dev/null || true)" = PONG ] && break
+            sleep 1
+          done
+          test "$(docker exec smoke-dp sycache-cli -a smoke-pass ping)" = PONG
+          docker exec smoke-dp sycache-cli -a smoke-pass set smoke:k v >/dev/null
+          test "$(docker exec smoke-dp sycache-cli -a smoke-pass get smoke:k)" = v
+          docker exec smoke-dp sycache-server --version
+
+          docker run -d --name smoke-console -p 18443:8443 "$co"
+          for _ in $(seq 30); do
+            curl -fsS http://127.0.0.1:18443/healthz >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:18443/healthz
+          docker exec smoke-console sycache-console --version
+
+      - name: Validate release tag against product version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF_NAME#v}" = "$(awk '/^current:/{print $2}' dataplane/versions.yaml)"
+
+      - name: Push per-architecture images
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY,,}"
+          for name in sycache sycache-console; do
+            docker push "ghcr.io/$repo/$name:sha-${GITHUB_SHA}-${{ matrix.arch }}"
+          done
+
+  publish-images-manifest:
+    name: publish multi-arch runtime image tags
+    needs: publish-images
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Prepare Docker builder
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY,,}"
+          for name in sycache sycache-console; do
+            image="ghcr.io/$repo/$name"
+            tags=(--tag "$image:sha-${GITHUB_SHA}")
+            # 版本标签与 latest 只在 v* 标签发布时更新；预发布版本（含连字符）不更新 latest。
+            if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+              version="${GITHUB_REF_NAME#v}"
+              tags+=(--tag "$image:$version")
+              [[ "$version" == *-* ]] || tags+=(--tag "$image:latest")
+            fi
+            docker buildx imagetools create "${tags[@]}" \
+              "$image:sha-${GITHUB_SHA}-x86_64" \
+              "$image:sha-${GITHUB_SHA}-aarch64"
+          done
+
   publish-release:
     if: startsWith(github.ref, 'refs/tags/v')
     name: publish GitHub Release

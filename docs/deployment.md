@@ -34,7 +34,7 @@
 | --- | --- | --- | --- | --- |
 | **A 独立部署** | 仅 `sycache` 数据面包 | 开发测试、单机小业务、已有自研运维体系 | 与手工部署 Redis 一样，自己写配置、自己用 systemd 管理 | 没有统一界面、变更编排、主备切换编排、备份恢复、审计 |
 | **B 带控制台部署** | 控制台 + 每台缓存主机装 agent / wrapper + `sycache` 数据面 | 生产环境 | 建实例、改参数、扩缩容、主备切换、备份恢复、升级、审计 | — |
-| **C Docker** | 控制台容器；或手工运行的数据面容器 | 测试、演示、控制台容器化 | 见第 6 节 | agent 依赖 systemd 与 root wrapper，**不支持容器内运行**，容器内的实例无法被控制台纳管 |
+| **C Docker** | GHCR 的 `sycache` / `sycache-console` 镜像 | 测试、演示、控制台容器化 | 见第 6 节 | agent 依赖 systemd 与 root wrapper，**不支持容器内运行**，容器内的实例无法被控制台纳管 |
 
 实例形态（独立部署需自行搭建，控制台部署由控制台创建）：单机、主从、哨兵、原生集群。
 
@@ -136,9 +136,23 @@ git tag v0.1.0 && git push origin v0.1.0
 | `publish-builder` | x86_64、aarch64 各构建一次 glibc 2.17 兼容**编译环境**镜像并推送 GHCR | `ghcr.io/xiaoguan521/cacheos/build-env:sha-<提交>-<架构>`；v* 标签时另加 `el7-<架构>` |
 | `build` | 拉取并校验上游源码哈希，在该编译环境内构建，运行 VEX、改名黄金验收、版本一致性门禁，生成校验和 | tar.gz、DEB、RPM、调试符号包、SPDX SBOM、BUILDINFO、SHA256SUMS（Actions artifact，保留 90 天） |
 | `publish-builder-manifest` | 合并多架构清单 | `build-env:sha-<提交>`；v* 标签时另加 `build-env:el7` |
+| `publish-images` | 每个架构用 `build` 产出的 tar.gz 构建**数据面运行时镜像**（`dataplane/docker/Dockerfile`），并从源码构建**控制台镜像**（`deploy/docker/console.Dockerfile`）；起容器做冒烟（数据面 ping / set / get，控制台 `/healthz`）通过后才推送 | `sycache:sha-<提交>-<架构>`、`sycache-console:sha-<提交>-<架构>` |
+| `publish-images-manifest` | 合并多架构清单 | `sha-<提交>`；v* 标签时另加 `<版本>`，正式版再加 `latest` |
 | `publish-release`（仅 v* 标签） | 创建 GitHub Release，上传全部资产并重新生成全量 `SHA256SUMS` | 见 [`release-assets.md`](release-assets.md) |
 
-**关于 GHCR 镜像（重要）**：目前推送到 GHCR 的**只有 `build-env` 编译环境镜像**，它用来在 CentOS 7 级别的 glibc 上编译，不含 `sycache-server`，不能用来运行服务。**项目没有构建或推送 sycache / 控制台的运行时镜像**，第 6 节的 Docker 部署需要自行构建。
+**GHCR 镜像一览**（`ghcr.io/xiaoguan521/cacheos/` 下，路径全小写）
+
+| 镜像 | 用途 | 标签 |
+| --- | --- | --- |
+| `sycache` | 数据面运行时镜像：`sycache-server`、`sycache-sentinel`、`sycache-cli` 等 | `<版本>`、`latest`（仅正式版）、`sha-<提交>` |
+| `sycache-console` | 控制台运行时镜像 | 同上 |
+| `build-env` | glibc 2.17 **编译环境**，只用于编译，不能运行服务 | `el7`、`el7-<架构>`、`sha-<提交>` |
+
+- 手动触发（非标签）只推送不可变的 `sha-` 标签，不会改动 `<版本>` 与 `latest`。
+- 镜像在每个架构的原生 runner 上构建，`<版本>` 标签是 x86_64 + aarch64 的多架构清单。
+- 预发布版本（带连字符）不更新 `latest`。
+- **本节工作流是新增的，尚未在真实 v* 标签上跑过**；首次发版后请先核对 Actions 日志与 `docker pull` 结果。
+- agent、wrapper 依赖 systemd 与 root，**不做成镜像**。
 
 **使用已发布的编译环境，跳过本机构建**
 
@@ -146,7 +160,7 @@ git tag v0.1.0 && git push origin v0.1.0
 CACHEOS_BUILD_IMAGE=ghcr.io/xiaoguan521/cacheos/build-env:el7 make compat-build
 ```
 
-GHCR 包首次发布后，需要在 Package settings 里设为 Public，匿名用户才能 `docker pull`。
+GHCR 包首次发布后，需要在各包的 Package settings 里设为 Public（`build-env`、`sycache`、`sycache-console` 各设一次），匿名用户才能 `docker pull`。
 
 **本地构建（等价于工作流的 build 阶段）**
 
@@ -444,50 +458,40 @@ sycache-cli -h <主机> -p <实例端口> --user <账号> -a '<口令>' ping
 
 ## 6. 形态 C：Docker 部署
 
-**现状（务必先读）**
+**要点（先读）**
 
-- 项目**没有发布**控制台或数据面的运行时镜像。GHCR 上唯一发布的镜像是 `ghcr.io/xiaoguan521/cacheos/build-env:el7`，它是**编译环境**，不能用来运行服务（见 3.1）。
-- agent 通过 systemd 与 root wrapper 管理本机实例，**不能在容器内运行**。所以容器里的实例不会被控制台纳管。
-- 以下做法都**【未经项目 CI 验证】**，仅作为测试与演示参考。生产环境请使用第 4、5 节的安装方式。
+- 镜像由 `v*` 标签的发布工作流构建并推送到 GHCR（见 3.1）：
+  `ghcr.io/xiaoguan521/cacheos/sycache:<版本>` 与 `ghcr.io/xiaoguan521/cacheos/sycache-console:<版本>`，支持 amd64 / arm64。
+- agent 通过 systemd 与 root wrapper 管理本机实例，**不能在容器内运行**，所以容器里的实例**不会被控制台纳管**。容器形态适合：测试、演示、控制台容器化、不需要控制台纳管的独立实例。生产的受管实例请用第 5 节。
+- 工作流含容器冒烟测试，但新增的镜像发布流程尚未在真实标签上跑过，首次使用请先在测试环境验证。
 
-### 6.1 运行数据面容器（独立实例，手工管理）
-
-用 tar.gz 构建镜像。镜像只依赖 glibc 与 `libsystemd.so.0`。
-
-`Dockerfile`：
-
-```dockerfile
-FROM debian:12-slim
-ARG VERSION=0.1.0
-ARG ARCH=x86_64
-RUN apt-get update && apt-get install -y --no-install-recommends libsystemd0 ca-certificates \
- && rm -rf /var/lib/apt/lists/* \
- && groupadd -r sycache && useradd -r -g sycache -d /data -s /usr/sbin/nologin sycache
-# 先用第 3 节方式下载并校验 tar.gz，放在构建上下文
-COPY sycache-${VERSION}-${ARCH}.tar.gz /tmp/sycache.tgz
-RUN tar -C / -xzf /tmp/sycache.tgz && rm /tmp/sycache.tgz \
- && ln -s /home/atwasoft/sycache/bin/sycache-cli /usr/local/bin/sycache-cli \
- && ln -s /home/atwasoft/sycache/bin/sycache-server /usr/local/bin/sycache-server \
- && install -d -o sycache -g sycache /data
-USER sycache
-WORKDIR /data
-VOLUME /data
-EXPOSE 6379
-ENTRYPOINT ["sycache-server"]
-CMD ["--port", "6379", "--bind", "0.0.0.0", "--dir", "/data", "--appendonly", "yes", "--protected-mode", "yes"]
-```
-
-构建与运行：
+### 6.1 拉取镜像
 
 ```bash
-docker build -t sycache:0.1.0 .
+export VERSION=0.1.0
+docker pull ghcr.io/xiaoguan521/cacheos/sycache:${VERSION}
+docker pull ghcr.io/xiaoguan521/cacheos/sycache-console:${VERSION}
+```
 
-# 必须设置口令；挂载数据卷保证重启不丢数据
+如提示未授权，说明包还是私有：在 GitHub Package settings 设为 Public，或先 `docker login ghcr.io`（用户名 + 具有 `read:packages` 的 PAT）。
+
+### 6.2 数据面容器（独立实例）
+
+镜像内容：
+
+- 程序在 `/home/atwasoft/sycache`，并链接到 `/usr/local/bin`：`sycache-server`、`sycache-sentinel`、`sycache-cli`、`sycache-benchmark`、`sycache-check-rdb`、`sycache-check-aof`。
+- 以非 root 用户 `sycache`（uid/gid 999）运行，数据目录 `/data`（`VOLUME`），端口 `6379`。
+- 默认命令：`--port 6379 --bind 0.0.0.0 --dir /data --appendonly yes --protected-mode yes`。**自定义参数时会替换整个默认命令**，请把需要的参数补全。
+- 前台运行，不要加 `--daemonize yes`。
+
+```bash
+docker volume create sycache-data
+
 docker run -d --name sycache \
   -p 6379:6379 \
   -v sycache-data:/data \
   --restart unless-stopped \
-  sycache:0.1.0 \
+  ghcr.io/xiaoguan521/cacheos/sycache:${VERSION} \
   --port 6379 --bind 0.0.0.0 --dir /data --appendonly yes \
   --requirepass 'CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD' \
   --maxmemory 1gb --maxmemory-policy allkeys-lru
@@ -495,55 +499,64 @@ docker run -d --name sycache \
 docker exec -it sycache sycache-cli -a 'CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD' ping
 ```
 
-注意：
-
-- 容器内**不要**加 `--daemonize yes`；前台运行才能被 Docker 管理。
-- 宿主机仍需设置 `vm.overcommit_memory=1`（容器共享宿主内核，见 2.3）。
-- 同一个 `--maxmemory` 必须小于 `docker run --memory` 的限制，否则可能被 OOM kill。
-- 主从、哨兵、集群在容器里使用时，复制和集群宣告的地址要用宿主机可达的地址（`replica-announce-ip`、`cluster-announce-ip` 等上游参数），建议使用 `--network host`。
-
-### 6.2 运行控制台容器
-
-控制台是单个 Go 二进制（内嵌 Web 界面），容器化只需要数据卷与两个端口。**【未经项目 CI 验证】**
-
-```dockerfile
-FROM debian:12-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
- && rm -rf /var/lib/apt/lists/* \
- && useradd -r -u 10001 -d /var/lib/sycache-console -s /usr/sbin/nologin sycache-console \
- && install -d -o sycache-console -m 0700 /var/lib/sycache-console
-COPY sycache-console /usr/bin/sycache-console
-USER sycache-console
-VOLUME /var/lib/sycache-console
-EXPOSE 8443 9443
-ENTRYPOINT ["/usr/bin/sycache-console"]
-```
+用配置文件启动（推荐，口令不出现在进程列表）：
 
 ```bash
-docker build -t sycache-console:0.1.0 .
+docker run -d --name sycache -p 6379:6379 \
+  -v sycache-data:/data \
+  -v $PWD/sycache.conf:/etc/sycache/sycache.conf:ro \
+  ghcr.io/xiaoguan521/cacheos/sycache:${VERSION} /etc/sycache/sycache.conf
+```
+
+配置文件里要写 `dir /data`、`bind 0.0.0.0`、`daemonize no`，且不要用 `supervised systemd`。
+
+容器内常用工具：
+
+```bash
+docker exec sycache sycache-server --version
+docker exec -it sycache sycache-cli -a '口令'
+docker exec sycache sycache-check-rdb /data/dump.rdb
+```
+
+注意：
+
+- 镜像的 `HEALTHCHECK` 把 `PONG` 与 `NOAUTH` 都视为健康，所以设置了口令也能正常探测。
+- 宿主机仍需设置 `vm.overcommit_memory=1`（容器共享宿主内核，见 2.3）。
+- `--maxmemory` 必须小于 `docker run --memory` 的限制，否则可能被 OOM kill；开启持久化再预留 fork 的写时复制余量。
+- 主从、哨兵、集群在容器里要让对端能访问到：使用 `--network host`，或设置 `replica-announce-ip`、`cluster-announce-ip`、`cluster-announce-port` 等上游参数。
+- 日志默认输出到标准输出，用 `docker logs sycache` 查看。
+
+### 6.3 控制台容器
+
+镜像内容：非 root 用户 `sycache-console`（uid/gid 10001）；默认 `CACHEOS_LISTEN=0.0.0.0:8443`、`CACHEOS_GRPC_LISTEN=0.0.0.0:9443`、`CACHEOS_DATA=/var/lib/sycache-console`（`VOLUME`）；环境变量与 5.2 一致。
+
+```bash
+docker volume create sycache-console-data
 
 docker run -d --name sycache-console \
   -p 8443:8443 -p 9443:9443 \
   -v sycache-console-data:/var/lib/sycache-console \
-  -e CACHEOS_LISTEN=0.0.0.0:8443 \
   -e CACHEOS_TLS_AUTO=1 \
   -e CACHEOS_GRPC_HOSTS=console.example.internal \
   -e CACHEOS_GRPC_ADVERTISE=console.example.internal:9443 \
   --restart unless-stopped \
-  sycache-console:0.1.0
+  ghcr.io/xiaoguan521/cacheos/sycache-console:${VERSION}
 
 curl -k https://127.0.0.1:8443/healthz
+docker logs sycache-console | tail -20
 ```
 
 要点：
 
-- 数据卷必须持久化并备份；丢失 `pki/`、`secret.key` 后所有 agent 需要重新注册。
-- 外部 PostgreSQL 可用 `-e CACHEOS_DB=postgres://...`。
-- 缓存主机上的 agent 仍按 5.5 安装在宿主机上，并连接到容器映射出的 `9443`。
+- 对外监听非本机地址时务必启用 HTTPS（`CACHEOS_TLS_AUTO=1` 或自带证书）。
+- `CACHEOS_GRPC_HOSTS` 必须包含 agent 访问控制台的域名 / IP；`CACHEOS_GRPC_ADVERTISE` 是写进接入命令的地址（容器映射出的 `host:9443`）。
+- **数据卷必须持久化并备份**（`console.db`、`pki/`、`secret.key`）；丢失后所有 agent 需要重新注册。
+- 外部 PostgreSQL：`-e CACHEOS_DB='postgres://user:pass@host:5432/cacheos'`。
+- 缓存主机上的 agent 仍按 5.5 安装在宿主机，并连接到容器映射出的 `9443`。
+- 备份目录或 S3 变量同 5.2；本地目录备份需额外挂载卷并设置 `CACHEOS_BACKUP_DIR`。
+- 升级：换新标签重新 `docker run`，数据卷保持不变。升级前先备份数据卷。
 
-### 6.3 docker compose 示例（控制台 + PostgreSQL）
-
-**【未经项目 CI 验证】**
+### 6.4 docker compose 示例（控制台 + PostgreSQL）
 
 ```yaml
 services:
@@ -556,18 +569,40 @@ services:
     volumes: ["pgdata:/var/lib/postgresql/data"]
     restart: unless-stopped
   console:
-    image: sycache-console:0.1.0
+    image: ghcr.io/xiaoguan521/cacheos/sycache-console:${VERSION:?set VERSION}
     depends_on: [postgres]
     ports: ["8443:8443", "9443:9443"]
     environment:
-      CACHEOS_LISTEN: 0.0.0.0:8443
       CACHEOS_TLS_AUTO: "1"
       CACHEOS_GRPC_HOSTS: console.example.internal
       CACHEOS_GRPC_ADVERTISE: console.example.internal:9443
       CACHEOS_DB: postgres://cacheos:${PG_PASSWORD}@postgres:5432/cacheos?sslmode=disable
     volumes: ["console-data:/var/lib/sycache-console"]
     restart: unless-stopped
-volumes: {pgdata: {}, console-data: {}}
+  sycache:
+    image: ghcr.io/xiaoguan521/cacheos/sycache:${VERSION}
+    command: ["--port","6379","--bind","0.0.0.0","--dir","/data","--appendonly","yes","--requirepass","${SYCACHE_PASSWORD:?set SYCACHE_PASSWORD}"]
+    ports: ["6379:6379"]
+    volumes: ["sycache-data:/data"]
+    restart: unless-stopped
+volumes: {pgdata: {}, console-data: {}, sycache-data: {}}
+```
+
+> 示例中 PostgreSQL 的 `sslmode=disable` 仅限同一 compose 网络内；跨主机请启用 TLS。
+> 本 compose 示例本身未经 CI 验证。
+
+### 6.5 自行构建镜像
+
+不想用 GHCR 时，在本地用同样的 Dockerfile 构建：
+
+```bash
+# 控制台（构建上下文为仓库根目录，依赖已 vendor）
+docker build -f deploy/docker/console.Dockerfile -t sycache-console:dev .
+
+# 数据面：先按第 3 节下载并校验 tar.gz，放进一个目录作为构建上下文
+docker build -f dataplane/docker/Dockerfile \
+  --build-arg TARBALL=sycache-${VERSION}-x86_64.tar.gz \
+  -t sycache:dev ./dist
 ```
 
 ---
@@ -900,7 +935,7 @@ RDB/AOF 格式与上游保持一致，同系列版本间可回滚；跨大版本
 ### 12.4 Docker
 
 **Q27. 容器启动后立刻退出。**
-`docker logs <容器>`。多半是误加了 `--daemonize yes`、数据卷权限不对（容器内用户 `sycache` 必须能写 `/data`）、或缺少 `libsystemd0`。
+`docker logs <容器>`。多半是误加了 `--daemonize yes`、数据卷权限不对（容器内用户 uid 999 必须能写 `/data`，用绑定目录时 `chown 999:999`）、或自定义参数时漏了 `--bind 0.0.0.0` / `--dir /data`（自定义命令会替换默认命令）。
 
 **Q28. 容器内主从 / 集群地址不对。**
 容器内看到的是内网地址。使用 `--network host`，或设置 `replica-announce-ip`、`cluster-announce-ip`、`cluster-announce-port` 等上游参数。
@@ -925,7 +960,7 @@ RDB/AOF 格式与上游保持一致，同系列版本间可回滚；跨大版本
 | 内核调优 | overcommit、THP、somaxconn | 相同，包内自动设置 |
 | 持久化 | RDB / AOF，格式兼容 | 格式与上游一致，可互相读取 |
 | 管理界面 | 无（依赖第三方） | 内置控制台（带 TOTP、审计、授权管理） |
-| 官方容器镜像 | `redis` 镜像 | **暂未发布**，见第 6 节 |
+| 官方容器镜像 | `redis` 镜像 | `ghcr.io/xiaoguan521/cacheos/sycache`，见第 6 节 |
 | `INFO` 版本字段 | `redis_version` | 保持上游值，客户端与监控无需适配 |
 
 > 说明：sycache 是 CacheOS 的数据面，兼容 Redis 协议，基于 Valkey（BSD-3-Clause）源码，归因见 [`NOTICE`](NOTICE)。
