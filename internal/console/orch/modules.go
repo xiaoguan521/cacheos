@@ -50,3 +50,18 @@ func requestModules(u *store.Unit, kind agentv1.Kind) []string {
 	}
 	return UnitModules(u)
 }
+
+// hostMissingModule 返回 need 中第一个主机还没装的模块；都装了返回空串。
+// 主机上的模块来自 agent 上报的“已安装模块”（可选模块包，ADR 0002）。
+func hostMissingModule(h store.Host, need []string) string {
+	have := map[string]bool{}
+	for _, m := range strings.Split(h.Modules, ",") {
+		have[strings.TrimSpace(m)] = true
+	}
+	for _, m := range need {
+		if !have[m] {
+			return m
+		}
+	}
+	return ""
+}

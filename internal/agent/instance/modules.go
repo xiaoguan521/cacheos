@@ -131,3 +131,26 @@ func moduleDenyRules(mods []string) []string {
 func UserArgsFor(u *agentv1.AclUser, mods []string) []string {
 	return append(UserArgs(u), moduleDenyRules(mods)...)
 }
+
+// CurrentModules 返回 current 指向的版本里已安装的扩展模块（modules/<名>.so 的普通文件，软链不算），
+// 按规范顺序；供 agent 在 Hello / Heartbeat 里上报，控制台据此只把带模块的单元放到装了模块包的主机上。
+func (l Layout) CurrentModules() []string {
+	ents, err := os.ReadDir(filepath.Join(l.Root, "current", "modules"))
+	if err != nil {
+		return nil
+	}
+	have := map[string]bool{}
+	for _, e := range ents {
+		name, ok := strings.CutSuffix(e.Name(), ".so")
+		if _, known := modulePrefix[name]; ok && known && e.Type().IsRegular() {
+			have[name] = true
+		}
+	}
+	var out []string
+	for _, name := range moduleOrder {
+		if have[name] {
+			out = append(out, name)
+		}
+	}
+	return out
+}

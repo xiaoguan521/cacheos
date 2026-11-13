@@ -18,6 +18,7 @@ func migrations() []*gormigrate.Migration {
 		{ID: "202611010001_init", Migrate: migrateInit},
 		{ID: "202611110001_user_cli_exec", Migrate: migrateUserCliExec},
 		{ID: "202611130001_unit_modules", Migrate: migrateUnitModules},
+		{ID: "202611130002_host_modules", Migrate: migrateHostModules},
 	}
 }
 
@@ -37,6 +38,15 @@ func migrateUnitModules(tx *gorm.DB) error {
 		Modules string `gorm:"size:64"`
 	}
 	return tx.Migrator().AddColumn(&Unit{}, "Modules")
+}
+
+// ---- 202611130002_host_modules：主机增加已安装的扩展模块（Modules）----
+
+func migrateHostModules(tx *gorm.DB) error {
+	type Host struct {
+		Modules string `gorm:"size:64"`
+	}
+	return tx.Migrator().AddColumn(&Host{}, "Modules")
 }
 
 // Migrate 把数据库升级到最新版本。

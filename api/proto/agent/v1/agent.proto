@@ -60,6 +60,7 @@ message Hello {
   string engine_buildinfo = 10;        // 当前版本的 BUILDINFO 原文
   HostTuning tuning = 11;
   repeated InstanceStatus instances = 12;
+  repeated string modules = 13;        // current 版本里已安装的扩展模块（modules/<名>.so），ADR 0002
 }
 
 // 主机内核参数体检（规格书 7 节 M3）
@@ -76,6 +77,7 @@ message Heartbeat {
   uint64 mem_total_bytes = 3;
   uint64 data_disk_free_bytes = 4;   // /home/atwasoft/sycache/instances 所在分区
   repeated InstanceStatus instances = 5;
+  repeated string modules = 6;       // 同 Hello.modules；可选模块包装上或卸载后无需重启 agent 即可更新
 }
 
 // 实例运行状态：agent 从 INFO / CONFIG GET / CLUSTER INFO 汇总。
