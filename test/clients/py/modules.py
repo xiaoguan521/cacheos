@@ -123,39 +123,48 @@ def bloom_cases():
 
 
 def search_cases():
+    import time
+
     from redis.commands.search.field import TagField, VectorField
     from redis.commands.search.index_definition import IndexDefinition, IndexType
     from redis.commands.search.query import Query
 
+    def ids(res):
+        return [d.id.decode() if isinstance(d.id, bytes) else d.id for d in res.docs]
+
     for proto in (2, 3):
-        @case(f"search RESP{proto} create index, KNN, hybrid filter, info, drop")
-        def _(proto=proto):
-            r = redis.Redis(host=H, port=T["standalone"], protocol=proto)  # 向量是二进制，不解码
-            idx, pre = f"pyidx{proto}", f"pydoc{proto}:"
-            ft = r.ft(idx)
+        r = redis.Redis(host=H, port=T["standalone"], protocol=proto)  # 向量是二进制，不解码
+        idx, pre = f"pyidx{proto}", f"pydoc{proto}:"
+        ft = r.ft(idx)
+        p = f"search RESP{proto}"
+        q = Query("*=>[KNN 2 @v $q AS score]").return_fields("score").dialect(2)
+        hq = Query("(@cat:{A})=>[KNN 2 @v $q AS score]").return_fields("score").dialect(2)
+        params = {"q": vec(0.9, 0.1, 0, 0)}
+
+        def create():
             ft.create_index(
                 [VectorField("v", "HNSW", {"TYPE": "FLOAT32", "DIM": 4, "DISTANCE_METRIC": "L2"}), TagField("cat")],
                 definition=IndexDefinition(prefix=[pre], index_type=IndexType.HASH))
             r.hset(pre + "1", mapping={"v": vec(1, 0, 0, 0), "cat": "A"})
             r.hset(pre + "2", mapping={"v": vec(0, 1, 0, 0), "cat": "B"})
             r.hset(pre + "3", mapping={"v": vec(0, 0, 1, 0), "cat": "A"})
-            q = Query("*=>[KNN 2 @v $q AS score]").sort_by("score").return_fields("score").dialect(2)
-            import time
+        case(f"{p} create index and write documents")(create)
+
+        def knn():
             for _i in range(40):  # 回填是异步的
-                res = ft.search(q, {"q": vec(0.9, 0.1, 0, 0)})
+                res = ft.search(q, params)
                 if res.total >= 2:
                     break
                 time.sleep(0.5)
-            ids = [d.id.decode() if isinstance(d.id, bytes) else d.id for d in res.docs]
-            eq(ids, [pre + "1", pre + "2"], "KNN order")
-            hq = Query("(@cat:{A})=>[KNN 2 @v $q AS score]").sort_by("score").return_fields("score").dialect(2)
-            res = ft.search(hq, {"q": vec(0.9, 0.1, 0, 0)})
-            ids = [d.id.decode() if isinstance(d.id, bytes) else d.id for d in res.docs]
-            eq(ids, [pre + "1", pre + "3"], "hybrid TAG filter")
-            info = ft.info()
-            if not info:
-                raise AssertionError("empty FT.INFO")
-            ft.dropindex()
+            eq(ids(res), [pre + "1", pre + "2"], "KNN order")
+        case(f"{p} KNN nearest order")(knn)
+        case(f"{p} hybrid TAG filter + KNN")(lambda: eq(ids(ft.search(hq, params)), [pre + "1", pre + "3"], "hybrid"))
+        case(f"{p} FT.INFO")(lambda: eq(bool(ft.info()), True, "info"))
+        # redis-py 文档里的惯用写法 sort_by("score") 会发 SORTBY score；valkey-search 不认 KNN 的别名字段，报 “Index field `score` does not exist”。
+        # KNN 的结果本来就按距离排好序，去掉 sort_by 即可。
+        known(f"{p} SORTBY on the KNN score alias", "valkey-search rejects SORTBY on the KNN alias field")(
+            lambda: ft.search(Query("*=>[KNN 2 @v $q AS score]").sort_by("score").dialect(2), params))
+        case(f"{p} drop index")(lambda: ft.dropindex())
 
 
 if __name__ == "__main__":

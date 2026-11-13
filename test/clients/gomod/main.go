@@ -226,7 +226,8 @@ func bloomCases(t topology) {
 func searchCases(t topology) {
 	for _, proto := range []int{2, 3} {
 		proto := proto
-		run(fmt.Sprintf("search RESP%d create index, KNN, hybrid filter, drop", proto), func() error {
+		name := fmt.Sprintf("search RESP%d create index, KNN, hybrid filter, drop", proto)
+		body := func() error {
 			c := redis.NewClient(&redis.Options{Addr: addr(t.Standalone), Protocol: proto, UnstableResp3: true})
 			defer c.Close()
 			idx, pre := fmt.Sprintf("goidx%d", proto), fmt.Sprintf("godoc%d:", proto)
@@ -277,7 +278,14 @@ func searchCases(t topology) {
 				return err
 			}
 			return first(eq("KNN order", knn, []string{pre + "1", pre + "2"}), eq("hybrid TAG filter", hyb, []string{pre + "1", pre + "3"}))
-		})
+		}
+		if proto == 3 {
+			// go-redis 在 RESP3 下期望 FT.SEARCH 回复映射（results / extra_attributes），valkey-search 回复数组，
+			// 解析不报错但得不到任何文档；用 go-redis 访问 search 请使用 Protocol: 2。
+			known(name, "go-redis RESP3 cannot parse valkey-search FT.SEARCH replies (no documents returned)", body)
+		} else {
+			run(name, body)
+		}
 	}
 }
 

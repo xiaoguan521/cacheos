@@ -7,3 +7,5 @@ json      redis-py    RESP3 下 JSON.NUMINCRBY 回复 JSON 文本（如 "[3]"）
 bloom     go-redis    BF.INFO 的完整形式多返回 "Error rate" 等键，go-redis 的 BFInfo 解析对未知键报错；
                       单字段形式（BF.INFO <key> CAPACITY）只回复一个整数而不是 [名称, 值]，go-redis 的 BFInfoCapacity 同样解析失败。
                       go-redis 因此无法通过其 BF.INFO 封装读取过滤器信息；BF.ADD / EXISTS / MADD / MEXISTS / CARD / RESERVE 不受影响。redis-py 不受影响。
+search    redis-py    FT.SEARCH 带 SORTBY <KNN 别名>（redis-py 里 Query.sort_by("score") 的惯用写法）被拒绝：Index field `score` does not exist。KNN 结果本来就按距离排序，去掉 sort_by 即可。
+search    go-redis    RESP3（UnstableResp3）下 FT.SEARCH 解析不到任何文档（go-redis 期望映射形态的回复，valkey-search 回复数组）；RESP2 正常，请用 Protocol: 2。
