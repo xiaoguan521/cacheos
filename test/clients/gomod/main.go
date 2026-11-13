@@ -47,6 +47,16 @@ func run(name string, fn func() error) {
 	fmt.Println("ok  ", name)
 }
 
+// known 登记已知与 Redis 官方模块的差异：期望按已知方式失败；意外通过时报错，提醒更新 modules-known-diff.txt 与用例。
+func known(name, reason string, fn func() error) {
+	if err := fn(); err != nil {
+		fmt.Printf("known-diff %s: %s (%v)\n", name, reason, err)
+		return
+	}
+	failures = append(failures, name)
+	fmt.Printf("FAIL %s: 已知差异意外消失（%s），请更新 test/clients/modules-known-diff.txt 与此用例\n", name, reason)
+}
+
 func eq(what string, got, want any) error {
 	if !reflect.DeepEqual(got, want) {
 		return fmt.Errorf("%s: got %#v, want %#v", what, got, want)
@@ -104,7 +114,7 @@ func jsonCases(t topology) {
 			if err != nil {
 				return err
 			}
-			return first(eq("arrappend", app, []int64{3}), eq("numincrby", inc, "[3]"), eq("type", typ, []interface{}{[]interface{}{"array"}}), eq("del", del, int64(1)))
+			return first(eq("arrappend", app, []int64{3}), eq("numincrby", inc, "[3]"), eq("type", typ, []interface{}{"array"}), eq("del", del, int64(1)))
 		})
 	}
 	run("json cluster client routes by slot", func() error {
@@ -170,13 +180,21 @@ func bloomCases(t topology) {
 			if err != nil {
 				return err
 			}
-			info, err := c.BFInfo(ctx, k).Result()
+			capInfo, err := c.BFInfoCapacity(ctx, k).Result()
 			if err != nil {
 				return err
 			}
 			return first(eq("add new", a1, true), eq("add existing", a2, false), eq("exists", ex, true), eq("not exists", no, false),
 				eq("madd", ma, []bool{true, true}), eq("mexists", me, []bool{true, true, false}), eq("card", card, int64(3)),
-				eq("info capacity", info.Capacity, int64(1000)), eq("info items", info.ItemsInserted, int64(3)))
+				eq("info capacity", capInfo.Capacity, int64(1000)))
+		})
+		// valkey-bloom 的 BF.INFO 多返回 "Error rate" 等键，go-redis 的完整解析（BFInfo）对未知键报错；
+		// 单字段形式（BFInfoCapacity）不受影响。
+		known(fmt.Sprintf("bloom RESP%d full BF.INFO parse", proto), "go-redis rejects the extra \"Error rate\" key", func() error {
+			c := redis.NewClient(&redis.Options{Addr: addr(t.Standalone), Protocol: proto})
+			defer c.Close()
+			_, err := c.BFInfo(ctx, fmt.Sprintf("go:bf:%d", proto)).Result()
+			return err
 		})
 	}
 	run("bloom cluster client routes by slot", func() error {

@@ -1,0 +1,7 @@
+# 扩展数据类型模块与 Redis 官方模块（RedisJSON / RedisBloom / RediSearch）在客户端层面的已知差异（ADR 0002）。
+# test/clients/py/modules.py 与 gomod/main.go 把这些用例标为 known-diff：它们必须按下述方式失败；
+# 哪天差异消失（上游修复或客户端调整），用例会因“已知差异意外消失”报错，届时更新本清单。
+#
+# 模块    客户端      差异
+json      redis-py    RESP3 下 JSON.NUMINCRBY 回复 JSON 文本（如 "[3]"）而不是数组；redis-py 在 RESP3 下不做解码，需调用方自行 json.loads。
+bloom     go-redis    BF.INFO（无字段名的完整形式）多返回 "Error rate" 等键，go-redis 的 BFInfo 解析对未知键报错；用 BF.INFO <key> CAPACITY 等单字段形式不受影响。
