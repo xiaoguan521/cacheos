@@ -1,0 +1,49 @@
+{
+  "document": {
+    "category": "csaf_vex",
+    "csaf_version": "2.0",
+    "distribution": {
+      "tlp": {
+        "label": "WHITE",
+        "url": "https://www.first.org/tlp/"
+      }
+    },
+    "lang": "zh-CN",
+    "publisher": {
+      "category": "vendor",
+      "name": "CacheOS",
+      "namespace": "https://cacheos.invalid"
+    },
+    "title": "CacheOS 0.2.1 VEX",
+    "tracking": {
+      "current_release_date": "2026-11-14T00:00:00Z",
+      "id": "https://cacheos.invalid/security/vex/0.2.1",
+      "initial_release_date": "2026-11-14T00:00:00Z",
+      "revision_history": [
+        {
+          "date": "2026-11-14T00:00:00Z",
+          "number": "1",
+          "summary": "Initial product VEX; no CVE patches are registered for this release."
+        }
+      ],
+      "status": "draft",
+      "version": "1"
+    }
+  },
+  "product_tree": {
+    "branches": [
+      {
+        "category": "product_name",
+        "name": "CacheOS",
+        "product": {
+          "name": "CacheOS 0.2.1",
+          "product_id": "cacheos-0.2.1",
+          "product_identification_helper": {
+            "purl": "pkg:generic/cacheos@0.2.1"
+          }
+        }
+      }
+    ]
+  },
+  "vulnerabilities": []
+}
