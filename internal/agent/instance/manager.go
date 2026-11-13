@@ -335,7 +335,15 @@ func (m *Manager) Create(ctx context.Context, c *agentv1.CreateInstance) (*agent
 	if kind == agentv1.Kind_KIND_UNSPECIFIED {
 		kind = agentv1.Kind_KIND_SERVER
 	}
-	st := &State{Port: port, Kind: kind, BindAddress: bind, Revision: c.GetRevisionId(), Params: params, AdminPassword: randomSecret(), ReadPassword: randomSecret(), WebCLIPassword: randomSecret(), CreatedAt: time.Now().UTC()}
+	if err := ValidateModules(c.GetModules(), kind, c.GetClusterEnabled()); err != nil {
+		return nil, errf("INVALID", "%v", err)
+	}
+	for _, name := range c.GetModules() { // 先确认模块文件已随版本安装，缺文件时不创建实例
+		if fi, err := os.Stat(m.L.ModulePath(name)); err != nil || !fi.Mode().IsRegular() {
+			return nil, errf("INVALID", "module %s is not installed on this host", name)
+		}
+	}
+	st := &State{Port: port, Kind: kind, BindAddress: bind, Modules: c.GetModules(), Revision: c.GetRevisionId(), Params: params, AdminPassword: randomSecret(), ReadPassword: randomSecret(), WebCLIPassword: randomSecret(), CreatedAt: time.Now().UTC()}
 	dir := m.L.InstanceDir(port)
 	if err := os.Mkdir(dir, 0o2770); err != nil {
 		return nil, err

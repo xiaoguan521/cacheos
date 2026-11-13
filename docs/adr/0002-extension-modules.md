@@ -252,3 +252,4 @@ releases:
   4. ACL：agent / reader 账号只列显式命令，不变；Web 命令行账号按已加载模块追加 `-<命令>`（来自 `internal/webcli.DeniedCommands` 中该模块前缀的条目），模块没加载时不追加（否则 ACL SETUSER 因未知命令失败）。CI 的 ACL 矩阵用同一规则在真实实例上验证服务端接受并实际拒绝。业务账号仍只能用类别规则 `+@json` / `+@search` / `+@bloom`。
   5. 控制台：创建实例时多选模块（search 与集群互斥并提示）；实例详情展示已启用模块与版本；创建与模块选择写审计。
   实施拆分：本批为 agent 侧（实例状态、配置与 ACL 渲染、校验）；协议字段 `modules`、控制台 API 与界面、wrapper 校验、安装包分发为后续独立 PR。
+- 2026-11-13：协议与 agent 创建流程接入模块选择：`CreateInstance.modules`（字段 15，agent.proto）。agent 在写任何文件、启动任何进程之前校验（白名单、哨兵、search+集群），并确认 `<Root>/modules/<名称>.so` 已安装，缺失则拒绝创建；通过后记入实例状态并渲染 loadmodule 与 webcli ACL。pb.go 由 protoc 36.2 + protoc-gen-go v1.36.12 重新生成（头部 protoc 版本行保持 `(unknown)`，与既有生成文件一致）。剩余：控制台 API 与界面、wrapper 校验、安装包分发。

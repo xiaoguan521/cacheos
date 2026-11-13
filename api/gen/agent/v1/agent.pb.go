@@ -2189,6 +2189,7 @@ type CreateInstance struct {
 	ClusterEnabled      bool                   `protobuf:"varint,12,opt,name=cluster_enabled,json=clusterEnabled,proto3" json:"cluster_enabled,omitempty"`
 	Tls                 *TlsMaterial           `protobuf:"bytes,13,opt,name=tls,proto3" json:"tls,omitempty"`
 	BindAddress         string                 `protobuf:"bytes,14,opt,name=bind_address,json=bindAddress,proto3" json:"bind_address,omitempty"` // 业务监听地址，只允许主机内网地址或具体主机名
+	Modules             []string               `protobuf:"bytes,15,rep,name=modules,proto3" json:"modules,omitempty"`                            // 扩展模块（ADR 0002）：json / search / bloom；只在新建时选择，agent 按名称拼出文件路径
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }
@@ -2319,6 +2320,13 @@ func (x *CreateInstance) GetBindAddress() string {
 		return x.BindAddress
 	}
 	return ""
+}
+
+func (x *CreateInstance) GetModules() []string {
+	if x != nil {
+		return x.Modules
+	}
+	return nil
 }
 
 type ReplicaOf struct {
@@ -4182,7 +4190,7 @@ const file_agent_v1_agent_proto_rawDesc = "" +
 	"\fexec_command\x18\x1b \x01(\v2\x1d.cacheos.agent.v1.ExecCommandH\x00R\vexecCommandB\x06\n" +
 	"\x04body\"!\n" +
 	"\rLicenseUpdate\x12\x10\n" +
-	"\x03raw\x18\x01 \x01(\tR\x03raw\"\xc4\x05\n" +
+	"\x03raw\x18\x01 \x01(\tR\x03raw\"\xde\x05\n" +
 	"\x0eCreateInstance\x12\x12\n" +
 	"\x04port\x18\x01 \x01(\rR\x04port\x12*\n" +
 	"\x04kind\x18\x02 \x01(\x0e2\x16.cacheos.agent.v1.KindR\x04kind\x12D\n" +
@@ -4202,7 +4210,8 @@ const file_agent_v1_agent_proto_rawDesc = "" +
 	"\x0fsentinel_quorum\x18\v \x01(\rR\x0esentinelQuorum\x12'\n" +
 	"\x0fcluster_enabled\x18\f \x01(\bR\x0eclusterEnabled\x12/\n" +
 	"\x03tls\x18\r \x01(\v2\x1d.cacheos.agent.v1.TlsMaterialR\x03tls\x12!\n" +
-	"\fbind_address\x18\x0e \x01(\tR\vbindAddress\x1a9\n" +
+	"\fbind_address\x18\x0e \x01(\tR\vbindAddress\x12\x18\n" +
+	"\amodules\x18\x0f \x03(\tR\amodules\x1a9\n" +
 	"\vParamsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"3\n" +
