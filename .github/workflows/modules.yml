@@ -92,7 +92,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: dist/valkey-*.so
-          key: module-${{ inputs.module || 'json' }}-${{ hashFiles('dataplane/modules/MODULES', 'dataplane/build-modules.sh', 'dataplane/UPSTREAM') }}
+          key: module-${{ inputs.module || 'json' }}-${{ hashFiles('dataplane/modules/MODULES', 'dataplane/build-modules.sh', 'dataplane/UPSTREAM', 'dataplane/modules/bloom/Cargo.lock', 'dataplane/modules/cargo-license-check.py') }}
 
       - name: Build module (${{ inputs.module || 'json' }})
         if: steps.modcache.outputs.cache-hit != 'true'
@@ -108,7 +108,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: dist/valkey-*.so
-          key: module-${{ inputs.module || 'json' }}-${{ hashFiles('dataplane/modules/MODULES', 'dataplane/build-modules.sh', 'dataplane/UPSTREAM') }}
+          key: module-${{ inputs.module || 'json' }}-${{ hashFiles('dataplane/modules/MODULES', 'dataplane/build-modules.sh', 'dataplane/UPSTREAM', 'dataplane/modules/bloom/Cargo.lock', 'dataplane/modules/cargo-license-check.py') }}
 
       - name: Check module shared-library dependencies
         run: |
@@ -154,6 +154,7 @@ jobs:
           path: |
             dist/valkey-*.so
             dist/*.log
+            dist/bloom-Cargo.lock
             dist/sycache-*.tar.gz
           retention-days: 7
 
