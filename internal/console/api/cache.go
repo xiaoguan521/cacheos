@@ -1512,7 +1512,7 @@ func (s *Server) createMigration(c *gin.Context) {
 		return
 	}
 	s.audit(c, "unit.migration.create", "migration", fmt.Sprint(job.ID), map[string]any{"unit_id": id, "instance_id": in.ID, "source_address": req.SourceAddress, "mode": req.Mode, "pattern": req.Pattern})
-	s.startMigration(job.ID, in.HostID, in.Port)
+	s.startMigration(id, job.ID, in.HostID, in.Port)
 	c.JSON(http.StatusAccepted, job)
 }
 
@@ -1608,7 +1608,7 @@ func (s *Server) cutoverMigration(c *gin.Context) {
 		fail(c, http.StatusConflict, "MIGRATION_CUTOVER_FAILED", "agent 未确认切换完成")
 		return
 	}
-	s.finishMigration(job.ID, "done", progress, "")
+	s.finishMigration(unitID, job.ID, "done", progress, "")
 	s.audit(c, "unit.migration.cutover", "migration", fmt.Sprint(job.ID), map[string]any{"unit_id": unitID, "instance_id": in.ID})
 	c.JSON(http.StatusAccepted, gin.H{"migration_id": job.ID, "cutover": true, "status": "done"})
 }
@@ -1673,27 +1673,32 @@ func (s *Server) rebalance(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"operation": op})
 }
 
-func (s *Server) runMigration(id, hostID uint, port uint32) {
+func (s *Server) runMigration(unitID, id, hostID uint, port uint32) {
 	q := s.q().MigrationJob
 	job, err := q.WithContext(context.Background()).Where(q.ID.Eq(id)).First()
 	if err != nil {
+		// 作业行读不到：没有进度可更新，但变更锁必须释放，否则该单元会一直被占用。
+		if s.Log != nil {
+			s.Log.Warn("migration job unreadable, releasing unit lock", "job", id, "unit", unitID, "err", err)
+		}
+		_ = s.Store.UnlockUnit(unitID, id)
 		return
 	}
 	_, _ = q.WithContext(context.Background()).Where(q.ID.Eq(id)).Update(q.Status, "running")
 	var meta migrationMeta
 	if json.Unmarshal([]byte(job.Progress), &meta) != nil {
-		s.finishMigration(id, "failed", job.Progress, "invalid migration metadata")
+		s.finishMigration(unitID, id, "failed", job.Progress, "invalid migration metadata")
 		return
 	}
 	password := ""
 	if job.SourceAuth != "" {
 		if s.Box == nil {
-			s.finishMigration(id, "failed", job.Progress, "secretbox unavailable")
+			s.finishMigration(unitID, id, "failed", job.Progress, "secretbox unavailable")
 			return
 		}
 		password, err = s.Box.Open(job.SourceAuth)
 		if err != nil {
-			s.finishMigration(id, "failed", job.Progress, "source credentials cannot be decrypted")
+			s.finishMigration(unitID, id, "failed", job.Progress, "source credentials cannot be decrypted")
 			return
 		}
 	}
@@ -1705,7 +1710,7 @@ func (s *Server) runMigration(id, hostID uint, port uint32) {
 	defer cancel()
 	r, err := s.GW.Send(ctx, hostID, &agentv1.ServerMessage{Body: &agentv1.ServerMessage_Migrate{Migrate: &agentv1.Migrate{Port: port, JobId: fmt.Sprint(id), SourceAddress: job.SourceAddr, SourceUser: meta.SourceUser, SourcePassword: password, Pattern: meta.Pattern, Mode: mode, Batch: meta.Batch, MaxPasses: meta.MaxPasses, SourceQuiesced: meta.SourceQuiesced}}}, 30*time.Minute)
 	if err != nil {
-		s.finishMigration(id, "failed", job.Progress, err.Error())
+		s.finishMigration(unitID, id, "failed", job.Progress, err.Error())
 		return
 	}
 	progress := string(r.Payload)
@@ -1731,16 +1736,16 @@ func (s *Server) runMigration(id, hostID uint, port uint32) {
 			progress = string(mustJSON(map[string]any{"agent": json.RawMessage(progress), "error": r.Message}))
 		}
 	}
-	s.finishMigration(id, status, progress, "")
+	s.finishMigration(unitID, id, status, progress, "")
 }
 
-func (s *Server) startMigration(id, hostID uint, port uint32) {
+func (s *Server) startMigration(unitID, id, hostID uint, port uint32) {
 	if _, loaded := s.migrationRuns.LoadOrStore(id, struct{}{}); loaded {
 		return
 	}
 	go func() {
 		defer s.migrationRuns.Delete(id)
-		s.runMigration(id, hostID, port)
+		s.runMigration(unitID, id, hostID, port)
 	}()
 }
 
@@ -1772,20 +1777,21 @@ func (s *Server) RecoverMigrations() {
 		if err != nil || in.UnitID != job.UnitID || in.Kind != "server" {
 			continue
 		}
-		s.startMigration(job.ID, in.HostID, in.Port)
+		s.startMigration(job.UnitID, job.ID, in.HostID, in.Port)
 	}
 }
 
-func (s *Server) finishMigration(id uint, status, progress, errMsg string) {
+// finishMigration 记录作业结果并（非待切换状态时）释放变更锁。unitID 由调用方给出，
+// 不再依赖读取作业行：读取失败不应让部署单元一直被锁住。
+func (s *Server) finishMigration(unitID, id uint, status, progress, errMsg string) {
 	q := s.q().MigrationJob
-	job, _ := q.WithContext(context.Background()).Where(q.ID.Eq(id)).First()
 	if status == "awaiting_cutover" {
 		_, _ = q.WithContext(context.Background()).Where(q.ID.Eq(id)).UpdateSimple(q.Status.Value(status), q.Progress.Value(progress), q.Error.Value(errMsg))
 	} else {
 		_, _ = q.WithContext(context.Background()).Where(q.ID.Eq(id)).UpdateSimple(q.Status.Value(status), q.Progress.Value(progress), q.Error.Value(errMsg), q.FinishedAt.Value(time.Now()))
 	}
-	if job != nil && status != "awaiting_cutover" {
-		_ = s.Store.UnlockUnit(job.UnitID, id)
+	if status != "awaiting_cutover" {
+		_ = s.Store.UnlockUnit(unitID, id)
 	}
 }
 
