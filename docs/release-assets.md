@@ -18,6 +18,10 @@
 | `sycache_<版本>-1_arm64.deb` | Debian/Ubuntu 系列 ARM64 安装包 |
 | `sycache-<版本>-1.x86_64.rpm` | RHEL、openEuler 等 x86_64 RPM 安装包 |
 | `sycache-<版本>-1.aarch64.rpm` | RHEL、openEuler 等 aarch64 RPM 安装包 |
+| `sycache-modules_<版本>-1_amd64.deb` | 可选：扩展数据类型模块包（JSON、搜索 / 向量、布隆过滤器），Debian/Ubuntu x86_64 |
+| `sycache-modules-<版本>-1.x86_64.rpm` | 可选：扩展数据类型模块包，RPM 系 x86_64 |
+| `sycache-modules-<版本>-x86_64.tar.gz` | 可选：扩展数据类型模块包归档 |
+| `MODULES-BUILDINFO-x86_64` | 模块包的构建来源（模块版本、所需 glibc / libstdc++） |
 | `sycache-debuginfo-<版本>-<架构>.tar.gz` | 调试符号，故障分析使用，不用于安装 |
 | `sycache-<版本>-<架构>.spdx.json` | 对应架构的 SPDX SBOM |
 | `BUILDINFO-<架构>` | 对应架构的构建来源与补丁信息 |
@@ -88,6 +92,20 @@ sudo tar -C / -xzf "sycache-${VERSION}-x86_64.tar.gz"
 实例配置和启动方式见 [`docs/quickstart.md`](https://github.com/xiaoguan521/cacheos/blob/main/docs/quickstart.md) 以及包内的
 `/home/atwasoft/sycache/instances` 和 systemd 模板单元。不要直接用 tar.gz
 覆盖正在运行的实例；升级前应先按运维流程停止或切换实例并保留回滚包。
+
+## 可选：扩展数据类型模块包
+
+JSON、搜索 / 向量、布隆过滤器三个模块（ADR 0002）作为独立可选包发布，不在 `sycache` 主包里。它们在 Ubuntu 24.04
+工具链上构建，**需要 glibc ≥ 2.38 与 libstdc++ ≥ GCC 13.1**（例如 Ubuntu 24.04 及更新、Debian 13 及更新），
+CentOS 7、麒麟 V10、统信 UOS、openEuler 等较老的发行版上不能安装；目前只发布 x86_64。
+
+```bash
+sudo apt install "./sycache-modules_${VERSION}-1_amd64.deb"   # 依赖同版本以上的 sycache
+```
+
+安装后模块文件在 `/home/atwasoft/sycache/modules/`，默认不加载：只有在控制台创建部署单元时勾选“扩展数据类型”，
+对应实例才会加载。**卸载本包前须先停用并重建使用模块的实例**，否则它们重启时会因找不到模块文件而启动失败。
+包内附各模块与第三方依赖的许可文本（`licenses/modules/`）和 SBOM（`share/modules/`）。
 
 ## 控制台与缓存主机部署
 

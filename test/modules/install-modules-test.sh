@@ -43,4 +43,31 @@ echo "  ✓ 缺文件与非法名称都失败"
 rm -rf "$T/s3"; mkdir -p "$T/s3"
 [[ -z "$("$SCRIPT" "$T/dist" "$T/s3")" && ! -e "$T/s3/modules" ]] || fail "无模块时不应安装任何东西"
 echo "  ✓ 无模块不安装"
+# 4. 兼容性闸门：设置 MAX_GLIBC 时，模块需要的 glibc / libstdc++ 符号版本不得更高（发布包承诺 glibc 2.17）
+cat >"$T/objdump-new" <<'EOF'
+#!/usr/bin/env bash
+echo "0000 g    DF .text 0 GLIBC_2.38 memcpy"
+echo "0000 g    DF .text 0 GLIBCXX_3.4.32 _ZSt9terminatev"
+EOF
+cat >"$T/objdump-old" <<'EOF'
+#!/usr/bin/env bash
+echo "0000 g    DF .text 0 GLIBC_2.17 memcpy"
+echo "0000 g    DF .text 0 GLIBCXX_3.4.19 _ZSt9terminatev"
+EOF
+chmod +x "$T/objdump-new" "$T/objdump-old"
+rm -rf "$T/s4"; mkdir -p "$T/s4"
+if MAX_GLIBC=2.17 OBJDUMP="$T/objdump-new" "$SCRIPT" "$T/dist" "$T/s4" json >/dev/null 2>&1; then fail "需要 glibc 2.38 的模块在 MAX_GLIBC=2.17 下应被拒绝"; fi
+[[ ! -e "$T/s4/modules/json.so" ]] || fail "被拒绝后不应留下文件"
+MAX_GLIBC=2.17 OBJDUMP="$T/objdump-old" "$SCRIPT" "$T/dist" "$T/s4" json >/dev/null 2>&1 || fail "符合 2.17 的模块应通过"
+# 只有 libstdc++ 超限时同样拒绝
+cat >"$T/objdump-cxx" <<'EOF'
+#!/usr/bin/env bash
+echo "0000 g    DF .text 0 GLIBC_2.17 memcpy"
+echo "0000 g    DF .text 0 GLIBCXX_3.4.32 _ZSt9terminatev"
+EOF
+chmod +x "$T/objdump-cxx"; rm -rf "$T/s5"; mkdir -p "$T/s5"
+if MAX_GLIBC=2.17 OBJDUMP="$T/objdump-cxx" "$SCRIPT" "$T/dist" "$T/s5" json >/dev/null 2>&1; then fail "libstdc++ 版本超限应被拒绝"; fi
+MAX_GLIBC=2.40 MAX_GLIBCXX=3.4.33 OBJDUMP="$T/objdump-new" "$SCRIPT" "$T/dist" "$T/s5" json >/dev/null 2>&1 || fail "放宽上限后应通过"
+echo "  ✓ 兼容性闸门"
+
 echo "✓ install-modules 测试通过"
