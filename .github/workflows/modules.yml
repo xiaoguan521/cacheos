@@ -153,6 +153,12 @@ jobs:
           module="${{ inputs.module || 'json' }}"
           python3 -I test/modules/cluster-smoke.py "$module" "$SYCACHE_BIN" "dist/valkey-${module}.so"
 
+      - name: Collect licenses and SBOM
+        run: |
+          set -euo pipefail
+          python3 -I dataplane/modules/collect-licenses.py "${{ inputs.module || 'json' }}" dist
+          echo "许可文本文件数: $(find dist/licenses -type f | wc -l)"
+
       - name: ACL matrix for module commands
         run: |
           set -euo pipefail
@@ -169,6 +175,8 @@ jobs:
             dist/*.log
             dist/bloom-Cargo.lock
             dist/acl-matrix-*.md
+            dist/licenses
+            dist/sbom-*.spdx.json
             dist/sycache-*.tar.gz
           retention-days: 7
 
