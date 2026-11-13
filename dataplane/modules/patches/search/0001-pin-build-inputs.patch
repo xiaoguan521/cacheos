@@ -1,0 +1,86 @@
+diff --git a/submodules/CMakeLists.txt b/submodules/CMakeLists.txt
+index ed50dbb..da4bc08 100644
+--- a/submodules/CMakeLists.txt
++++ b/submodules/CMakeLists.txt
+@@ -68,8 +68,13 @@ function(update_cmake_prefix MODULE_NAME)
+ endfunction()
+ 
+ # Helper method: checkout submodule for a given branch/tag and place it under
+-# the ".deps" folder
++# the ".deps" folder. CacheOS: an optional 5th argument pins an exact commit;
++# the checkout must end up on it, otherwise configuration fails.
+ function(checkout_submodule_branch MODULE_NAME GIT_URL GIT_BRANCH HINT_PATH)
++  set(GIT_COMMIT "")
++  if(ARGC GREATER 4)
++    set(GIT_COMMIT "${ARGV4}")
++  endif()
+   # If ${HINT_PATH} does not exist, perform checkout
+   if(NOT EXISTS "${HINT_PATH}")
+     message(
+@@ -81,14 +86,44 @@ function(checkout_submodule_branch MODULE_NAME GIT_URL GIT_BRANCH HINT_PATH)
+       STATUS
+         "Fetching content ${MODULE_NAME} version ${GIT_BRANCH} - this may take a while, be patient"
+     )
+-    execute_process(
+-      COMMAND
+-        ${_GIT_EXE} clone --branch=${GIT_BRANCH} ${GIT_URL}
+-        ${MODULES_DIR}/${MODULE_NAME} --recurse-submodules --shallow-submodules
+-        --depth=1 --single-branch
+-      OUTPUT_VARIABLE _GIT_CHECKOUT_OUTPUT
+-      OUTPUT_QUIET ERROR_QUIET
+-      RESULT_VARIABLE _CHECKOUT_RES)
++    if(GIT_COMMIT)
++      execute_process(
++        COMMAND
++          ${_GIT_EXE} clone --no-checkout ${GIT_URL}
++          ${MODULES_DIR}/${MODULE_NAME}
++        OUTPUT_QUIET ERROR_QUIET
++        RESULT_VARIABLE _CHECKOUT_RES)
++      if(_CHECKOUT_RES EQUAL 0)
++        execute_process(
++          COMMAND ${_GIT_EXE} -c advice.detachedHead=false checkout --detach
++                  ${GIT_COMMIT}
++          WORKING_DIRECTORY ${MODULES_DIR}/${MODULE_NAME}
++          OUTPUT_QUIET ERROR_QUIET
++          RESULT_VARIABLE _CHECKOUT_RES)
++      endif()
++      if(_CHECKOUT_RES EQUAL 0)
++        execute_process(
++          COMMAND ${_GIT_EXE} rev-parse HEAD
++          WORKING_DIRECTORY ${MODULES_DIR}/${MODULE_NAME}
++          OUTPUT_VARIABLE _HEAD_COMMIT
++          OUTPUT_STRIP_TRAILING_WHITESPACE)
++        if(NOT "${_HEAD_COMMIT}" STREQUAL "${GIT_COMMIT}")
++          message(
++            FATAL_ERROR
++              "${MODULE_NAME}: HEAD ${_HEAD_COMMIT} is not the pinned commit ${GIT_COMMIT}"
++          )
++        endif()
++      endif()
++    else()
++      execute_process(
++        COMMAND
++          ${_GIT_EXE} clone --branch=${GIT_BRANCH} ${GIT_URL}
++          ${MODULES_DIR}/${MODULE_NAME} --recurse-submodules --shallow-submodules
++          --depth=1 --single-branch
++        OUTPUT_VARIABLE _GIT_CHECKOUT_OUTPUT
++        OUTPUT_QUIET ERROR_QUIET
++        RESULT_VARIABLE _CHECKOUT_RES)
++    endif()
+ 
+     if(NOT _CHECKOUT_RES EQUAL 0)
+       message(
+@@ -194,11 +229,11 @@ else()
+ 
+   checkout_submodule_branch(
+     ${MODULE_HIGHWAYHASH} "https://github.com/google/highwayhash.git" "master"
+-    "${MODULES_DIR}/highwayhash")
++    "${MODULES_DIR}/highwayhash" "f8381f3331d9c56a9792f9b4a35f61c41108c39e")
+ 
+   checkout_submodule_branch(
+     ${MODULE_GOOGLE_TEST} "https://github.com/google/googletest.git" "main"
+-    "${MODULES_DIR}/googletest/build-release")
++    "${MODULES_DIR}/googletest/build-release" "845e54d32d86ee1bb872ebb5b1c755e6e3a94c34")
+ 
+   if("${SAN_BUILD_LOWER}" STREQUAL "no")
+   

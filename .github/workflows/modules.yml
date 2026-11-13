@@ -87,12 +87,18 @@ jobs:
           make brand
           echo "✓ 模块清单与品牌检查通过"
 
+      - name: Verify search build-input patch is reproducible
+        if: ${{ (inputs.module || 'json') == 'search' }}
+        run: |
+          set -euo pipefail
+          dataplane/modules/gen-search-patch.sh --check
+
       - name: Restore built module cache
         id: modcache
         uses: actions/cache/restore@v4
         with:
           path: dist/valkey-*.so
-          key: module-${{ inputs.module || 'json' }}-${{ hashFiles('dataplane/modules/MODULES', 'dataplane/build-modules.sh', 'dataplane/UPSTREAM', 'dataplane/modules/bloom/Cargo.lock', 'dataplane/modules/cargo-license-check.py') }}
+          key: module-${{ inputs.module || 'json' }}-${{ hashFiles('dataplane/modules/MODULES', 'dataplane/build-modules.sh', 'dataplane/UPSTREAM', 'dataplane/modules/bloom/Cargo.lock', 'dataplane/modules/cargo-license-check.py', 'dataplane/modules/apply-patches.sh', 'dataplane/modules/patches/**') }}
 
       - name: Build module (${{ inputs.module || 'json' }})
         if: steps.modcache.outputs.cache-hit != 'true'
@@ -108,7 +114,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: dist/valkey-*.so
-          key: module-${{ inputs.module || 'json' }}-${{ hashFiles('dataplane/modules/MODULES', 'dataplane/build-modules.sh', 'dataplane/UPSTREAM', 'dataplane/modules/bloom/Cargo.lock', 'dataplane/modules/cargo-license-check.py') }}
+          key: module-${{ inputs.module || 'json' }}-${{ hashFiles('dataplane/modules/MODULES', 'dataplane/build-modules.sh', 'dataplane/UPSTREAM', 'dataplane/modules/bloom/Cargo.lock', 'dataplane/modules/cargo-license-check.py', 'dataplane/modules/apply-patches.sh', 'dataplane/modules/patches/**') }}
 
       - name: Check module shared-library dependencies
         run: |
@@ -182,6 +188,17 @@ jobs:
           test -x "$R/modules/${module}.so"
           test -s "$R/share/modules/${module}.spdx.json"
           test -n "$(find "$R/licenses/modules/${module}" -type f -print -quit)"
+          if [[ "$module" == search ]]; then
+            # 静态链接的 gRPC 及其子模块的许可文本必须在包里
+            for f in grpc/LICENSE grpc/NOTICE.txt grpc/third_party/abseil-cpp/LICENSE grpc/third_party/protobuf/LICENSE \
+                     grpc/third_party/c-ares/LICENSE.md grpc/third_party/zlib/LICENSE \
+                     grpc/third_party/utf8_range/LICENSE grpc/third_party/address_sorting/LICENSE \
+                     grpc/third_party/envoy-api/LICENSE grpc/third_party/xds/LICENSE; do
+              test -s "$R/licenses/modules/search/$f" || { echo "ERROR: 包内缺 licenses/modules/search/$f"; exit 1; }
+            done
+            grep -q '"grpc"' "$R/share/modules/search.spdx.json"
+            grep -q "STATIC_LINK" "$R/share/modules/search.spdx.json"
+          fi
           grep -q "^modules=.*${module}:" "$R/share/BUILDINFO"
           grep -q "valkey-${module}" "$R/share/sbom.spdx.json"
           # 按实例的真实路径形态加载：<Root>/current/modules/<名>.so，且服务端是包内那一份

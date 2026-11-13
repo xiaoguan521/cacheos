@@ -38,13 +38,13 @@ ICU License 与 CC0-1.0 已由项目负责人于 2026-11-13 认定为宽松许�
 | envoy data-plane-api / cncf xds（gRPC 子模块，xDS 协议定义） | 随 gRPC v1.70.1 | Apache-2.0 | https://github.com/envoyproxy/data-plane-api 、 https://github.com/cncf/xds | 是 |
 | c-ares（gRPC 子模块） | 随 gRPC v1.70.1 | MIT 风格许可（文本为 MIT 麻省理工 1998 年的“可免费使用、复制、修改、分发”声明 + Daniel Stenberg 版权），项目负责人于 2026-11-13 认定为宽松许可 | https://github.com/c-ares/c-ares | 是 |
 | zlib（gRPC 子模块） | 随 gRPC v1.70.1 | Zlib，项目负责人于 2026-11-13 认定为宽松许可 | https://github.com/madler/zlib | 是 |
-| highwayhash | **master（未固定）**；2026-11-13 核对时为 f8381f3331d9c56a9792f9b4a35f61c41108c39e（2024-04-18） | Apache-2.0 | https://github.com/google/highwayhash | 是 |
+| highwayhash | 固定提交 f8381f3331d9c56a9792f9b4a35f61c41108c39e（2024-04-18，原为 `master`） | Apache-2.0 | https://github.com/google/highwayhash | 是 |
 
 ## 仅构建或测试使用，未链入产物
 
 | 组件 | 版本 | 许可 | 来源 | 说明 |
 |---|---|---|---|---|
-| googletest | **main（未固定）**；2026-11-13 核对时为 845e54d32d86ee1bb872ebb5b1c755e6e3a94c34 | BSD-3-Clause | https://github.com/google/googletest | 产物中无其符号 |
+| googletest | 固定提交 845e54d32d86ee1bb872ebb5b1c755e6e3a94c34（2026-11-12，原为 `main`） | BSD-3-Clause | https://github.com/google/googletest | 产物中无其符号 |
 | benchmark | v1.8.3 | Apache-2.0 | https://github.com/google/benchmark | 产物中无其符号 |
 | re2（gRPC 子模块） | 随 gRPC v1.70.1 | BSD-3-Clause | https://github.com/google/re2 | 产物中未发现其符号 |
 | BoringSSL（gRPC 子模块） | — | — | https://github.com/google/boringssl | 未使用：gRPC 链接系统 OpenSSL，产物中无其符号 |
@@ -58,11 +58,15 @@ ICU License 与 CC0-1.0 已由项目负责人于 2026-11-13 认定为宽松许�
 | glibc（libc、libm、libmvec、ld-linux） | LGPL-2.1-or-later | 所有二进制共有的系统运行库 |
 | libstdc++、libgcc_s | GPL-3.0-or-later WITH GCC-exception-3.1 | 系统运行库，运行库例外允许动态或静态使用而不传染 |
 
-## 遗留事项
+## 构建输入固定与许可文本随包（2026-11-13）
 
-1. **构建输入未固定**：highwayhash 取自 `master`、googletest 取自 `main`，每次构建拿到的代码可能不同，产物不可复现。highwayhash 已两年多没有变更、googletest 不进产物，实际风险低，但按“上游版本锁定”的原则应通过 `dataplane/patches` 下可复现的补丁固定到提交。
-2. 许可文本的随包分发见 `dataplane/modules/collect-licenses.py`：自动收集 `third_party/` 下各库的许可文本；gRPC 各子模块的许可文本目前**未**自动收集，需随第 1 项的补丁一并解决。
+- highwayhash（原取自 `master`）与 googletest（原取自 `main`）现由 `dataplane/modules/patches/search/0001-pin-build-inputs.patch` 固定到上表提交：
+  克隆后 checkout 并核对 HEAD，不一致即配置失败。patch 由 `dataplane/modules/gen-search-patch.sh` 生成（`--check` 在 CI 中核对一致），
+  `build-modules.sh` 构建前经 `apply-patches.sh` 应用，应用失败即构建失败。gRPC 固定标签 v1.70.1（提交 5e099002c1600c580ebe1e6741f8ff8b182ffea4），benchmark 固定 v1.8.3。
+- `collect-licenses.py` 为 search 收集静态链入的 gRPC 及其子模块（abseil-cpp、protobuf、c-ares、zlib、upb、utf8_range、address_sorting、envoy-api、xds）的许可文本到
+  `licenses/modules/search/grpc/`，SBOM 以 STATIC_LINK 列出；文本取自构建所用的同一份 gRPC 检出，缓存命中没有构建目录时按固定标签与提交克隆。
+  upb 在 gRPC 检出里没有独立许可文件，由 protobuf 的许可覆盖（SBOM 注明）。
 
 ## 结论
 
-**通过**：模块本身与链入产物的全部组件均为白名单内或已认定的宽松许可（含 2026-11-13 认定的 ICU、CC0-1.0、Zlib 与 c-ares 的 MIT 风格声明），不含 RSAL / SSPL / AGPL / GPL 类传染许可；动态链接的 libsystemd 为认定的例外。遗留事项是复现性与许可文本的随包完整性，不影响许可结论。
+**通过**：模块本身与链入产物的全部组件均为白名单内或已认定的宽松许可（含 2026-11-13 认定的 ICU、CC0-1.0、Zlib 与 c-ares 的 MIT 风格声明），不含 RSAL / SSPL / AGPL / GPL 类传染许可；动态链接的 libsystemd 为认定的例外。构建输入已固定、gRPC 许可文本随包。

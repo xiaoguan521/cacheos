@@ -20,6 +20,21 @@ def w(path, text="x"):
     open(path, "w").write(text)
 
 
+def fake_grpc(d, skip=()):
+    """假的 gRPC 检出：根目录 + 各静态链接组件的许可文本（upb 与上游一致，没有自己的许可文件）。"""
+    g = os.path.join(d, "grpc")
+    w(g + "/LICENSE", "grpc apache")
+    w(g + "/NOTICE.txt", "grpc notice")
+    for rel, _label, _lic, covered in cl.GRPC_COMPONENTS:
+        if rel in skip:
+            continue
+        if covered:
+            os.makedirs(os.path.join(g, rel), exist_ok=True)
+        else:
+            w(os.path.join(g, rel, "LICENSE.md" if rel.endswith("cares/cares") else "LICENSE"), "text of " + rel)
+    return g
+
+
 class T(unittest.TestCase):
     def test_root_and_third_party(self):
         with tempfile.TemporaryDirectory() as d:
@@ -29,7 +44,7 @@ class T(unittest.TestCase):
             w(src + "/third_party/snowball/COPYING", "bsd")
             w(src + "/third_party/nolicense/readme.txt")
             fake_common(d)
-            res = cl.collect("search", "1.2.1", "BSD-3-Clause", src, out, deps=[])
+            res = cl.collect("search", "1.2.1", "BSD-3-Clause", src, out, deps=[], grpc_dir=fake_grpc(d))
             self.assertTrue(os.path.isfile(out + "/licenses/search/LICENSE"))
             self.assertTrue(os.path.isfile(out + "/licenses/search/third_party/hnswlib/LICENSE"))
             self.assertTrue(os.path.isfile(out + "/licenses/search/third_party/snowball/COPYING"))
@@ -59,13 +74,62 @@ class T(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             src = os.path.join(d, "src"); w(src + "/LICENSE")
             fake_common(d)
-            cl.collect("search", "1.2.1", "BSD-3-Clause", src, d + "/o", deps=[])
+            cl.collect("search", "1.2.1", "BSD-3-Clause", src, d + "/o", deps=[], grpc_dir=fake_grpc(d))
             self.assertTrue(os.path.isfile(d + "/o/licenses/search/libsystemd-LGPL-2.1.txt"))
             doc = json.load(open(d + "/o/sbom-search.spdx.json"))
             p = [p for p in doc["packages"] if p["name"] == "libsystemd"]
             self.assertEqual(len(p), 1)
             self.assertEqual(p[0]["licenseDeclared"], "LGPL-2.1-or-later")
             self.assertTrue(any(r["relationshipType"] == "DYNAMIC_LINK" for r in doc["relationships"]))
+
+    def test_search_collects_grpc_static_components(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "src"); w(src + "/LICENSE")
+            fake_common(d)
+            cl.collect("search", "1.2.1", "BSD-3-Clause", src, d + "/o", deps=[], grpc_dir=fake_grpc(d))
+            base = d + "/o/licenses/search/grpc"
+            for f in ("LICENSE", "NOTICE.txt"):
+                self.assertTrue(os.path.isfile(base + "/" + f), f)
+            for name in ("abseil-cpp", "protobuf", "c-ares", "zlib", "utf8_range", "address_sorting",
+                         "envoy-api", "xds"):
+                self.assertTrue(os.listdir(base + "/third_party/" + name), name)
+            self.assertEqual(open(base + "/third_party/c-ares/LICENSE.md").read(), "text of third_party/cares/cares")
+            doc = json.load(open(d + "/o/sbom-search.spdx.json"))
+            pk = {p["name"]: p for p in doc["packages"]}
+            for name in ("grpc", "abseil-cpp", "protobuf", "c-ares", "zlib", "upb", "utf8_range", "envoy-api", "xds"):
+                self.assertIn(name, pk)
+            self.assertEqual(pk["grpc"]["versionInfo"], "1.70.1")
+            self.assertEqual(pk["zlib"]["licenseDeclared"], "Zlib")
+            self.assertIn("protobuf", pk["upb"]["comment"])
+            deps = [r for r in doc["relationships"] if r["relationshipType"] == "STATIC_LINK"]
+            self.assertGreaterEqual(len(deps), len(cl.GRPC_COMPONENTS) + 1)
+
+    def test_search_requires_grpc_and_every_component_license(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "src"); w(src + "/LICENSE")
+            fake_common(d)
+            with self.assertRaises(SystemExit):  # 没有 gRPC 检出
+                cl.collect("search", "1.2.1", "BSD-3-Clause", src, d + "/o1", deps=[])
+            with self.assertRaises(SystemExit):  # 缺某个组件的许可文本
+                cl.collect("search", "1.2.1", "BSD-3-Clause", src, d + "/o2", deps=[],
+                           grpc_dir=fake_grpc(d, skip=("third_party/abseil-cpp",)))
+
+    def test_json_and_bloom_do_not_need_grpc(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "src"); w(src + "/LICENSE")
+            cl.collect("json", "1.0.3", "BSD-3-Clause", src, d + "/o", deps=[])
+            self.assertFalse(os.path.exists(d + "/o/licenses/json/grpc"))
+
+    def test_grpc_pin_constants(self):
+        self.assertEqual(cl.GRPC_TAG, "v1.70.1")
+        self.assertRegex(cl.GRPC_COMMIT, r"^[0-9a-f]{40}$")
+
+    def test_find_grpc_checkout(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(cl.find_grpc_checkout(d))
+            g = d + "/.build-release/.deps/grpc"
+            w(g + "/LICENSE")
+            self.assertEqual(cl.find_grpc_checkout(d), g)
 
 
 class CrateFallbackTest(unittest.TestCase):

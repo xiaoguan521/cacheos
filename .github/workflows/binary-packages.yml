@@ -223,7 +223,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: dist/valkey-*.so
-          key: modules-all-${{ hashFiles('dataplane/modules/MODULES', 'dataplane/build-modules.sh', 'dataplane/UPSTREAM', 'dataplane/modules/bloom/Cargo.lock', 'dataplane/modules/cargo-license-check.py') }}
+          key: modules-all-${{ hashFiles('dataplane/modules/MODULES', 'dataplane/build-modules.sh', 'dataplane/UPSTREAM', 'dataplane/modules/bloom/Cargo.lock', 'dataplane/modules/cargo-license-check.py', 'dataplane/modules/apply-patches.sh', 'dataplane/modules/patches/**') }}
 
       - name: Build modules
         if: steps.modcache.outputs.cache-hit != 'true'
@@ -236,7 +236,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: dist/valkey-*.so
-          key: modules-all-${{ hashFiles('dataplane/modules/MODULES', 'dataplane/build-modules.sh', 'dataplane/UPSTREAM', 'dataplane/modules/bloom/Cargo.lock', 'dataplane/modules/cargo-license-check.py') }}
+          key: modules-all-${{ hashFiles('dataplane/modules/MODULES', 'dataplane/build-modules.sh', 'dataplane/UPSTREAM', 'dataplane/modules/bloom/Cargo.lock', 'dataplane/modules/cargo-license-check.py', 'dataplane/modules/apply-patches.sh', 'dataplane/modules/patches/**') }}
 
       - name: Collect licenses and SBOMs
         run: |
