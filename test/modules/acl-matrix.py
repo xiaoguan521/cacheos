@@ -97,6 +97,7 @@ def info_fields(item):
 
 def main():
     server, so, out_path = sys.argv[1:4]
+    server, so = os.path.abspath(server), os.path.abspath(so)  # 实例的工作目录是临时目录，相对路径会失效
     web, agent, reader = (extract_rules(v) for v in ("WebCLIRules", "AgentRules", "ReaderRules"))
     tmp = tempfile.mkdtemp()
     port = 7400
