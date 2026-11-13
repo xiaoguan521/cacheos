@@ -232,6 +232,7 @@ message CreateInstance {
   bool cluster_enabled = 12;
   TlsMaterial tls = 13;
   string bind_address = 14;         // 业务监听地址，只允许主机内网地址或具体主机名
+  repeated string modules = 15;     // 扩展模块（ADR 0002）：json / search / bloom；只在新建时选择，agent 按名称拼出文件路径
 }
 
 message ReplicaOf {
