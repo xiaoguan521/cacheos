@@ -18,7 +18,7 @@
 
 ## 扩展数据类型模块（ADR 0002）
 - 仅允许纳入 ADR 0002 列出的 Valkey 社区模块：valkey-json 1.0.3、valkey-search 1.2.1、valkey-bloom 1.0.1；新增或升级模块版本须先更新 ADR。
-- 模块及其全部第三方依赖（含 C/C++/Rust crate）必须是 MIT / BSD / Apache-2.0 许可，不得含 RSAL / SSPL / AGPL / GPL；许可审查结果记入 ADR。
+- 模块及其全部第三方依赖（含 C/C++/Rust crate）必须是 MIT / BSD / Apache-2.0 许可，另认定同样宽松的 ICU License 与 CC0-1.0（ADR 0002 修订记录）；不得含 RSAL / SSPL / AGPL / GPL；许可审查结果记入 ADR。
 - 模块命令名、RDB 数据类型 ID、模块 ABI 符号、INFO modules 字段与加载日志中的模块名保持上游值；改名只适用于给人看的文案，沿用「数据面」改名边界。
 - 为适配 Valkey 9.1 的改动只能是 `dataplane/patches/` 下可复现的 patch，与规则同一提交，禁止手改上游模块源码。
 - 模块默认不加载，由白名单显式 loadmodule；模块参数持久化走 CONFIG SET + CONFIG REWRITE。

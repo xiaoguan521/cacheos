@@ -39,7 +39,7 @@
 | 库 | 许可 | 用途 |
 |----|------|------|
 | libssl-dev / OpenSSL | Apache-2.0 + BSD | TLS 支持 |
-| libsystemd-dev | LGPL-2.1+ | systemd 集成（仅头文件） |
+| libsystemd-dev | LGPL-2.1+ | systemd 集成（是否被链接进 libsearch.so **待核实**，未核实前不得发布） |
 | pkg-config | GPL-2.0+ | 构建工具（不链接到产物） |
 | cmake | BSD-3-Clause | 构建工具（不链接到产物） |
 | ninja | Apache-2.0 | 构建工具（不链接到产物） |
@@ -62,5 +62,5 @@
 valkey-search 1.2.1 及其所有直接第三方依赖的许可均符合 CacheOS 政策（MIT / BSD-3-Clause / Apache-2.0），不包含 RSAL / SSPL / AGPL / GPL 递归依赖。该模块可纳入产品。
 
 **审查日期**: 2026-11-12
-**审查人**: ADR 0002 规定
+**审查人**: 由代理起草，未附逐项来源链接；ICU License 与 CC0-1.0 已由项目负责人于 2026-11-13 认定为宽松许可（见 ADR 0002 修订记录）
 **参考**: docs/adr/0002-extension-modules.md
