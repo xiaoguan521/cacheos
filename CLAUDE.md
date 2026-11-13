@@ -23,7 +23,7 @@
 - 为适配 Valkey 9.1 的改动只能是 `dataplane/patches/` 下可复现的 patch，与规则同一提交，禁止手改上游模块源码。
 - 模块默认不加载，由白名单显式 loadmodule；模块参数持久化走 CONFIG SET + CONFIG REWRITE。
 - 模块新增命令必须评估对 agent 管理账号 ACL 与 Web 命令行拒绝清单的影响；涉及脚本执行或危险操作的命令加入拒绝清单并有用例。
-- 每个模块首次纳入须本地通过：编译、loadmodule、基础功能、RDB 往返、主从 / 哨兵 / 集群一致性、客户端兼容；valkey-bloom 另须先通过 Valkey 9.1 兼容与 Rust 依赖许可门禁，否则不进入发布包。
+- 每个模块首次纳入须通过（以手动触发的 GitHub Actions 为准，不要求本地构建）：编译、loadmodule、基础功能、RDB 往返、主从 / 哨兵 / 集群一致性、客户端兼容；valkey-bloom 另须先通过 Valkey 9.1 兼容与 Rust 依赖许可门禁，否则不进入发布包。
 - dataplane/versions.yaml 增加 modules 章节；SBOM 含模块及直接依赖许可，发布产物附各模块 LICENSE 文本，docs/NOTICE 保留模块归因。
 
 ## agent 与安全（P2 起，沿用 EdgeTraffic OS 规则）
