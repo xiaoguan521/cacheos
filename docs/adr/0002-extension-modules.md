@@ -245,3 +245,10 @@ releases:
 - 2026-11-13：模块命令 ACL / Web 命令行评估（CI 产物 `acl-matrix-<module>.md`，脚本 test/modules/acl-matrix.py）。结论：agent 与 reader 内置账号只列显式命令，三个模块的全部命令均被拒绝；Web 命令行账号为“允许全部减去危险类别”，模块的 admin 类命令已被 ACL 拒绝，但 `JSON.DEBUG`、`BF.LOAD`（写类、可整体载入数据）未带 admin 标志而被放行。处理：`JSON.DEBUG`、`BF.LOAD`、`FT._DEBUG`、`FT._LIST`、`FT.INTERNAL_UPDATE` 加入 `internal/webcli` 拒绝清单并有用例（agent 侧第二层校验）。限制：模块命令在模块未加载时不存在，静态 ACL 规则不能点名它们（SETUSER 会报未知命令），因此 ACL 侧无法为这两条追加 `-` 规则；待“按实例启用模块”的控制台设计落地后，按已加载模块动态渲染 ACL。
 - 2026-11-13：集群槽位迁移验证（test/modules/cluster-smoke.py，modules.yml 步骤）：两个集群主节点加载模块，用 SETSLOT + MIGRATE 迁移一个槽位，json（JSON 文档）与 bloom（布隆过滤器）数据在目标节点读取一致，源节点返回 MOVED，均通过。valkey-search 未纳入：索引是节点本地的，集群模式（跨分片查询、索引随槽位迁移）须另行设计，在此之前 search 仅支持单机与主从。
 - 2026-11-13：许可文本与 SBOM 打包（dataplane/modules/collect-licenses.py，modules.yml 步骤，单测 test/modules/collect-licenses-test.py 随 `make modules-check` 运行）：每个模块的构建产物旁输出 `licenses/<模块>/`（上游 LICENSE、third_party 各库、bloom 全部 Rust crate 的许可文本；search 另附 libsystemd 的 LGPL-2.1 文本）与 `sbom-<模块>.spdx.json`（模块、直接依赖、动态链接的 libsystemd）。模块根目录无许可文本直接失败。尚未并入 sycache 安装包的 tar/RPM/DEB：模块默认不加载，如何随包分发（独立模块包或并入主包）待控制台“启用模块”的设计一并决定。`docs/NOTICE` 已加模块归因。
+- 2026-11-13：控制台启用模块的方案（决定：只在新建实例时选择，不做事后启用与热加载；`FT.CREATE`/`FT.DROPINDEX` 属数据操作，Web 命令行放行）。
+  1. 模块是实例的不可变属性：`CreateInstance` 带模块名列表（白名单 json / search / bloom），agent 记入实例状态并渲染 `loadmodule <Root>/modules/<名称>.so`；控制台只下发名称，路径由 agent 拼出，不接收路径。`enable-module-command` 保持 `no`，运行时不可 `MODULE LOAD`。
+  2. 组合约束（控制台与 agent 各校验一次）：只支持 server 实例（哨兵不可）；search 不支持集群；模块名重复、未知名称、带路径的名称一律拒绝。主从各节点模块须一致，新增从节点沿用主节点的列表。
+  3. 模块文件随版本分发为 `<Root>/modules/<名称>.so`（发布包内由 `valkey-<名称>.so` 重命名，文件名属于给人看的部分；模块命令名、ABI、INFO 字段保持上游值）。wrapper 的 switch-version 将校验已启用模块的文件存在，升级时新版本缺少已启用模块则拒绝切换。
+  4. ACL：agent / reader 账号只列显式命令，不变；Web 命令行账号按已加载模块追加 `-<命令>`（来自 `internal/webcli.DeniedCommands` 中该模块前缀的条目），模块没加载时不追加（否则 ACL SETUSER 因未知命令失败）。CI 的 ACL 矩阵用同一规则在真实实例上验证服务端接受并实际拒绝。业务账号仍只能用类别规则 `+@json` / `+@search` / `+@bloom`。
+  5. 控制台：创建实例时多选模块（search 与集群互斥并提示）；实例详情展示已启用模块与版本；创建与模块选择写审计。
+  实施拆分：本批为 agent 侧（实例状态、配置与 ACL 渲染、校验）；协议字段 `modules`、控制台 API 与界面、wrapper 校验、安装包分发为后续独立 PR。
