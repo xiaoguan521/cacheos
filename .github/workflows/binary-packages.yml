@@ -192,6 +192,76 @@ jobs:
             dist/SHA256SUMS
             security/vex/*.csaf.json
 
+  modules-packages:
+    # 扩展数据类型模块的独立可选包（ADR 0002，方案 B）：在 ubuntu 24.04 工具链上构建，
+    # 需要 glibc ≥ 2.38，因此不进 glibc 2.17 兼容的 sycache 主包；只发布 x86_64（aarch64 的模块构建尚未验证）。
+    name: optional modules package (x86_64)
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate release tag against product version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF_NAME#v}" = "$(awk '/^current:/{print $2}' dataplane/versions.yaml)"
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libssl-dev libsystemd-dev pkg-config cmake g++ gcc make git \
+            ninja-build rpm dpkg-dev binutils file
+
+      - name: Restore built module cache
+        id: modcache
+        uses: actions/cache/restore@v4
+        with:
+          path: dist/valkey-*.so
+          key: modules-all-${{ hashFiles('dataplane/modules/MODULES', 'dataplane/build-modules.sh', 'dataplane/UPSTREAM', 'dataplane/modules/bloom/Cargo.lock', 'dataplane/modules/cargo-license-check.py') }}
+
+      - name: Build modules
+        if: steps.modcache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          dataplane/build-modules.sh -o dist
+
+      - name: Save built module cache
+        if: steps.modcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: dist/valkey-*.so
+          key: modules-all-${{ hashFiles('dataplane/modules/MODULES', 'dataplane/build-modules.sh', 'dataplane/UPSTREAM', 'dataplane/modules/bloom/Cargo.lock', 'dataplane/modules/cargo-license-check.py') }}
+
+      - name: Collect licenses and SBOMs
+        run: |
+          set -euo pipefail
+          for m in json search bloom; do
+            python3 -I dataplane/modules/collect-licenses.py "$m" dist
+          done
+
+      - name: Build packages
+        run: |
+          set -euo pipefail
+          mkdir -p pkgout
+          dataplane/packaging/build-modules-package.sh dist pkgout -f tar,deb,rpm
+          ls -l pkgout
+
+      - name: Publish package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cacheos-sycache-modules-x86_64
+          if-no-files-found: error
+          retention-days: 90
+          path: |
+            pkgout/sycache-modules*
+            pkgout/MODULES-BUILDINFO-*
+
   publish-builder-manifest:
     name: publish multi-arch build environment tag
     needs: [publish-builder, build]
@@ -359,7 +429,7 @@ jobs:
   publish-release:
     if: startsWith(github.ref, 'refs/tags/v')
     name: publish GitHub Release
-    needs: build
+    needs: [build, modules-packages]
     permissions:
       contents: write
     runs-on: ubuntu-24.04
