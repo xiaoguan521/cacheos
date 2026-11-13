@@ -114,6 +114,41 @@ pick_so() {
   return 0
 }
 
+# valkey-bloom 是 Rust crate：不走上游 build.sh（它会跑 fmt / clippy / 单测并编译 Valkey 服务端，
+# 且只接受 8.x/9.0 的 SERVER_VERSION），只做 cargo release 构建。
+# 上游没有 Cargo.lock，依赖版本会漂移；有 dataplane/modules/bloom/Cargo.lock 时复制进去并用 --locked，
+# 没有时才现场解析，并把生成的锁文件输出到 <输出目录>/bloom-Cargo.lock 供入库。
+# 构建前先按 cargo metadata 核对全部依赖许可（dataplane/modules/cargo-license-check.py）。
+build_bloom() {
+  local src_dir="$1"
+  local lock="$MODULES_DIR/bloom/Cargo.lock"
+  local locked=()
+  command -v cargo >/dev/null 2>&1 || { echo "ERROR: 未找到 cargo" >&2; return 1; }
+
+  if [[ -f "$lock" ]]; then
+    cp "$lock" "$src_dir/Cargo.lock"
+    locked=(--locked)
+    echo "  使用已入库的 Cargo.lock"
+  else
+    echo "  WARNING: 没有 dataplane/modules/bloom/Cargo.lock，依赖版本不固定，不可用于发布" >&2
+  fi
+
+  echo "  依赖许可检查..."
+  ( cd "$src_dir" && cargo metadata --format-version 1 "${locked[@]}" ) \
+    | python3 -I "$MODULES_DIR/cargo-license-check.py" \
+    || { echo "ERROR: bloom 依赖许可检查未通过" >&2; return 1; }
+
+  ( cd "$src_dir" && cargo build --release "${locked[@]}" ) \
+    || { echo "ERROR: 编译 bloom 失败 (cargo build --release)" >&2; return 1; }
+
+  cp "$src_dir/Cargo.lock" "$OUT_DIR/bloom-Cargo.lock"
+  local so_path="$src_dir/target/release/libvalkey_bloom.so"
+  [[ -f "$so_path" ]] || { echo "ERROR: 未找到 $so_path" >&2; return 1; }
+  file -b "$so_path" | grep -q 'ELF 64-bit' || { echo "ERROR: $so_path 不是 64 位 ELF" >&2; return 1; }
+  cp "$so_path" "$OUT_DIR/valkey-bloom.so"
+  echo "✓ 输出: $OUT_DIR/valkey-bloom.so"
+}
+
 # 编译单个模块
 build_module() {
   local name="$1" version="$2" valkey_src="$3"
@@ -123,6 +158,11 @@ build_module() {
   [[ -d "$src_dir" ]] || { echo "ERROR: 源码目录不存在: $src_dir" >&2; return 1; }
 
   echo "编译模块 $name $version..."
+
+  if [[ "$name" == "bloom" ]]; then
+    build_bloom "$src_dir"
+    return $?
+  fi
 
   # 检查构建脚本或 Makefile
   if [[ -f "$src_dir/build.sh" ]]; then
