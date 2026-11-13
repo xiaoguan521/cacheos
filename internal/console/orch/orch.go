@@ -908,7 +908,12 @@ func (s *Service) runCreate(ctx context.Context, r *opRun, unit *store.Unit, par
 		r.finish(store.OpFailed, "open secret: "+err.Error())
 		return err
 	}
-	users, _ := s.aclUsers(unit.ID)
+	users, err := s.aclUsers(unit.ID)
+	if err != nil {
+		// 读不到业务账号就继续创建，会得到没有业务账号的实例；宁可停下。
+		r.finish(store.OpFailed, "load acl accounts: "+err.Error())
+		return err
+	}
 	masters := map[uint32]*store.Instance{}
 	masterHosts := map[uint32]*store.Host{}
 	failed := ""
@@ -976,13 +981,16 @@ func (s *Service) runCreate(ctx context.Context, r *opRun, unit *store.Unit, par
 		} else if in.Desired == "replica" && unit.Mode != store.ModeCluster {
 			master := masters[in.Shard]
 			host := masterHosts[in.Shard]
-			if master != nil && host != nil {
-				hostAddr := host.Address
-				if hostAddr == "" {
-					hostAddr = host.Hostname
-				}
-				req.ReplicaOf = &agentv1.ReplicaOf{Host: hostAddr, Port: master.Port}
+			if master == nil || host == nil {
+				// 与扩容路径一致：主库未就绪时报错，不能把副本建成独立主库。
+				failed = fmt.Sprintf("replica %s:%d: master of shard %d is not ready", h.Name, in.Port, in.Shard)
+				break
 			}
+			hostAddr := host.Address
+			if hostAddr == "" {
+				hostAddr = host.Hostname
+			}
+			req.ReplicaOf = &agentv1.ReplicaOf{Host: hostAddr, Port: master.Port}
 		}
 		name := fmt.Sprintf("创建%s %s:%d", roleName(in.Desired), h.Name, in.Port)
 		res, err := s.send(ctx, in.HostID, req)
