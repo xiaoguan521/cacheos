@@ -11,7 +11,7 @@ import json
 import re
 import sys
 
-ALLOWED = {"MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ICU", "CC0-1.0", "ISC"}
+ALLOWED = {"MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ICU", "CC0-1.0", "ISC", "Zlib"}
 
 
 def ok(expr: str) -> bool:

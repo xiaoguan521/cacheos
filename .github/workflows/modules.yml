@@ -165,6 +165,10 @@ jobs:
         run: |
           set -euo pipefail
           python3 -I dataplane/modules/collect-licenses.py "${{ inputs.module || 'json' }}" dist
+          if [[ "${{ inputs.module || 'json' }}" == "bloom" ]]; then
+            python3 -I dataplane/modules/collect-licenses.py bloom dist --markdown /tmp/bloom-LICENSES.md
+            diff -u dataplane/modules/bloom/LICENSES.md /tmp/bloom-LICENSES.md || { echo "ERROR: dataplane/modules/bloom/LICENSES.md 已过期，请重新生成并提交"; exit 1; }
+          fi
           echo "许可文本文件数: $(find dist/licenses -type f | wc -l)"
 
       - name: Package with module and verify layout

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """收集扩展模块的许可文本并生成 SPDX 2.3 SBOM（ADR 0002）。只用标准库，外部命令一律切片调用。
 
-用法：collect-licenses.py <json|search|bloom> <输出目录> [--src <已检出的模块源码目录>]
+用法：collect-licenses.py <json|search|bloom> <输出目录> [--src <已检出的模块源码目录>] [--markdown <LICENSES.md 输出路径，仅 bloom>]
 
 输出：
   <输出目录>/licenses/<模块>/…           上游 LICENSE/COPYING/NOTICE，以及 third_party/ 下各库、bloom 各 crate 的许可文本
@@ -50,7 +50,15 @@ def sid(prefix, name, version=""):
 COMMON_LICENSES = os.environ.get("COMMON_LICENSES_DIR", "/usr/share/common-licenses")
 
 
-def collect(module, version, license_, src, out, deps, repo="NOASSERTION", commit=""):
+def vcs_sha(crate_dir):
+    try:
+        with open(os.path.join(crate_dir, ".cargo_vcs_info.json"), encoding="utf-8") as f:
+            return json.load(f).get("git", {}).get("sha1")
+    except (OSError, ValueError):
+        return None
+
+
+def collect(module, version, license_, src, out, deps, repo="NOASSERTION", commit="", extra_dir=None):
     """收集许可文本并写 SBOM。deps 为 [{name, version, license, dir?}]；返回 {"missing": [...]}。"""
     lic_out = os.path.join(out, "licenses", module)
     if not copy_licenses(src, lic_out):
@@ -64,10 +72,28 @@ def collect(module, version, license_, src, out, deps, repo="NOASSERTION", commi
             if os.path.isdir(d) and not copy_licenses(d, os.path.join(lic_out, "third_party", name)):
                 missing.append("third_party/" + name)
 
+    extra_dir = extra_dir or os.path.join(HERE, module, "extra-licenses")
+    by_sha = {}  # 提交 → 带许可文本的 crate 目录；子 crate（如 xxx-macros）没带 LICENSE 时继承同一提交的根目录许可
     for dep in deps:
         d = dep.get("dir")
-        if d and not copy_licenses(d, os.path.join(lic_out, "crates", "%s-%s" % (dep["name"], dep["version"]))):
-            missing.append("crates/%s-%s" % (dep["name"], dep["version"]))
+        if d and license_files(d) and vcs_sha(d):
+            by_sha.setdefault(vcs_sha(d), d)
+    for dep in deps:
+        d = dep.get("dir")
+        if not d:
+            continue
+        key = "%s-%s" % (dep["name"], dep["version"])
+        dst = os.path.join(lic_out, "crates", key)
+        if copy_licenses(d, dst):
+            continue
+        sibling = by_sha.get(vcs_sha(d) or "")
+        if sibling and copy_licenses(sibling, dst):
+            continue
+        # 入库的 extra-licenses/<名>-<版本>/：原样取自上游仓库并记录来源（SOURCE.txt）
+        if copy_licenses(os.path.join(extra_dir, key), dst):
+            shutil.copy2(os.path.join(extra_dir, key, "SOURCE.txt"), os.path.join(dst, "SOURCE.txt")) if os.path.isfile(os.path.join(extra_dir, key, "SOURCE.txt")) else None
+            continue
+        missing.append("crates/%s" % key)
 
     if module in DYNAMIC_LIBS:  # 动态链接的 LGPL 库：发布包须附其许可文本（CLAUDE.md）
         lgpl = os.path.join(COMMON_LICENSES, "LGPL-2.1")
@@ -106,6 +132,30 @@ def collect(module, version, license_, src, out, deps, repo="NOASSERTION", commi
     return {"missing": missing}
 
 
+def markdown_crates(module, version, license_, repo, commit, deps):
+    """生成 Rust 模块的 LICENSES.md：模块自身 + 全部依赖 crate（名称、版本、许可、来源链接）。输出只取决于输入，可在 CI 里与入库文件比对。"""
+    lines = [
+        f"# valkey-{module} {version} 许可审查",
+        "",
+        "本文件由 dataplane/modules/collect-licenses.py 根据 `cargo metadata --locked`（Cargo.lock 已入库）生成，请勿手改；",
+        "CI 会重新生成并与本文件比对，依赖变化后须更新。依赖许可另由 dataplane/modules/cargo-license-check.py 在构建时按白名单校验。",
+        "",
+        f"- 模块：valkey-{module} {version}，{license_}",
+        f"- 上游：{repo}（提交 {commit}）",
+        f"- 许可文本：{repo}/blob/{version}/LICENSE",
+        f"- 依赖 crate（不含模块自身）共 {len(deps)} 个，许可文本随发布包附在 licenses/modules/{module}/crates/ 下",
+        "",
+        "| crate | 版本 | 许可（SPDX 表达式） | 来源 |",
+        "|---|---|---|---|",
+    ]
+    for d in sorted(deps, key=lambda x: (x["name"], x["version"])):
+        links = [f"https://crates.io/crates/{d['name']}/{d['version']}"]
+        if d.get("repository"):
+            links.append(d["repository"])
+        lines.append(f"| {d['name']} | {d['version']} | {d.get('license') or 'NOASSERTION'} | {' ; '.join(links)} |")
+    return "\n".join(lines) + "\n"
+
+
 def read_manifest(module):
     for line in open(os.path.join(HERE, "MODULES"), encoding="utf-8"):
         f = line.split()
@@ -124,7 +174,7 @@ def cargo_deps(src):
         sys.exit("ERROR: cargo metadata 失败: " + r.stderr[-500:])
     meta = json.loads(r.stdout)
     roots = set(meta["workspace_members"])
-    return [{"name": p["name"], "version": p["version"], "license": p.get("license"),
+    return [{"name": p["name"], "version": p["version"], "license": p.get("license"), "repository": p.get("repository"),
              "dir": os.path.dirname(p["manifest_path"])} for p in meta["packages"] if p["id"] not in roots]
 
 
@@ -134,6 +184,11 @@ def main():
     if "--src" in args:
         i = args.index("--src")
         src = os.path.abspath(args[i + 1])
+        del args[i:i + 2]
+    markdown = None
+    if "--markdown" in args:
+        i = args.index("--markdown")
+        markdown = os.path.abspath(args[i + 1])
         del args[i:i + 2]
     if len(args) != 2 or args[0] not in ("json", "search", "bloom"):
         sys.exit(__doc__)
@@ -151,7 +206,15 @@ def main():
             if head != m["commit"]:
                 sys.exit("ERROR: %s 标签 %s 指向 %s，与 MODULES 锁定的 %s 不一致" % (module, m["tag"], head, m["commit"]))
         deps = cargo_deps(src) if module == "bloom" else []
-        collect(module, m["version"], m["license"], src, out, deps, m["repo"], m["commit"])
+        res = collect(module, m["version"], m["license"], src, out, deps, m["repo"], m["commit"])
+        lost = [x for x in res["missing"] if x.startswith("crates/")]
+        if lost:  # 发布的二进制里有这些 crate 的代码，必须附其许可文本
+            sys.exit("ERROR: 以下 crate 没有许可文本，请在 dataplane/modules/%s/extra-licenses/<名>-<版本>/ 补上（原样取自上游并写 SOURCE.txt）：%s" % (module, ", ".join(lost)))
+        if markdown:
+            if module != "bloom":
+                sys.exit("ERROR: --markdown 只适用于 Rust 模块（bloom）；json 与 search 的 LICENSES.md 为人工核对后手写")
+            with open(markdown, "w", encoding="utf-8") as f:
+                f.write(markdown_crates(module, m["version"], m["license"], m["repo"].removesuffix(".git"), m["commit"], deps))
         print("✓ %s：许可文本与 SBOM 写入 %s" % (module, out))
     finally:
         if tmp:
