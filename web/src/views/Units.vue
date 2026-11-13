@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'antdv-next'
 import { api, errMsg } from '../api/client'
 import { useSession } from '../stores/session'
@@ -10,7 +10,17 @@ const templates = ref<any[]>([])
 const loading = ref(false)
 const modalOpen = ref(false)
 const busy = ref<number | null>(null)
-const form = reactive({ name: '', mode: 'standalone', description: '', memory_mb: 512, shards: 3, replicas: 1, tls: false, sentinel_name: '', quorum: 2, template_id: 0 })
+const form = reactive({ name: '', mode: 'standalone', description: '', memory_mb: 512, shards: 3, replicas: 1, tls: false, modules: [] as string[], sentinel_name: '', quorum: 2, template_id: 0 })
+
+// 扩展数据类型模块（ADR 0002）：只能在创建时选择；search 目前不支持集群。
+const moduleOptions = computed(() => [
+  { value: 'json', label: 'JSON 文档（json）' },
+  { value: 'search', label: '搜索与向量（search）', disabled: form.mode === 'cluster' },
+  { value: 'bloom', label: '布隆过滤器（bloom）' },
+])
+watch(() => form.mode, (m) => {
+  if (m === 'cluster') form.modules = form.modules.filter((x) => x !== 'search')
+})
 
 const modeName: Record<string, string> = { standalone: '单机', replication: '主从', sentinel: '哨兵', cluster: '集群' }
 const statusColor: Record<string, string> = { running: 'green', creating: 'gold', changing: 'gold', degraded: 'orange', stopped: 'default', failed: 'red', deleting: 'volcano' }
@@ -29,7 +39,7 @@ async function load() {
 }
 
 function openCreate() {
-  Object.assign(form, { name: '', mode: 'standalone', description: '', memory_mb: 512, shards: 3, replicas: 1, tls: false, sentinel_name: '', quorum: 2, template_id: templates.value.find((x) => x.builtin)?.id || 0 })
+  Object.assign(form, { name: '', mode: 'standalone', description: '', memory_mb: 512, shards: 3, replicas: 1, tls: false, modules: [], sentinel_name: '', quorum: 2, template_id: templates.value.find((x) => x.builtin)?.id || 0 })
   modalOpen.value = true
 }
 
@@ -133,6 +143,9 @@ onMounted(load)
         <a-form-item v-if="form.mode === 'cluster'" label="分片数"><a-input-number v-model:value="form.shards" :min="3" :max="1024" style="width: 100%" /></a-form-item>
         <a-form-item v-if="form.mode === 'cluster'" label="每个分片的从节点数"><a-input-number v-model:value="form.replicas" :min="1" :max="5" style="width: 100%" /></a-form-item>
         <a-form-item label="数据面 TLS"><a-switch v-model:checked="form.tls" /></a-form-item>
+        <a-form-item label="扩展数据类型" extra="只能在创建时选择，创建后不能增减；搜索与向量暂不支持集群。">
+          <a-checkbox-group v-model:value="form.modules" :options="moduleOptions" />
+        </a-form-item>
         <a-form-item label="参数模板"><a-select v-model:value="form.template_id" :options="templates.map((t: any) => ({ value: t.id, label: `${t.name}${t.builtin ? '（内置）' : ''}` }))" /></a-form-item>
       </a-form>
       <a-alert type="info" show-icon message="创建后会生成后台操作；主机由编排器从在线主机中自动选择。" />

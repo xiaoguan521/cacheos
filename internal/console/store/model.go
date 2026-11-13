@@ -94,6 +94,7 @@ type Unit struct {
 	Replicas   uint32 `json:"replicas"`                          // 每个分片的从节点数
 	TemplateID uint   `json:"template_id"`
 	TLS        bool   `gorm:"column:tls" json:"tls"`
+	Modules    string `gorm:"size:64" json:"modules"` // 扩展模块（ADR 0002），逗号分隔，如 "json,bloom"；创建时确定，之后不可改
 	// 版本与状态
 	RevisionID   string    `gorm:"size:16" json:"revision_id"` // 当前参数版本
 	EngineVer    string    `gorm:"size:32" json:"engine_version"`

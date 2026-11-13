@@ -94,6 +94,7 @@ type UnitSpec struct {
 	Shards       uint32            `json:"shards"`
 	Replicas     uint32            `json:"replicas"`
 	TLS          bool              `json:"tls"`
+	Modules      []string          `json:"modules"` // 扩展模块（json / search / bloom），只在创建时选择
 	SentinelName string            `json:"sentinel_name"`
 	Quorum       uint32            `json:"quorum"`
 	TemplateID   uint              `json:"template_id"`
@@ -658,6 +659,10 @@ func (s *Service) CreateUnit(spec UnitSpec, by string) (*store.Unit, *store.Oper
 	default:
 		return nil, nil, invalid("unknown mode %q", spec.Mode)
 	}
+	modules, err := NormalizeUnitModules(spec.Mode, spec.Modules)
+	if err != nil {
+		return nil, nil, err
+	}
 	dataN = int(spec.Shards) * (1 + int(spec.Replicas))
 	n := dataN + extraN
 	if spec.MemoryMB < 64 || spec.MemoryMB > 1<<20 {
@@ -705,7 +710,7 @@ func (s *Service) CreateUnit(spec UnitSpec, by string) (*store.Unit, *store.Oper
 		return nil, nil, err
 	}
 	unit := &store.Unit{Name: spec.Name, Mode: spec.Mode, Description: spec.Description, MemoryMB: spec.MemoryMB, Shards: spec.Shards, Replicas: spec.Replicas,
-		TemplateID: spec.TemplateID, TLS: spec.TLS, SentinelName: spec.SentinelName, Quorum: spec.Quorum, Status: "creating", MasterAuth: sealed, CreatedBy: by}
+		TemplateID: spec.TemplateID, TLS: spec.TLS, Modules: strings.Join(modules, ","), SentinelName: spec.SentinelName, Quorum: spec.Quorum, Status: "creating", MasterAuth: sealed, CreatedBy: by}
 	var run *opRun
 	var insts []*store.Instance
 	err = s.q().Transaction(func(tx *query.Query) error {
@@ -925,7 +930,7 @@ func (s *Service) runCreate(ctx context.Context, r *opRun, unit *store.Unit, par
 			kind = agentv1.Kind_KIND_SENTINEL
 		}
 		req := &agentv1.CreateInstance{Port: in.Port, Kind: kind, Params: agentParams, RevisionId: unit.RevisionID, Masterauth: auth, AclUsers: users,
-			ClusterEnabled: unit.Mode == store.ModeCluster, BindAddress: bind}
+			ClusterEnabled: unit.Mode == store.ModeCluster, BindAddress: bind, Modules: requestModules(unit, kind)}
 		if unit.TLS && in.Kind == "server" {
 			if s.CA == nil {
 				failed = "data-plane TLS is enabled but the console CA is unavailable"
