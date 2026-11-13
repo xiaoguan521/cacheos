@@ -586,6 +586,10 @@ func (a *Agent) handle(ctx context.Context, client agentv1.AgentGatewayClient, m
 			a.handleEngineUpgrade(ctx, client, b.SwitchVersion, sendResult)
 			return
 		}
+		if missing := instance.MissingModules(a.M.RequiredModules(), func(n string) bool { return a.M.L.InstalledModule(b.SwitchVersion.Version, n) }); len(missing) > 0 {
+			fail("INVALID", "version "+b.SwitchVersion.Version+" lacks modules in use on this host: "+strings.Join(missing, ", "))
+			return
+		}
 		out, err := a.M.Run(ctx, "switch-version", b.SwitchVersion.Version)
 		if err != nil {
 			fail("INVALID", "switch-version failed: "+strings.TrimSpace(out))

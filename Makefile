@@ -56,7 +56,7 @@ patch-check:
 
 # 构建安装包：$(DIST)/sycache-<版本>-<架构>.tar.gz
 sycache:
-	dataplane/build-sycache.sh $(SRC_OPT) -o $(DIST)
+	dataplane/build-sycache.sh $(SRC_OPT) -o $(DIST) $(if $(MODULES_DIST),-M $(MODULES_DIST))
 
 # 编译扩展数据类型模块（json、search、bloom）；耗时，非 make ci 必需项
 modules:

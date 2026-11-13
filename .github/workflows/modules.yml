@@ -159,6 +159,39 @@ jobs:
           python3 -I dataplane/modules/collect-licenses.py "${{ inputs.module || 'json' }}" dist
           echo "许可文本文件数: $(find dist/licenses -type f | wc -l)"
 
+      - name: Package with module and verify layout
+        run: |
+          set -euo pipefail
+          module="${{ inputs.module || 'json' }}"
+          make sycache UPSTREAM_SRC="$PWD/upstream" USE_SYSTEMD=yes MODULES_DIST="$PWD/dist"
+          tarball=$(ls -1 dist/sycache-[0-9]*.tar.gz | head -1)
+          rm -rf pkgcheck && mkdir pkgcheck && tar -C pkgcheck -xzf "$tarball"
+          R="$PWD/pkgcheck/home/atwasoft/sycache"
+          test -x "$R/modules/${module}.so"
+          test -s "$R/share/modules/${module}.spdx.json"
+          test -n "$(find "$R/licenses/modules/${module}" -type f -print -quit)"
+          grep -q "^modules=.*${module}:" "$R/share/BUILDINFO"
+          grep -q "valkey-${module}" "$R/share/sbom.spdx.json"
+          # 按实例的真实路径形态加载：<Root>/current/modules/<名>.so，且服务端是包内那一份
+          ln -s . "$R/current"
+          "$R/bin/sycache-server" --port 7399 --dir "$(mktemp -d)" --save "" --daemonize no \
+            --loadmodule "$R/current/modules/${module}.so" >pkgcheck/server.log 2>&1 &
+          pid=$!
+          trap 'kill $pid 2>/dev/null || true' EXIT
+          case "$module" in bloom) want=bf ;; *) want="$module" ;; esac
+          ok=0
+          for i in $(seq 1 40); do
+            if python3 -I -c '
+          import socket, sys
+          s = socket.create_connection(("127.0.0.1", 7399), timeout=3)
+          s.sendall(b"*2\r\n$6\r\nMODULE\r\n$4\r\nLIST\r\n")
+          sys.exit(0 if sys.argv[1].encode() in s.recv(8192).lower() else 1)
+          ' "$want" 2>/dev/null; then ok=1; break; fi
+            sleep 0.5
+          done
+          [[ $ok -eq 1 ]] || { echo "ERROR: 包内模块未能加载"; tail -30 pkgcheck/server.log; exit 1; }
+          echo "✓ 安装包内模块布局正确并可加载"
+
       - name: ACL matrix for module commands
         run: |
           set -euo pipefail

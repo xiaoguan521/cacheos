@@ -38,7 +38,7 @@ func TestCreateRejectsBadModules(t *testing.T) {
 func TestCreateRecordsAndRendersModules(t *testing.T) {
 	const port = 16410
 	m := newWebCLITestManager(t, port, nil)
-	for _, d := range []string{"modules", "instances"} { // 生产环境由安装包创建这两个目录
+	for _, d := range []string{"current/modules", "instances"} { // 生产环境由安装包创建这两个目录
 		if err := os.MkdirAll(filepath.Join(m.L.Root, d), 0o755); err != nil {
 			t.Fatal(err)
 		}

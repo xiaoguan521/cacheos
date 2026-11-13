@@ -2,7 +2,7 @@
 # 构建 sycache 数据面（规格书 5.3）。
 #
 # 用法：
-#   dataplane/build-sycache.sh [-s <上游源码目录>] [-o <输出目录>] [-t openssl|tongsuo|none] [-V <产品版本>] [-S]
+#   dataplane/build-sycache.sh [-s <上游源码目录>] [-o <输出目录>] [-t openssl|tongsuo|none] [-V <产品版本>] [-S] [-M <模块产物目录>]
 #
 # 不指定 -s 时按 dataplane/UPSTREAM 从官方 GitHub 仓库拉取发布标签，并校验提交哈希。
 # -t openssl（默认）：BUILD_TLS=yes，链接系统 OpenSSL 3.x。
@@ -12,6 +12,9 @@
 # -S：兼容构建。OpenSSL 按 dataplane/DEPS 拉取 LTS 源码并静态链接，二进制只依赖 glibc（与 libsystemd）。
 #     在 glibc 2.17 的构建环境（dataplane/build-env/）中执行，即可覆盖 CentOS 7、麒麟 V10、统信 UOS、openEuler
 #     与较新的发行版。OPENSSL_SRC 指向已检出的源码时跳过拉取；MAX_GLIBC 设置后校验二进制不依赖更高版本的 glibc 符号。
+# -M：模块产物目录（build-modules.sh 与 collect-licenses.py 的输出）。给出时把其中的 json / search / bloom 模块连同
+#     许可文本与 SBOM 装进包内 modules/、licenses/modules/、share/modules/（dataplane/packaging/install-modules.sh），
+#     并在 BUILDINFO 记录 modules=名称:版本,…。不给则不带模块（模块默认不加载，装与不装由发布流程决定）。
 # USE_SYSTEMD：默认 auto（有 libsystemd-dev 时启用 Type=notify），发布构建环境必须为 yes。
 # 产物：<输出目录>/sycache-<产品版本>-<架构>.tar.gz，解压到 / 得到 /home/atwasoft/sycache 目录树；同目录输出 BUILDINFO。
 set -euo pipefail
@@ -30,15 +33,16 @@ cpu_jobs() {
   fi
 }
 
-SRC=""; OUT="$PWD/dist"; TLS_LIB="openssl"; STATIC=0
+SRC=""; OUT="$PWD/dist"; TLS_LIB="openssl"; STATIC=0; MODULES_DIST=""
 VERSION="$(awk '/^current:/{print $2}' "$HERE/versions.yaml")"
-while getopts "s:o:t:V:S" opt; do
+while getopts "s:o:t:V:SM:" opt; do
   case "$opt" in
     s) SRC="$OPTARG" ;;
     o) OUT="$OPTARG" ;;
     t) TLS_LIB="$OPTARG" ;;
     V) VERSION="$OPTARG" ;;
     S) STATIC=1 ;;
+    M) MODULES_DIST="$OPTARG" ;;
     *) exit 2 ;;
   esac
 done
@@ -180,6 +184,18 @@ for d in deps/*/; do   # 随 Valkey 捆绑的第三方库许可证
   done
 done
 cp "$ROOT/docs/NOTICE" "$P/licenses/NOTICE"
+MODULES_LINE=""
+if [[ -n "$MODULES_DIST" ]]; then
+  want=()
+  for n in json search bloom; do [[ -f "$MODULES_DIST/valkey-$n.so" ]] && want+=("$n"); done
+  if [[ ${#want[@]} -gt 0 ]]; then
+    "$HERE/packaging/install-modules.sh" "$MODULES_DIST" "$P" "${want[@]}" >/dev/null
+    for n in "${want[@]}"; do
+      v="$(awk -v n="$n" '$1==n{print $2}' "$HERE/modules/MODULES")"
+      MODULES_LINE="${MODULES_LINE:+$MODULES_LINE,}$n:$v"
+    done
+  fi
+fi
 install_file 0644 "$HERE/packaging/sycache@.service" "$STAGE/usr/lib/systemd/system/sycache@.service"
 install_file 0644 "$HERE/packaging/sycache-sentinel@.service" "$STAGE/usr/lib/systemd/system/sycache-sentinel@.service"
 install_file 0644 "$HERE/packaging/sycache-thp.service" "$STAGE/usr/lib/systemd/system/sycache-thp.service"
@@ -198,6 +214,7 @@ install_file 0644 "$HERE/packaging/sycache.logrotate" "$STAGE/etc/logrotate.d/sy
   echo "arch=$ARCH"
   echo "glibc_required=$(objdump -T "$P/bin/sycache-server" | grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' | sed 's/GLIBC_//' | sort -Vu | tail -1)"
   echo "patches=$(cd "$HERE/patches" && ls ./*.patch | xargs -n1 basename | tr '\n' ' ' | sed 's/ $//')"
+  [[ -n "$MODULES_LINE" ]] && echo "modules=$MODULES_LINE"
   echo "patch_sha256=$(cd "$HERE/patches" && cat ./*.patch | sha256sum | cut -d' ' -f1)"
 } > "$P/share/BUILDINFO"
 
