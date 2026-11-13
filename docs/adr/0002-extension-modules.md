@@ -235,3 +235,9 @@ releases:
 2. ~~更新 CLAUDE.md~~ 已完成。
 3. 启动 dataplane/modules/ 目录初始化，按 json → search → bloom 顺序适配。
 4. 本地 `make ci` 增补模块验证流程。
+
+## 修订记录
+
+- 2026-11-13：项目负责人认定 ICU License 与 CC0-1.0 属于与 MIT / BSD / Apache-2.0 同等宽松的许可，允许出现在模块的第三方依赖中（valkey-search 1.2.1 的 ICU、HdrHistogram_c 因此不再阻塞纳入）。CLAUDE.md 对应条款已同步。
+- 2026-11-13：CI 的 readelf 检查确认 libsearch.so 动态链接 libsystemd.so.0（LGPL-2.1+）；sycache-server 发布构建（USE_SYSTEMD=yes）本就依赖它。项目负责人认定“动态链接 LGPL 系统库”允许，条件：仅限动态链接、发布包附许可文本、其余 GPL/LGPL 库仍须另行评审。CLAUDE.md 已同步，CI 检查对 libsystemd 放行。
+- 仍待补齐：各依赖许可的逐项来源链接。

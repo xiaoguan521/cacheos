@@ -101,6 +101,19 @@ download_module() {
   return 0
 }
 
+# 在构建目录中选出模块产物：只接受文件名为 lib<name>.so 的 64 位 ELF，
+# 不再随便取第一个 .so（第三方依赖和测试夹具里也有 .so，曾因此选到 32 位文件）。
+pick_so() {
+  local dir="$1" name="$2" f
+  while IFS= read -r f; do
+    if file -b "$f" | grep -q 'ELF 64-bit'; then
+      echo "$f"
+      return 0
+    fi
+  done < <(find "$dir" -name "lib${name}.so" -type f 2>/dev/null)
+  return 0
+}
+
 # 编译单个模块
 build_module() {
   local name="$1" version="$2" valkey_src="$3"
@@ -134,14 +147,21 @@ build_module() {
     fi
     echo "  头文件分支 $SERVER_VERSION 与锁定提交一致: $UPSTREAM_COMMIT"
 
-    # 运行 build.sh --release
+    # 运行 build.sh
+    # 注：valkey-search build.sh 默认 release 模式，不接受 --release 参数
+    # valkey-json build.sh 接受 --release 参数
     cd "$src_dir"
-    bash build.sh --release || { echo "ERROR: 编译 $name 失败 (build.sh --release)" >&2; cd - > /dev/null; return 1; }
+    if [[ "$name" == "search" ]]; then
+      bash build.sh --configure || { echo "ERROR: 编译 $name 失败 (build.sh --configure)" >&2; cd - > /dev/null; return 1; }
+      bash build.sh || { echo "ERROR: 编译 $name 失败 (build.sh)" >&2; cd - > /dev/null; return 1; }
+    else
+      bash build.sh --release || { echo "ERROR: 编译 $name 失败 (build.sh --release)" >&2; cd - > /dev/null; return 1; }
+    fi
     cd - > /dev/null
 
     # 查找 .so 文件
     local so_path
-    so_path=$(find "$src_dir" -name "*.so" -type f | head -1)
+    so_path=$(pick_so "$src_dir" "$name")
     if [[ -n "$so_path" ]]; then
       cp "$so_path" "$OUT_DIR/$so_name"
       echo "✓ 输出: $OUT_DIR/$so_name"
@@ -154,7 +174,7 @@ build_module() {
     make -C "$src_dir" -j"$(nproc 2>/dev/null || echo 2)" || { echo "ERROR: 编译 $name 失败 (Makefile)" >&2; return 1; }
     # 查找 .so 文件
     local so_path
-    so_path=$(find "$src_dir" -name "*.so" -type f | head -1)
+    so_path=$(pick_so "$src_dir" "$name")
     if [[ -n "$so_path" ]]; then
       cp "$so_path" "$OUT_DIR/$so_name"
       echo "✓ 输出: $OUT_DIR/$so_name"

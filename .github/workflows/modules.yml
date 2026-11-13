@@ -37,6 +37,16 @@ jobs:
           sudo apt-get install -y -qq \
             libssl-dev libsystemd-dev pkg-config \
             cmake g++ gcc make git
+
+          # search 模块额外依赖（cmake、ninja、compiler 版本升级）
+          if [[ "${{ inputs.module || 'json' }}" == "search" ]]; then
+            echo "安装 search 模块额外依赖..."
+            # 确保 GCC 12+（Ubuntu 24.04 通常有 GCC 13）
+            sudo apt-get install -y -qq ninja-build clang-tidy
+            # 验证编译器版本
+            gcc --version
+            g++ --version
+          fi
           echo "✓ 构建依赖安装完成"
 
       - name: Fetch upstream Valkey source
@@ -77,7 +87,15 @@ jobs:
           make brand
           echo "✓ 模块清单与品牌检查通过"
 
+      - name: Restore built module cache
+        id: modcache
+        uses: actions/cache/restore@v4
+        with:
+          path: dist/valkey-*.so
+          key: module-${{ inputs.module || 'json' }}-${{ hashFiles('dataplane/modules/MODULES', 'dataplane/build-modules.sh', 'dataplane/UPSTREAM') }}
+
       - name: Build module (${{ inputs.module || 'json' }})
+        if: steps.modcache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           module="${{ inputs.module || 'json' }}"
@@ -85,12 +103,47 @@ jobs:
           echo "✓ 模块 $module 构建完成"
           ls -lh dist/valkey-*.so
 
+      - name: Save built module cache
+        if: steps.modcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: dist/valkey-*.so
+          key: module-${{ inputs.module || 'json' }}-${{ hashFiles('dataplane/modules/MODULES', 'dataplane/build-modules.sh', 'dataplane/UPSTREAM') }}
+
+      - name: Check module shared-library dependencies
+        run: |
+          set -euo pipefail
+          for so in dist/valkey-*.so; do
+            echo "== $so =="
+            readelf -d "$so" | grep NEEDED || true
+            ldd "$so" || true
+            if readelf -d "$so" | grep NEEDED | grep -Eqi 'libgpl|libreadline|libgmp|libmpfr'; then
+              echo "ERROR: $so 链接了未经认定的 GPL/LGPL 系统库，需先评审（libsystemd 已认定允许）" >&2
+              exit 1
+            fi
+          done
+
       - name: Run smoke tests
         env:
           SYCACHE_BIN: ${{ env.SYCACHE_BIN }}
         run: |
           set -euo pipefail
-          JSON_SO="$PWD/dist/valkey-json.so" test/modules/json-smoke.sh "$SYCACHE_BIN"
+          module="${{ inputs.module || 'json' }}"
+          case "$module" in
+            json)
+              JSON_SO="$PWD/dist/valkey-json.so" test/modules/json-smoke.sh "$SYCACHE_BIN"
+              ;;
+            search)
+              SEARCH_SO="$PWD/dist/valkey-search.so" test/modules/search-smoke.sh "$SYCACHE_BIN"
+              ;;
+            bloom)
+              BLOOM_SO="$PWD/dist/valkey-bloom.so" test/modules/bloom-smoke.sh "$SYCACHE_BIN"
+              ;;
+            *)
+              echo "ERROR: 未知模块: $module"
+              exit 1
+              ;;
+          esac
           echo "✓ 烟雾测试通过"
 
       - name: Upload artifacts
