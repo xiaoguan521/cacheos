@@ -1,66 +1,70 @@
 # valkey-search 1.2.1 许可审查
 
-本文件记录 valkey-search 1.2.1 及其第三方依赖的许可信息。
+核对对象：valkey-search 1.2.1（提交 788e8c90063abab69d0d3fff32206f8491c633ca）及其进入产物 `libsearch.so` 的全部组件。
+核对方式（2026-11-13）：上游仓库的 `THIRD_PARTY_NOTICES`、源码树里的许可文本、gRPC v1.70.1 各子模块的许可文本，
+以及对 CI 构建出的 `libsearch.so`（未剥离）按符号名检查哪些组件真正被静态链接。表中“链入”一列即该检查的结论。
 
-## 项目许可
+## 模块本身
 
-- **valkey-search** 1.2.1: BSD-3-Clause
-  - 上游仓库: https://github.com/valkey-io/valkey-search
-  - 发布标签: 1.2.1 (commit 788e8c90063abab69d0d3fff32206f8491c633ca)
-  - 官方许可文本: https://github.com/valkey-io/valkey-search/blob/1.2.1/LICENSE
+| 项 | 内容 |
+|---|---|
+| 许可 | BSD-3-Clause |
+| 上游 | https://github.com/valkey-io/valkey-search （标签 1.2.1） |
+| 许可文本 | https://github.com/valkey-io/valkey-search/blob/1.2.1/LICENSE |
+| vmsdk（仓库内 `vmsdk/`） | BSD-3-Clause，随模块一起发布，许可文本 https://github.com/valkey-io/valkey-search/blob/1.2.1/vmsdk/LICENSE |
 
-## 第三方依赖许可审查
+## 随源码仓库提供（`third_party/`，上游 `THIRD_PARTY_NOTICES` 逐项登记）
 
-所有第三方依赖均采用 **MIT / BSD / Apache-2.0** 许可，符合 CacheOS 政策要求（禁止 RSAL / SSPL / AGPL / GPL）。
+| 组件 | 版本 | 许可 | 来源 | 许可文本（1.2.1 标签） | 链入 |
+|---|---|---|---|---|---|
+| HdrHistogram_c | 未标注 | CC0-1.0（上游同时标注 BSD-2-Clause，双许可） | https://github.com/HdrHistogram/HdrHistogram_c | third_party/hdrhistogram_c/LICENSE | 是 |
+| hnswlib（上游已修改） | 未标注 | Apache-2.0 | https://github.com/nmslib/hnswlib | third_party/hnswlib/LICENSE | 是 |
+| SimSIMD（上游已修改） | 未标注 | Apache-2.0 | https://github.com/ashvardanian/SimSIMD | third_party/simsimd/LICENSE | 是 |
+| Snowball | v3.0.1 | BSD-3-Clause | https://github.com/snowballstem/snowball | third_party/snowball/COPYING | 是 |
+| ICU | 76.1 | ICU License | https://github.com/unicode-org/icu | third_party/icu/LICENSE | 是（静态库） |
 
-### 构建系统依赖（vendored in submodules）
+ICU License 与 CC0-1.0 已由项目负责人于 2026-11-13 认定为宽松许可（见 ADR 0002 修订记录）。
 
-| 依赖 | 版本 | 许可 | 来源 | 备注 |
-|------|------|------|------|------|
-| gRPC | 1.70.1 | Apache-2.0 | google/grpc | 包含 Protobuf、Abseil、GTest、benchmark |
-| Protobuf | 内含于 gRPC | Apache-2.0 | protocolbuffers/protobuf | 独立许可证验证通过 |
-| Abseil | 内含于 gRPC | Apache-2.0 | abseil/abseil-cpp | 独立许可证验证通过 |
-| GTest | main branch | BSD-3-Clause | google/googletest | 来自 googletest |
-| benchmark | 1.8.3 | Apache-2.0 | google/benchmark | 非 sanitizer builds |
+## 构建时拉取并静态链入（`submodules/CMakeLists.txt`）
 
-### Vendored 第三方库（third_party/ 目录）
+| 组件 | 版本 | 许可 | 来源 | 链入 |
+|---|---|---|---|---|
+| gRPC | v1.70.1 | Apache-2.0 | https://github.com/grpc/grpc | 是 |
+| abseil-cpp（gRPC 子模块） | 随 gRPC v1.70.1 | Apache-2.0 | https://github.com/abseil/abseil-cpp | 是 |
+| protobuf（gRPC 子模块） | 随 gRPC v1.70.1 | BSD-3-Clause | https://github.com/protocolbuffers/protobuf | 是 |
+| upb（gRPC 仓库内 `third_party/upb`） | 随 gRPC v1.70.1 | BSD-3-Clause（文件头注明 BSD-style） | https://github.com/protocolbuffers/protobuf/tree/main/upb | 是 |
+| utf8_range（gRPC 仓库内） | 随 gRPC v1.70.1 | MIT | https://github.com/protocolbuffers/utf8_range | 是 |
+| address_sorting（gRPC 仓库内） | 随 gRPC v1.70.1 | BSD-3-Clause（WIDE Project） | https://github.com/grpc/grpc/tree/v1.70.1/third_party/address_sorting | 是 |
+| envoy data-plane-api / cncf xds（gRPC 子模块，xDS 协议定义） | 随 gRPC v1.70.1 | Apache-2.0 | https://github.com/envoyproxy/data-plane-api 、 https://github.com/cncf/xds | 是 |
+| c-ares（gRPC 子模块） | 随 gRPC v1.70.1 | MIT 风格许可（文本为 MIT 麻省理工 1998 年的“可免费使用、复制、修改、分发”声明 + Daniel Stenberg 版权），**不在白名单内，待认定** | https://github.com/c-ares/c-ares | 是 |
+| zlib（gRPC 子模块） | 随 gRPC v1.70.1 | Zlib，**不在白名单内，待认定** | https://github.com/madler/zlib | 是 |
+| highwayhash | **master（未固定）**；2026-11-13 核对时为 f8381f3331d9c56a9792f9b4a35f61c41108c39e（2024-04-18） | Apache-2.0 | https://github.com/google/highwayhash | 是 |
 
-| 库 | 许可 | 来源 | 用途 | 备注 |
-|----|------|------|------|------|
-| hnswlib | Apache-2.0 | nmslib/hnswlib | 层次化可导航小世界图 (HNSW) 用于向量搜索 | 修改版本：增加查询取消、指标追踪、自定义加载保存、多块载荷存储 |
-| SimSIMD | Apache-2.0 | ashvardanian/SimSIMD | SIMD 优化向量相似性计算 | 修改版本 |
-| Snowball | BSD-3-Clause | snowballstem/snowball | 词干提取（stemming）用于全文搜索 | 原始版本 |
-| ICU | ICU License | unicode-org/icu | Unicode 正规化与大小写折叠 | 编译为静态库 |
-| HdrHistogram_c | CC0-1.0 + BSD-2-Clause | HdrHistogram/HdrHistogram_c | 高动态范围直方图用于延迟追踪 | 双许可 |
-| highwayhash | Apache-2.0 | google/highwayhash | SIMD 优化向量哈希 | 原始版本 |
+## 仅构建或测试使用，未链入产物
 
-### 系统库依赖（通常已在 ubuntu-latest 上可用）
+| 组件 | 版本 | 许可 | 来源 | 说明 |
+|---|---|---|---|---|
+| googletest | **main（未固定）**；2026-11-13 核对时为 845e54d32d86ee1bb872ebb5b1c755e6e3a94c34 | BSD-3-Clause | https://github.com/google/googletest | 产物中无其符号 |
+| benchmark | v1.8.3 | Apache-2.0 | https://github.com/google/benchmark | 产物中无其符号 |
+| re2（gRPC 子模块） | 随 gRPC v1.70.1 | BSD-3-Clause | https://github.com/google/re2 | 产物中未发现其符号 |
+| BoringSSL（gRPC 子模块） | — | — | https://github.com/google/boringssl | 未使用：gRPC 链接系统 OpenSSL，产物中无其符号 |
 
-| 库 | 许可 | 用途 |
-|----|------|------|
-| libssl-dev / OpenSSL | Apache-2.0 + BSD | TLS 支持 |
-| libsystemd-dev | LGPL-2.1+ | systemd 集成（CI 已确认 libsearch.so 动态链接 libsystemd.so.0；项目负责人认定动态链接允许，发布包须附其许可文本） |
-| pkg-config | GPL-2.0+ | 构建工具（不链接到产物） |
-| cmake | BSD-3-Clause | 构建工具（不链接到产物） |
-| ninja | Apache-2.0 | 构建工具（不链接到产物） |
-| g++ / gcc | GPL-3.0+ | 编译器（不链接到产物） |
+## 动态链接的系统库（发布包不含其二进制）
 
-**注**：系统库和构建工具许可不影响最终二进制文件，仅用于编译过程。
+| 库 | 许可 | 说明 |
+|---|---|---|
+| OpenSSL（libssl.so.3、libcrypto.so.3） | Apache-2.0 | 系统自带 |
+| libsystemd（libsystemd.so.0） | LGPL-2.1-or-later | 项目负责人认定动态链接允许；发布包附其许可文本（licenses/modules/search/libsystemd-LGPL-2.1.txt） |
+| glibc（libc、libm、libmvec、ld-linux） | LGPL-2.1-or-later | 所有二进制共有的系统运行库 |
+| libstdc++、libgcc_s | GPL-3.0-or-later WITH GCC-exception-3.1 | 系统运行库，运行库例外允许动态或静态使用而不传染 |
 
-## 兼容性评分
+## 需要项目负责人处理的事项
 
-- **许可合规**: ✓ 通过
-- **Valkey 版本**: 9.0.1+ (本项目使用 9.1.3)
-- **C++ 标准**: C++20
-- **编译器**: GCC 12+ 或 Clang 16+
-- **Ubuntu 24.04 兼容性**: ✓ 完全兼容
+1. **Zlib 与 c-ares 的许可**：二者静态链入产物，许可不在 CLAUDE.md 白名单（MIT / BSD / Apache-2.0 / ICU / CC0-1.0 / ISC）内。Zlib 是常见的宽松许可；c-ares 的许可文本是 MIT 风格的宽松声明。需要项目负责人像此前对 ICU、CC0-1.0、ISC 那样明确认定，并同步 CLAUDE.md 与 ADR。**认定前本审查结论为“有条件”。**
+2. **构建输入未固定**：highwayhash 取自 `master`、googletest 取自 `main`，每次构建拿到的代码可能不同，产物不可复现。highwayhash 已两年多没有变更、googletest 不进产物，实际风险低，但按“上游版本锁定”的原则应通过 `dataplane/patches` 下可复现的补丁固定到提交。
+3. 许可文本与 SBOM 的随包分发见 `dataplane/modules/collect-licenses.py`（自动收集 `third_party/` 下各库的许可文本；gRPC 各子模块的许可文本目前**未**自动收集，需随固定补丁一并解决）。
 
-## 许可审查结论
+## 结论
 
-**结论**: ✓ **通过**
-
-valkey-search 1.2.1 及其所有直接第三方依赖的许可均符合 CacheOS 政策（MIT / BSD-3-Clause / Apache-2.0），不包含 RSAL / SSPL / AGPL / GPL 递归依赖。该模块可纳入产品。
-
-**审查日期**: 2026-11-12
-**审查人**: 由代理起草，未附逐项来源链接；ICU License 与 CC0-1.0 已由项目负责人于 2026-11-13 认定为宽松许可（见 ADR 0002 修订记录）
-**参考**: docs/adr/0002-extension-modules.md
+**有条件通过**：模块本身与直接依赖的许可均为宽松许可，不含 RSAL / SSPL / AGPL / GPL 类传染许可；
+上述第 1 项认定后方可视为完全符合 CLAUDE.md，第 2、3 项是改进项。

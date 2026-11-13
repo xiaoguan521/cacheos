@@ -1,0 +1,4 @@
+relative-path 1.9.3 的已发布 crate 不含许可文本文件；此处的 LICENSE-MIT 与 LICENSE-APACHE 原样取自上游仓库：
+https://raw.githubusercontent.com/udoprog/relative-path/6d267fbd85b257e4416c9f020131c6da168e1d3d/LICENSE-MIT
+https://raw.githubusercontent.com/udoprog/relative-path/6d267fbd85b257e4416c9f020131c6da168e1d3d/LICENSE-APACHE
+（提交 6d267fbd85b257e4416c9f020131c6da168e1d3d，即该 crate 的 .cargo_vcs_info.json 所记提交；crate 声明的许可为 MIT OR Apache-2.0）

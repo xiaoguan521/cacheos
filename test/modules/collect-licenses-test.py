@@ -68,5 +68,53 @@ class T(unittest.TestCase):
             self.assertTrue(any(r["relationshipType"] == "DYNAMIC_LINK" for r in doc["relationships"]))
 
 
+class CrateFallbackTest(unittest.TestCase):
+    """发布的 crate 不带许可文本时的两种补法：同一提交的兄弟 crate、入库的 extra-licenses。"""
+
+    def mk_crate(self, root, name, sha, with_license):
+        d = os.path.join(root, name)
+        w(d + "/.cargo_vcs_info.json", '{"git": {"sha1": "%s"}}' % sha)
+        if with_license:
+            w(d + "/LICENSE", "bsd text")
+        return d
+
+    def test_sibling_in_same_commit_and_extra_dir(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "src"); w(src + "/LICENSE")
+            crates = os.path.join(d, "crates")
+            main = self.mk_crate(crates, "vm", "aaa", True)
+            macros = self.mk_crate(crates, "vm-macros", "aaa", False)  # 同一提交，继承 vm 的许可文本
+            other = self.mk_crate(crates, "rel", "bbb", False)  # 没有兄弟，用 extra-licenses
+            lone = self.mk_crate(crates, "lone", "ccc", False)  # 两种都补不上：记为缺失
+            w(d + "/extra/rel-1.0/LICENSE-MIT", "mit text")
+            deps = [{"name": "vm", "version": "1.0", "license": "BSD-3-Clause", "dir": main},
+                    {"name": "vm-macros", "version": "1.0", "license": "BSD-3-Clause", "dir": macros},
+                    {"name": "rel", "version": "1.0", "license": "MIT", "dir": other},
+                    {"name": "lone", "version": "1.0", "license": "MIT", "dir": lone}]
+            res = cl.collect("bloom", "1.0.1", "BSD-3-Clause", src, d + "/out", deps=deps, extra_dir=d + "/extra")
+            base = d + "/out/licenses/bloom/crates/"
+            self.assertTrue(os.path.isfile(base + "vm-macros-1.0/LICENSE"))
+            self.assertTrue(os.path.isfile(base + "rel-1.0/LICENSE-MIT"))
+            self.assertEqual(res["missing"], ["crates/lone-1.0"])
+
+
+class MarkdownTest(unittest.TestCase):
+    def test_bloom_table_is_sorted_linked_and_deterministic(self):
+        deps = [
+            {"name": "serde", "version": "1.0.1", "license": "MIT OR Apache-2.0", "repository": "https://github.com/serde-rs/serde"},
+            {"name": "bincode", "version": "1.3.3", "license": "MIT", "repository": None},
+        ]
+        a = cl.markdown_crates("bloom", "1.0.1", "BSD-3-Clause", "https://github.com/valkey-io/valkey-bloom",
+                               "43b4e704bc8d6bd5f65529c8bd7e8488f2d54080", deps)
+        self.assertEqual(a, cl.markdown_crates("bloom", "1.0.1", "BSD-3-Clause", "https://github.com/valkey-io/valkey-bloom",
+                                               "43b4e704bc8d6bd5f65529c8bd7e8488f2d54080", list(reversed(deps))))
+        self.assertLess(a.index("bincode"), a.index("serde"))  # 按名称排序
+        self.assertIn("https://crates.io/crates/serde/1.0.1", a)
+        self.assertIn("https://github.com/serde-rs/serde", a)
+        self.assertIn("| bincode | 1.3.3 | MIT |", a)
+        self.assertIn("2 个", a)  # 依赖总数写在文件里，数量变化会让 diff 失败
+        self.assertIn("collect-licenses.py", a)  # 注明由脚本生成
+
+
 if __name__ == "__main__":
     unittest.main()

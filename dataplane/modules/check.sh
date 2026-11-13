@@ -137,6 +137,21 @@ check_all_modules_defined() {
   [[ $errors -eq 0 ]] && echo "✓ 所有白名单模块都已定义" && return 0 || return 1
 }
 
+# 每个模块都要有人工核对过的 LICENSES.md，且包含上游链接与锁定的提交（ADR 0002：许可审查结果记入仓库）
+check_license_docs() {
+  local errors=0 name version repo tag license hash
+  while IFS=$'\t ' read -r name version repo tag license hash; do
+    [[ "$name" =~ ^# || -z "$name" ]] && continue
+    local f="$HERE/$name/LICENSES.md"
+    if [[ ! -s "$f" ]]; then echo "  ✗ 缺少 $f" >&2; errors=1; continue; fi
+    grep -q "${repo%.git}" "$f" || { echo "  ✗ $f 没有上游链接 ${repo%.git}" >&2; errors=1; }
+    grep -q "$hash" "$f" || { echo "  ✗ $f 没有锁定的提交 $hash" >&2; errors=1; }
+    grep -q "$version" "$f" || { echo "  ✗ $f 没有版本 $version" >&2; errors=1; }
+  done < "$MODULES_FILE"
+  [[ $errors -eq 0 ]] && echo "✓ 每个模块都有 LICENSES.md，含上游链接、版本与锁定提交"
+  return $errors
+}
+
 # 执行所有检查
 echo "========================================="
 echo "模块清单与版本检查"
@@ -148,6 +163,7 @@ check_versions_yaml || all_pass=1
 check_version_consistency || all_pass=1
 check_no_todos || all_pass=1
 check_all_modules_defined || all_pass=1
+check_license_docs || all_pass=1
 python3 -I "$HERE/../../test/modules/collect-licenses-test.py" || all_pass=1
 bash "$HERE/../../test/modules/install-modules-test.sh" || all_pass=1
 bash "$HERE/../../test/modules/build-modules-package-test.sh" || all_pass=1
