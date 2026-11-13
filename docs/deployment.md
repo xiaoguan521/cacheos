@@ -121,8 +121,9 @@ sha256sum -c SHA256SUMS --ignore-missing      # 必须看到 OK 再安装
 
 ```bash
 # 1. dataplane/versions.yaml 的 current 必须等于要发布的版本，且对应真实代码变化
-# 2. 本地先跑完整校验
-make ci UPSTREAM_SRC=/tmp/valkey-src
+# 2. 数据面门禁（make ci 的各项）以手动触发的 GitHub Actions 为准，不要求本地构建；
+#    patch、品牌、版本一致性等轻量检查可本地先跑：
+make patch-check UPSTREAM_SRC=/tmp/valkey-src && make brand && make versions
 # 3. 打标签（标签去掉 v 必须等于 versions.yaml 的 current，否则构建在校验步骤失败）
 git tag v0.1.0 && git push origin v0.1.0
 ```
@@ -135,10 +136,21 @@ git tag v0.1.0 && git push origin v0.1.0
 | --- | --- | --- |
 | `publish-builder` | x86_64、aarch64 各构建一次 glibc 2.17 兼容**编译环境**镜像并推送 GHCR | `ghcr.io/xiaoguan521/cacheos/build-env:sha-<提交>-<架构>`；v* 标签时另加 `el7-<架构>` |
 | `build` | 拉取并校验上游源码哈希，在该编译环境内构建，运行 VEX、改名黄金验收、版本一致性门禁，生成校验和 | tar.gz、DEB、RPM、调试符号包、SPDX SBOM、BUILDINFO、SHA256SUMS（Actions artifact，保留 90 天） |
+| `modules-packages` | x86_64、aarch64 各在原生运行器（ubuntu-24.04）上构建 JSON / 搜索 / 布隆三个扩展模块，收集许可文本与 SBOM，打成独立可选包 `sycache-modules`（tar.gz、DEB、RPM）与 `MODULES-BUILDINFO-<架构>`；不进 glibc 2.17 兼容的主包 | `cacheos-sycache-modules-<架构>`（Actions artifact）；v* 标签时随 Release 发布 |
 | `publish-builder-manifest` | 合并多架构清单 | `build-env:sha-<提交>`；v* 标签时另加 `build-env:el7` |
 | `publish-images` | 每个架构用 `build` 产出的 tar.gz 构建**数据面运行时镜像**（`dataplane/docker/Dockerfile`），并从源码构建**控制台镜像**（`deploy/docker/console.Dockerfile`）；起容器做冒烟（数据面 ping / set / get，控制台 `/healthz`）通过后才推送 | `sycache:sha-<提交>-<架构>`、`sycache-console:sha-<提交>-<架构>` |
 | `publish-images-manifest` | 合并多架构清单 | `sha-<提交>`；v* 标签时另加 `<版本>`，正式版再加 `latest` |
 | `publish-release`（仅 v* 标签） | 创建 GitHub Release，上传全部资产并重新生成全量 `SHA256SUMS` | 见 [`release-assets.md`](release-assets.md) |
+
+**验证已发布的版本（含模块包）**
+
+不构建，只拿 Release 里的真实安装包在干净发行版容器里安装验证：Actions → `modules` → Run workflow，在 `release_tag` 填已发布的标签（如 `v0.2.0`）；也可用命令行：
+
+```bash
+gh workflow run modules.yml -f release_tag=v0.2.0
+```
+
+填了 `release_tag` 时只跑验证、不构建：在 Ubuntu 24.04、Debian 13（DEB）、Fedora 40（RPM）、Ubuntu 24.04（tar.gz）里装主包 + 模块包，加载三个模块并执行基本命令，卸载模块包后确认主包仍在；另在 Ubuntu 22.04（glibc 2.35）确认模块包因依赖被拒绝安装。这些验证只在 x86_64 运行器上跑。不填 `release_tag` 时，`module`（json / search / bloom）与 `arch`（x86_64 / aarch64）两个输入选择要构建并冒烟的模块与架构。
 
 **GHCR 镜像一览**（`ghcr.io/xiaoguan521/cacheos/` 下，路径全小写）
 
@@ -325,6 +337,21 @@ sycache-cli --cluster create \
 
 ---
 
+### 4.7 可选：扩展数据类型模块包
+
+JSON、搜索 / 向量、布隆过滤器三个模块（[ADR 0002](adr/0002-extension-modules.md)）不在 `sycache` 主包里，作为独立可选包 `sycache-modules` 发布，x86_64 与 aarch64 都有。
+
+- **平台限制**：模块在 Ubuntu 24.04 工具链上构建，需要 glibc ≥ 2.38 与 libstdc++ ≥ GCC 13.1（Ubuntu 24.04 及更新、Debian 13 及更新、Fedora 40 等）。CentOS 7、麒麟 V10、统信 UOS、openEuler 等较老的发行版装不上；DEB 在 Ubuntu 22.04 会因依赖被拒绝。主包不受影响，照常使用。
+- **安装**：先装同版本以上的 `sycache` 主包，再装模块包（文件名见 [`release-assets.md`](release-assets.md)）：
+
+```bash
+sudo apt install "./sycache-modules_${VERSION}-1_amd64.deb"      # RPM 系：sudo dnf install ./sycache-modules-${VERSION}-1.x86_64.rpm
+```
+
+- **布局**：模块文件装在 `/home/atwasoft/sycache/modules/<json|search|bloom>.so`，许可文本在 `licenses/modules/`，SBOM 在 `share/modules/`，来源信息在 `share/MODULES-BUILDINFO`。默认**不加载**。
+- **选择模块只能在创建实例时**：由控制台创建部署单元时勾选（见 5.6）；创建后不能增减，也不能热加载（`MODULE` 命令保持禁用）。搜索与向量**不支持集群形态**；模块只对数据实例生效，哨兵进程不加载。
+- **卸载**：卸载模块包前，必须先停用并重建使用了模块的实例，否则它们重启时会因找不到模块文件而启动失败。
+
 ## 5. 形态 B：带控制台部署（生产推荐）
 
 整体流程：**装控制台 → 初始化 → 导入授权与数据面包 → 各缓存主机装 agent 并注册 → 在控制台创建实例**。
@@ -433,6 +460,7 @@ sudo -u sycache-agent sycache-agent enroll \
 - `-ca-fingerprint` 用来确认连接的是真控制台，不要跳过。
 - 同时还需在缓存主机上安装数据面包（`sycache`，见 4.1 的 DEB/RPM），因为实例二进制与 `sycache-cli` 来自它；版本切换由控制台通过 wrapper 完成。
 - 主机出现在「主机」列表，状态在线后即可分配实例。
+- 需要扩展数据类型的主机，另装可选的 `sycache-modules` 包（见 4.7）。agent 会上报已安装的模块（装上或卸载后无需重启 agent），「主机」列表显示每台主机的扩展模块。
 
 ### 5.6 创建实例并连接
 
@@ -445,6 +473,19 @@ sycache-cli -h <主机> -p <实例端口> --user <账号> -a '<口令>' ping
 ```
 
 开启数据面 TLS 的实例，客户端需同时启用 TLS（`--tls`，并按需配 `--cacert`）。
+
+**扩展数据类型**：创建表单里的「扩展数据类型」可勾选 JSON、搜索、布隆过滤器。只能在创建时选择，创建后不能增减；搜索与向量暂不支持集群形态（选集群时该项禁用）。没有在线主机安装 `sycache-modules` 的模块不可勾选，已安装的会标出主机台数；带模块的部署单元只会放置到已安装模块包的主机上，扩容新增的节点沿用单元的模块。业务账号即使授予 `+@all`，也不能执行 `JSON.DEBUG`、`BF.LOAD` 等调试 / 整体载入类命令。
+
+### 5.6.1 Web 命令行
+
+控制台可对指定的数据实例执行数据命令。须由管理员单独授权该操作人，且每次请求都要二次验证（TOTP）。它使用独立的内置账号，不触达操作系统，只能用于数据实例（不能用于哨兵进程）：
+
+- 拒绝清单包含管理类、危险类、脚本、阻塞、订阅、事务与连接类命令（如 `CONFIG`、`EVAL`、`KEYS`、`FLUSHALL`、`MULTI`、`SUBSCRIBE`、`BLPOP`、`XREAD ... BLOCK`），以及 `MODULE`；
+- 扩展模块命令：`FT.CREATE`、`FT.DROPINDEX`、`JSON.SET`、`BF.ADD` 等数据命令可用；`JSON.DEBUG`、`BF.LOAD`、`FT._DEBUG`、`FT._LIST`、`FT.INTERNAL_UPDATE` 在拒绝清单中；
+- 单条命令超时 5 秒，返回超过 256 KiB 会截断并标明；
+- 审计只记录操作人、部署单元、实例、命令名、参数个数与结果状态，不记参数值与返回值。
+
+完整拒绝清单见 `internal/webcli/webcli.go` 的 `DeniedCommands`。
 
 ### 5.7 控制台高可用（可选）
 
@@ -827,6 +868,8 @@ sudo systemctl restart sycache@6379
 
 在控制台导入新版本包（含签名）→ 对部署单元发起滚动升级。底层通过 wrapper 的 `switch-version` 原子切换 `current` 软链并重启实例，随时可切回旧版本。
 
+**主机上有实例在用扩展模块时**：升级包必须自带这些模块（包内 `modules/<名>.so`），否则 agent 在落盘前就拒绝，报 `this engine package lacks modules in use on this host`，因为实例重启后会因缺少模块文件起不来；切换到本机已安装的版本时同样检查 `versions/<版本>/modules/`。所以对用到模块的主机，请导入带齐模块的升级包。切换 `current` 后，实例下次重启即加载新版本对应的模块。
+
 ### 10.3 控制台与 agent
 
 1. 备份 `/var/lib/sycache-console` 与 `/etc/cacheos`。
@@ -843,6 +886,8 @@ sudo apt remove sycache              # 或 sudo rpm -e sycache
 ```
 
 实例目录与数据不会被自动删除，需要时手工清理。
+
+`sycache-modules` 模块包的卸载注意事项见 4.7：先停用并重建使用模块的实例，再卸载模块包。
 
 ---
 
