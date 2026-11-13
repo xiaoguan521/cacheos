@@ -146,6 +146,12 @@ jobs:
           esac
           echo "✓ 烟雾测试通过"
 
+      - name: ACL matrix for module commands
+        run: |
+          set -euo pipefail
+          module="${{ inputs.module || 'json' }}"
+          python3 -I test/modules/acl-matrix.py "$SYCACHE_BIN" "dist/valkey-${module}.so" "dist/acl-matrix-${module}.md"
+
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -155,6 +161,7 @@ jobs:
             dist/valkey-*.so
             dist/*.log
             dist/bloom-Cargo.lock
+            dist/acl-matrix-*.md
             dist/sycache-*.tar.gz
           retention-days: 7
 
