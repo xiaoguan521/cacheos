@@ -266,6 +266,13 @@ for mod in $MODULES_TO_BUILD; do
     continue
   fi
 
+  # 应用 dataplane/modules/patches/<模块>/ 下的 patch（固定构建输入等）；应用失败即构建失败
+  if ! bash "$MODULES_DIR/apply-patches.sh" "$mod" "$CACHE_DIR/$mod-$ver"; then
+    echo "ERROR: 模块 $mod 的 patch 应用失败，停止构建" >&2
+    ((local_errors++))
+    continue
+  fi
+
   # 编译
   if ! build_module "$mod" "$ver" "$SYCACHE_SRC"; then
     ((local_errors++))

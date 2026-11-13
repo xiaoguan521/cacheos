@@ -166,6 +166,7 @@ check_all_modules_defined || all_pass=1
 check_license_docs || all_pass=1
 python3 -I "$HERE/../../test/modules/collect-licenses-test.py" || all_pass=1
 bash "$HERE/../../test/modules/install-modules-test.sh" || all_pass=1
+bash "$HERE/../../test/modules/apply-patches-test.sh" || all_pass=1
 bash "$HERE/../../test/modules/build-modules-package-test.sh" || all_pass=1
 
 echo "========================================="

@@ -7,16 +7,72 @@
   <输出目录>/licenses/<模块>/…           上游 LICENSE/COPYING/NOTICE，以及 third_party/ 下各库、bloom 各 crate 的许可文本
   <输出目录>/sbom-<模块>.spdx.json        模块 + 直接依赖 + 动态链接的系统库；时间戳取 SOURCE_DATE_EPOCH，输出可复现
 
+search 另收集静态链接的 gRPC 及其子模块许可（licenses/search/grpc/…，SBOM 列为 STATIC_LINK）：优先取源码目录下
+.build-*/.deps/grpc（构建用的同一份检出），没有则按固定标签 v1.70.1 + commit 克隆并核对。
 不带 --src 时按 dataplane/modules/MODULES 浅克隆固定标签，并核对 commit，不一致即失败。
 模块根目录没有许可文本视为错误；third_party 下缺许可文本的库记入 SBOM 的 comment 并在标准输出告警。
 """
-import datetime, json, os, re, shutil, subprocess, sys, tempfile
+import datetime, glob, json, os, re, shutil, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LICENSE_RE = re.compile(r"^(LICEN[CS]E|COPYING|NOTICE|UNLICENSE|COPYRIGHT)", re.I)
 
 # 动态链接的系统库（CLAUDE.md 允许的 LGPL 例外，目前仅 libsystemd，由 CI 的 readelf 检查确认）
 DYNAMIC_LIBS = {"search": [("libsystemd", "LGPL-2.1-or-later", "https://github.com/systemd/systemd")]}
+
+
+# valkey-search 构建时由 submodules/CMakeLists.txt 从固定标签克隆 gRPC 并静态链接进 .so（见 ADR 0002）。
+# 许可文本取自与构建同一份检出（<源码>/.build-release/.deps/grpc）；缓存命中没有检出时，按下面的固定标签 + commit 克隆。
+GRPC_TAG, GRPC_VERSION = "v1.70.1", "1.70.1"
+GRPC_COMMIT = "5e099002c1600c580ebe1e6741f8ff8b182ffea4"
+# (gRPC 检出内的相对路径, 名称, SPDX 许可, covered_by)；covered_by 非 None 表示该目录没有独立许可文件，由所述组件的许可覆盖
+GRPC_COMPONENTS = [
+    ("third_party/abseil-cpp", "abseil-cpp", "Apache-2.0", None),
+    ("third_party/protobuf", "protobuf", "BSD-3-Clause", None),
+    ("third_party/cares/cares", "c-ares", "MIT", None),
+    ("third_party/zlib", "zlib", "Zlib", None),
+    ("third_party/upb", "upb", "BSD-3-Clause", "protobuf"),
+    ("third_party/utf8_range", "utf8_range", "MIT", None),
+    ("third_party/address_sorting", "address_sorting", "BSD-3-Clause", None),
+    ("third_party/envoy-api", "envoy-api", "Apache-2.0", None),
+    ("third_party/xds", "xds", "Apache-2.0", None),
+]
+
+
+def find_grpc_checkout(src):
+    for d in sorted(glob.glob(os.path.join(src, ".build-*", ".deps", "grpc"))):
+        if os.path.isfile(os.path.join(d, "LICENSE")):
+            return d
+    return None
+
+
+def clone_grpc(dst):
+    subprocess.run(["git", "-c", "advice.detachedHead=false", "clone", "-q", "--branch", GRPC_TAG, "--depth", "1",
+                    "--recurse-submodules", "--shallow-submodules", "--single-branch",
+                    "https://github.com/grpc/grpc", dst], check=True)
+    head = subprocess.run(["git", "-C", dst, "rev-parse", "HEAD"], capture_output=True, text=True,
+                          check=True).stdout.strip()
+    if head != GRPC_COMMIT:
+        sys.exit("ERROR: gRPC 标签 %s 指向 %s，与固定的 %s 不一致" % (GRPC_TAG, head, GRPC_COMMIT))
+    return dst
+
+
+def collect_grpc(grpc_dir, lic_out):
+    """复制 gRPC 及其静态链接组件的许可文本到 lic_out/grpc；返回 [(名称, 许可, covered_by)]。缺文本即失败。"""
+    base = os.path.join(lic_out, "grpc")
+    if not copy_licenses(grpc_dir, base):
+        sys.exit("ERROR: gRPC 检出 %s 没有 LICENSE" % grpc_dir)
+    found, missing = [], []
+    for rel, name, lic, covered in GRPC_COMPONENTS:
+        if covered:
+            found.append((name, lic, covered))
+        elif copy_licenses(os.path.join(grpc_dir, rel), os.path.join(base, "third_party", name)):
+            found.append((name, lic, None))
+        else:
+            missing.append(rel)
+    if missing:
+        sys.exit("ERROR: gRPC 静态链接组件缺许可文本，不能发布: " + ", ".join(missing))
+    return found
 
 
 def license_files(d):
@@ -58,7 +114,7 @@ def vcs_sha(crate_dir):
         return None
 
 
-def collect(module, version, license_, src, out, deps, repo="NOASSERTION", commit="", extra_dir=None):
+def collect(module, version, license_, src, out, deps, repo="NOASSERTION", commit="", extra_dir=None, grpc_dir=None):
     """收集许可文本并写 SBOM。deps 为 [{name, version, license, dir?}]；返回 {"missing": [...]}。"""
     lic_out = os.path.join(out, "licenses", module)
     if not copy_licenses(src, lic_out):
@@ -95,6 +151,12 @@ def collect(module, version, license_, src, out, deps, repo="NOASSERTION", commi
             continue
         missing.append("crates/%s" % key)
 
+    grpc_parts = []
+    if module == "search":  # gRPC 及其子模块静态链接进 libsearch.so，必须随包附许可文本
+        if not grpc_dir:
+            sys.exit("ERROR: search 需要 gRPC 检出目录以收集静态链接组件的许可文本")
+        grpc_parts = collect_grpc(grpc_dir, lic_out)
+
     if module in DYNAMIC_LIBS:  # 动态链接的 LGPL 库：发布包须附其许可文本（CLAUDE.md）
         lgpl = os.path.join(COMMON_LICENSES, "LGPL-2.1")
         if not os.path.isfile(lgpl):
@@ -113,6 +175,17 @@ def collect(module, version, license_, src, out, deps, repo="NOASSERTION", commi
                      dep.get("license") or "NOASSERTION")
         packages.append(p)
         rels.append({"spdxElementId": main["SPDXID"], "relationshipType": "DEPENDS_ON", "relatedSpdxElement": p["SPDXID"]})
+    if grpc_parts:
+        g = spdx_pkg(sid("Package", "grpc", GRPC_VERSION), "grpc", GRPC_VERSION, "Apache-2.0",
+                     "git+https://github.com/grpc/grpc@" + GRPC_COMMIT, comment="静态链接，固定标签 " + GRPC_TAG)
+        packages.append(g)
+        rels.append({"spdxElementId": main["SPDXID"], "relationshipType": "STATIC_LINK", "relatedSpdxElement": g["SPDXID"]})
+        for name, lic, covered in sorted(grpc_parts):
+            p = spdx_pkg(sid("Package", name, "grpc"), name, None, lic, "git+https://github.com/grpc/grpc@" + GRPC_COMMIT,
+                         comment=("gRPC %s 的子模块，静态链接" % GRPC_TAG) +
+                                 (("；没有独立许可文件，由 %s 的许可覆盖" % covered) if covered else ""))
+            packages.append(p)
+            rels.append({"spdxElementId": main["SPDXID"], "relationshipType": "STATIC_LINK", "relatedSpdxElement": p["SPDXID"]})
     for name, lic, loc in DYNAMIC_LIBS.get(module, []):
         p = spdx_pkg(sid("Package", name), name, None, lic, loc, comment="动态链接的系统库，发布包不含其二进制")
         packages.append(p)
@@ -206,7 +279,17 @@ def main():
             if head != m["commit"]:
                 sys.exit("ERROR: %s 标签 %s 指向 %s，与 MODULES 锁定的 %s 不一致" % (module, m["tag"], head, m["commit"]))
         deps = cargo_deps(src) if module == "bloom" else []
-        res = collect(module, m["version"], m["license"], src, out, deps, m["repo"], m["commit"])
+        grpc = None
+        if module == "search":
+            grpc = find_grpc_checkout(src)
+            if grpc:
+                print("  使用构建时的 gRPC 检出: " + grpc)
+            else:  # 缓存命中，没有构建目录：按固定标签与 commit 克隆
+                if tmp is None:
+                    tmp = tempfile.mkdtemp()
+                print("  没有构建目录，按固定标签克隆 gRPC %s ..." % GRPC_TAG)
+                grpc = clone_grpc(os.path.join(tmp, "grpc"))
+        res = collect(module, m["version"], m["license"], src, out, deps, m["repo"], m["commit"], grpc_dir=grpc)
         lost = [x for x in res["missing"] if x.startswith("crates/")]
         if lost:  # 发布的二进制里有这些 crate 的代码，必须附其许可文本
             sys.exit("ERROR: 以下 crate 没有许可文本，请在 dataplane/modules/%s/extra-licenses/<名>-<版本>/ 补上（原样取自上游并写 SOURCE.txt）：%s" % (module, ", ".join(lost)))
