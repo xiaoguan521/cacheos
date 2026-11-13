@@ -9,10 +9,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -908,7 +906,12 @@ func (s *Service) runCreate(ctx context.Context, r *opRun, unit *store.Unit, par
 		r.finish(store.OpFailed, "open secret: "+err.Error())
 		return err
 	}
-	users, _ := s.aclUsers(unit.ID)
+	users, err := s.aclUsers(unit.ID)
+	if err != nil {
+		// 读不到业务账号就继续创建，会得到没有业务账号的实例；宁可停下。
+		r.finish(store.OpFailed, "load acl accounts: "+err.Error())
+		return err
+	}
 	masters := map[uint32]*store.Instance{}
 	masterHosts := map[uint32]*store.Host{}
 	failed := ""
@@ -918,71 +921,10 @@ func (s *Service) runCreate(ctx context.Context, r *opRun, unit *store.Unit, par
 			failed = err.Error()
 			break
 		}
-		agentParams := map[string]string{}
-		for k, v := range params {
-			agentParams[k] = v
-		}
-		// The business listener must bind to the host's internal address.  The
-		// address is a typed field in CreateInstance and is independently checked
-		// again by the agent before writing the data-plane configuration.
-		bind := h.Address
-		if bind == "" {
-			bind = h.Hostname
-		}
-		kind := agentv1.Kind_KIND_SERVER
-		if in.Kind == "sentinel" {
-			kind = agentv1.Kind_KIND_SENTINEL
-		}
-		req := &agentv1.CreateInstance{Port: in.Port, Kind: kind, Params: agentParams, RevisionId: unit.RevisionID, Masterauth: auth, AclUsers: users,
-			ClusterEnabled: unit.Mode == store.ModeCluster, BindAddress: bind, Modules: requestModules(unit, kind)}
-		if unit.TLS && in.Kind == "server" {
-			if s.CA == nil {
-				failed = "data-plane TLS is enabled but the console CA is unavailable"
-				break
-			}
-			cert, err := s.CA.ServerCert([]string{h.Address, h.Hostname, "localhost"})
-			if err != nil {
-				failed = "issue data-plane TLS certificate: " + err.Error()
-				break
-			}
-			keyDER, err := x509.MarshalPKCS8PrivateKey(cert.PrivateKey)
-			if err != nil {
-				failed = "encode data-plane TLS key: " + err.Error()
-				break
-			}
-			req.Tls = &agentv1.TlsMaterial{
-				CertPem:        pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]}),
-				KeyPem:         pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}),
-				CaPem:          append([]byte(nil), s.CA.PEM...),
-				TlsReplication: s.License != nil && s.License().Feature(license.FeatureTLSInternal),
-				TlsCluster:     unit.Mode == store.ModeCluster && s.License != nil && s.License().Feature(license.FeatureTLSInternal),
-				AuthClients:    false,
-			}
-		}
-		if in.Kind == "sentinel" {
-			master := masters[0]
-			host := masterHosts[0]
-			if master == nil || host == nil {
-				failed = "sentinel master is not ready"
-				break
-			}
-			req.SentinelMonitorName = unit.SentinelName
-			req.SentinelMasterHost = host.Address
-			if req.SentinelMasterHost == "" {
-				req.SentinelMasterHost = host.Hostname
-			}
-			req.SentinelMasterPort = master.Port
-			req.SentinelQuorum = unit.Quorum
-		} else if in.Desired == "replica" && unit.Mode != store.ModeCluster {
-			master := masters[in.Shard]
-			host := masterHosts[in.Shard]
-			if master != nil && host != nil {
-				hostAddr := host.Address
-				if hostAddr == "" {
-					hostAddr = host.Hostname
-				}
-				req.ReplicaOf = &agentv1.ReplicaOf{Host: hostAddr, Port: master.Port}
-			}
+		req, err := s.createRequest(unit, in, h, createInputs{Params: params, MasterAuth: auth, Users: users, Masters: masters, MasterHosts: masterHosts})
+		if err != nil {
+			failed = err.Error()
+			break
 		}
 		name := fmt.Sprintf("创建%s %s:%d", roleName(in.Desired), h.Name, in.Port)
 		res, err := s.send(ctx, in.HostID, req)
