@@ -146,6 +146,14 @@ jobs:
           esac
           echo "✓ 烟雾测试通过"
 
+      - name: Client compatibility (redis-py, go-redis)
+        run: |
+          set -euo pipefail
+          module="${{ inputs.module || 'json' }}"
+          MODULE="$module" MODULE_SO="$PWD/dist/valkey-${module}.so" \
+            SYCACHE_BIN="$(dirname "$SYCACHE_BIN")" \
+            python3 test/clients/module_clients_test.py -v 2>&1 | tee "dist/client-compat-${module}.txt"
+
       - name: Cluster slot migration with module data
         if: ${{ (inputs.module || 'json') != 'search' }}
         run: |
@@ -245,6 +253,7 @@ jobs:
             dist/*.log
             dist/bloom-Cargo.lock
             dist/acl-matrix-*.md
+            dist/client-compat-*.txt
             dist/module-abi-*.txt
             dist/sycache-modules*
             dist/MODULES-BUILDINFO-*
