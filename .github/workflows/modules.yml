@@ -117,8 +117,8 @@ jobs:
             echo "== $so =="
             readelf -d "$so" | grep NEEDED || true
             ldd "$so" || true
-            if readelf -d "$so" | grep NEEDED | grep -Eqi 'libsystemd|libgpl|libreadline'; then
-              echo "ERROR: $so 链接了 LGPL/GPL 系统库，需先评审" >&2
+            if readelf -d "$so" | grep NEEDED | grep -Eqi 'libgpl|libreadline|libgmp|libmpfr'; then
+              echo "ERROR: $so 链接了未经认定的 GPL/LGPL 系统库，需先评审（libsystemd 已认定允许）" >&2
               exit 1
             fi
           done

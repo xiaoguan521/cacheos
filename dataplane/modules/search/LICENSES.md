@@ -39,7 +39,7 @@
 | 库 | 许可 | 用途 |
 |----|------|------|
 | libssl-dev / OpenSSL | Apache-2.0 + BSD | TLS 支持 |
-| libsystemd-dev | LGPL-2.1+ | systemd 集成（是否被链接进 libsearch.so **待核实**，未核实前不得发布） |
+| libsystemd-dev | LGPL-2.1+ | systemd 集成（CI 已确认 libsearch.so 动态链接 libsystemd.so.0；项目负责人认定动态链接允许，发布包须附其许可文本） |
 | pkg-config | GPL-2.0+ | 构建工具（不链接到产物） |
 | cmake | BSD-3-Clause | 构建工具（不链接到产物） |
 | ninja | Apache-2.0 | 构建工具（不链接到产物） |
