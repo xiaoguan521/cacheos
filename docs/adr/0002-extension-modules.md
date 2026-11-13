@@ -1,6 +1,6 @@
 # ADR 0002：扩展数据类型模块纳入
 
-- 状态：已采纳（2026-11-12：JSON、布隆过滤器、搜索三个模块均纳入；valkey-search 固定 1.2.1；规则已写入 CLAUDE.md）
+- 状态：已采纳并已交付（2026-11-12：JSON、布隆过滤器、搜索三个模块均纳入；valkey-search 固定 1.2.1；规则已写入 CLAUDE.md。2026-11-13：v0.2.0 起以独立可选包 `sycache-modules` 发布，见文末修订记录；下文“许可审查结果”等章节记录当时的评审，以修订记录的最新结论为准）
 - 关联：规格书 2、5 节；ADR 0001（改名边界）；CLAUDE.md（许可与品牌）
 
 ## 背景
@@ -12,7 +12,7 @@ Phase 2 目标是对标 Redis 8 的 JSON、布隆过滤器、搜索/向量能力
 | 模块 | 官方仓库 | 最新发布 | 主 LICENSE | 版本要求 | 兼容性评分 | 结论 | 备注 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | valkey-json | [valkey-io/valkey-json](https://github.com/valkey-io/valkey-json) | 1.0.3（2026-08-31） | BSD-3-Clause | Valkey ≥8.0（推测） | 高 | **通过** | 依赖 RapidJSON (MIT)；C++ 模块；无第三方 GPL/AGPL 依赖 |
-| valkey-bloom | [valkey-io/valkey-bloom](https://github.com/valkey-io/valkey-bloom) | 1.0.1（2026-02-24） | BSD-3-Clause | Valkey 8.0/8.1（明确） | 中 | **暂缓** | Rust 模块；仅支持 8.0/8.1，未声称 9.1 兼容；后续可按需升级 |
+| valkey-bloom | [valkey-io/valkey-bloom](https://github.com/valkey-io/valkey-bloom) | 1.0.1（2026-02-24） | BSD-3-Clause | Valkey 8.0/8.1（明确） | 中 | **通过**（初评暂缓，已解除） | Rust 模块；上游仅声明 8.0/8.1；已通过 Valkey 9.1 编译、加载、冒烟、集群迁槽与 Rust 依赖许可门禁（ISC 已认定），见修订记录 |
 | valkey-search | [valkey-io/valkey-search](https://github.com/valkey-io/valkey-search) | 1.3.0-rc2（2026-10-26） + 1.2.1 稳定 | BSD-3-Clause | 1.2.1: ≥9.0.1；1.3.0-rc2: ≥9.1.0 | 高 | **通过** | C++ 模块；1.3.0-rc2 明确支持 Valkey 9.1；预发布需风险评估 |
 
 ### 许可详情
@@ -82,11 +82,11 @@ dataplane/modules/
 ├── search/
 │   ├── Makefile / build.sh （valkey-search 上游改造）
 │   └── patch/ （暂无）
-└── (bloom/ - 后续)
+└── bloom/ （Rust，补丁与许可资料见该目录）
 
 make 阶段：
   1. dataplane/build-sycache.sh 调用 sycache-server 编译
-  2. 顺序编译 modules/{json,search}/
+  2. 顺序编译 modules/{json,search,bloom}/
   3. 将 *.so 输出到 dataplane/modules/dist/
 ```
 
@@ -168,14 +168,12 @@ releases:
 
 ### 已识别风险
 
-1. **valkey-bloom 兼容性**：版本声称仅 8.0/8.1，9.1 编译/运行未验证。
-   - 缓解：纳入前必须通过上述三项门禁，未通过则不进入发布包。
+1. **valkey-bloom 兼容性**：版本声称仅 8.0/8.1。**已缓解**：9.1 编译、加载、冒烟、集群迁槽均在 Actions 通过，并已随 v0.2.0 发布。
 
 2. **预发布 valkey-search 1.3.0-rc2**：RC 版本可能有突破性变化。
    - 缓解：建议产品版 0.1.0 基于 1.2.1 LTS；1.3.0 GA 后可升级。
 
-3. **第三方 Rust 依赖许可**：`bloomfilter` 等 crate 许可未逐一验证。
-   - 缓解：bloom 纳入前逐一核对 Rust 依赖许可（门禁 2）；json 无 Rust 依赖，search 为 C++。
+3. **第三方 Rust 依赖许可**：**已缓解**。`dataplane/modules/cargo-license-check.py` 在构建中逐个 crate 核对，各模块 `LICENSES.md` 记录来源。
 
 4. **RDB 格式演进**：模块新增命令可能改变 RDB 数据类型 ID。
    - 缓解：与模块上游同步版本固定；迁移工具需按模块版本检测并转换。
@@ -184,8 +182,10 @@ releases:
 
 1. 模块参数热配置：CONFIG SET 对某些模块参数（如 JSON 最大路径深度、Search 索引粒度）是否生效，需代码审查。
 2. 模块内存计数：sycache INFO memory 中是否包含模块数据的 `used_memory`；否则需补充模块级别的 memory audit。
-3. 集群槽迁移中的模块数据：Search 索引是否支持 DUMP/RESTORE 或需要通过 SCAN 重建。
-4. 许可证作为产品交付物：SBOM、NOTICE、安装包内是否需包含各模块的 LICENSE 文本。
+3. 集群槽迁移中的模块数据：JSON、布隆已用迁槽用例验证（`test/modules/cluster-smoke.py`）；Search 索引的迁槽行为仍未验证，集群形态下暂不测 search。
+4. ~~许可证作为产品交付物~~ 已解决：模块包附各模块与第三方依赖的许可文本与 SBOM，见修订记录。
+
+以上第 1、2 项仍未验证。
 
 ## 拟议的 CLAUDE.md 规则扩展
 
@@ -233,14 +233,14 @@ releases:
 **后续步骤：**
 1. ~~本 ADR 架构评审与批准~~ 已完成。
 2. ~~更新 CLAUDE.md~~ 已完成。
-3. 启动 dataplane/modules/ 目录初始化，按 json → search → bloom 顺序适配。
-4. 本地 `make ci` 增补模块验证流程。
+3. ~~dataplane/modules/ 初始化与适配~~ 已完成（json、search、bloom 均已构建、验证并发布）。
+4. ~~模块验证流程~~ 已由 `modules.yml`（手动触发）与发布流水线 `modules-packages` 承担；按项目规则以 GitHub Actions 为准。
 
 ## 修订记录
 
 - 2026-11-13：项目负责人认定 ICU License 与 CC0-1.0 属于与 MIT / BSD / Apache-2.0 同等宽松的许可，允许出现在模块的第三方依赖中（valkey-search 1.2.1 的 ICU、HdrHistogram_c 因此不再阻塞纳入）。CLAUDE.md 对应条款已同步。
 - 2026-11-13：CI 的 readelf 检查确认 libsearch.so 动态链接 libsystemd.so.0（LGPL-2.1+）；sycache-server 发布构建（USE_SYSTEMD=yes）本就依赖它。项目负责人认定“动态链接 LGPL 系统库”允许，条件：仅限动态链接、发布包附许可文本、其余 GPL/LGPL 库仍须另行评审。CLAUDE.md 已同步，CI 检查对 libsystemd 放行。
-- 仍待补齐：各依赖许可的逐项来源链接。
+- 各依赖许可的逐项来源链接已补齐，见各模块 `LICENSES.md`。
 - 2026-11-13：项目负责人认定 ISC 许可与 MIT 同等宽松，允许出现在模块的第三方依赖中（valkey-bloom 的 `bloomfilter` 3.0.2、构建期的 `libloading` 0.8.9 为 ISC）。bloom 的 Rust 依赖许可检查由 dataplane/modules/cargo-license-check.py 在构建时执行，白名单为 MIT / Apache-2.0 / BSD-2-Clause / BSD-3-Clause / ICU / CC0-1.0 / ISC。
 - 2026-11-13：模块命令 ACL / Web 命令行评估（CI 产物 `acl-matrix-<module>.md`，脚本 test/modules/acl-matrix.py）。结论：agent 与 reader 内置账号只列显式命令，三个模块的全部命令均被拒绝；Web 命令行账号为“允许全部减去危险类别”，模块的 admin 类命令已被 ACL 拒绝，但 `JSON.DEBUG`、`BF.LOAD`（写类、可整体载入数据）未带 admin 标志而被放行。处理：`JSON.DEBUG`、`BF.LOAD`、`FT._DEBUG`、`FT._LIST`、`FT.INTERNAL_UPDATE` 加入 `internal/webcli` 拒绝清单并有用例（agent 侧第二层校验）。限制：模块命令在模块未加载时不存在，静态 ACL 规则不能点名它们（SETUSER 会报未知命令），因此 ACL 侧无法为这两条追加 `-` 规则；待“按实例启用模块”的控制台设计落地后，按已加载模块动态渲染 ACL。
 - 2026-11-13：集群槽位迁移验证（test/modules/cluster-smoke.py，modules.yml 步骤）：两个集群主节点加载模块，用 SETSLOT + MIGRATE 迁移一个槽位，json（JSON 文档）与 bloom（布隆过滤器）数据在目标节点读取一致，源节点返回 MOVED，均通过。valkey-search 未纳入：索引是节点本地的，集群模式（跨分片查询、索引随槽位迁移）须另行设计，在此之前 search 仅支持单机与主从。
