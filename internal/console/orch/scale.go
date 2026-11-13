@@ -2,8 +2,6 @@ package orch
 
 import (
 	"context"
-	"crypto/x509"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"sort"
@@ -409,7 +407,11 @@ func (s *Service) runScale(ctx context.Context, r *opRun, unitID uint, req Scale
 			}
 			continue
 		}
-		reqCreate, createErr := s.scaleCreateRequest(u, in, params, auth, users, masters, masterHosts)
+		scaleHost, createErr := s.host(in.HostID)
+		var reqCreate *agentv1.CreateInstance
+		if createErr == nil {
+			reqCreate, createErr = s.createRequest(u, in, scaleHost, createInputs{Params: params, MasterAuth: auth, Users: users, Masters: masters, MasterHosts: masterHosts})
+		}
 		if createErr != nil {
 			r.step(step, in.ID, "failed", createErr.Error())
 			setStatus("degraded")
@@ -508,53 +510,6 @@ func scaleMasters(insts []*store.Instance) (map[uint32]*store.Instance, map[uint
 		}
 	}
 	return masters, hosts
-}
-
-func (s *Service) scaleCreateRequest(u *store.Unit, in *store.Instance, params map[string]string, auth string, users []*agentv1.AclUser, masters map[uint32]*store.Instance, masterHosts map[uint32]*store.Host) (*agentv1.CreateInstance, error) {
-	h, err := s.host(in.HostID)
-	if err != nil {
-		return nil, err
-	}
-	copyParams := map[string]string{}
-	for k, v := range params {
-		copyParams[k] = v
-	}
-	bind := h.Address
-	if bind == "" {
-		bind = h.Hostname
-	}
-	kind := agentv1.Kind_KIND_SERVER
-	req := &agentv1.CreateInstance{Port: in.Port, Kind: kind, Params: copyParams, RevisionId: u.RevisionID, Masterauth: auth, AclUsers: users, ClusterEnabled: u.Mode == store.ModeCluster, BindAddress: bind, Modules: requestModules(u, kind)}
-	if u.TLS {
-		if s.CA == nil {
-			return nil, errors.New("data-plane TLS is enabled but the console CA is unavailable")
-		}
-		cert, err := s.CA.ServerCert([]string{h.Address, h.Hostname, "localhost"})
-		if err != nil {
-			return nil, fmt.Errorf("issue data-plane TLS certificate: %w", err)
-		}
-		keyDER, err := x509.MarshalPKCS8PrivateKey(cert.PrivateKey)
-		if err != nil {
-			return nil, fmt.Errorf("encode data-plane TLS key: %w", err)
-		}
-		req.Tls = &agentv1.TlsMaterial{CertPem: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]}), KeyPem: pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), CaPem: append([]byte(nil), s.CA.PEM...), TlsReplication: s.License != nil && s.License().Feature(license.FeatureTLSInternal), TlsCluster: u.Mode == store.ModeCluster && s.License != nil && s.License().Feature(license.FeatureTLSInternal), AuthClients: false}
-	}
-	if in.Desired == "replica" && u.Mode != store.ModeCluster {
-		master := masters[in.Shard]
-		host := masterHosts[in.Shard]
-		if master == nil {
-			return nil, fmt.Errorf("master for shard %d is not ready", in.Shard)
-		}
-		if host == nil {
-			host, err = s.host(master.HostID)
-			if err != nil {
-				return nil, err
-			}
-			masterHosts[in.Shard] = host
-		}
-		req.ReplicaOf = &agentv1.ReplicaOf{Host: hostAddress(host), Port: master.Port}
-	}
-	return req, nil
 }
 
 func (s *Service) ensureScaleClusterMembership(ctx context.Context, r *opRun, anchor *store.Instance, all, added []*store.Instance) (map[string]string, error) {
