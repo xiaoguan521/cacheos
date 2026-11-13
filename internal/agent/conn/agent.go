@@ -343,6 +343,7 @@ func (a *Agent) hello(ctx context.Context) *agentv1.Hello {
 		CpuCores: uint32(runtime.NumCPU()), MemTotalBytes: collect.MemTotal(), OsRelease: collect.OSRelease(), Kernel: collect.Kernel(),
 		Tuning: collect.Tuning()}
 	h.EngineVersions, h.EngineCurrent = a.C.Layout.InstalledVersions()
+	h.Modules = a.C.Layout.CurrentModules()
 	if b, err := os.ReadFile(filepath.Join(a.C.Layout.Root, "current", "share", "BUILDINFO")); err == nil && len(b) < 16<<10 {
 		h.EngineBuildinfo = string(b)
 	}
@@ -364,7 +365,7 @@ func (a *Agent) heartbeat(ctx context.Context, send func(*agentv1.AgentMessage))
 		case <-t.C:
 			cpu, mem := host.Sample()
 			hb := &agentv1.Heartbeat{CpuPercent: cpu, MemUsedBytes: mem, MemTotalBytes: collect.MemTotal(),
-				DataDiskFreeBytes: collect.DiskFree(filepath.Join(a.C.Layout.Root, "instances"))}
+				DataDiskFreeBytes: collect.DiskFree(filepath.Join(a.C.Layout.Root, "instances")), Modules: a.C.Layout.CurrentModules()}
 			for _, p := range a.M.Ports() {
 				hb.Instances = append(hb.Instances, a.M.Status(ctx, p))
 			}

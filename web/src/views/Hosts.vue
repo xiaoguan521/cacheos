@@ -181,6 +181,7 @@ onMounted(load)
               placeholder="未上报" style="width: 170px" :options="installedVersions(record).map((v) => ({ value: v, label: v }))"
               @change="(v: string) => switchVersion(record, v)" />
             <div class="sub">已安装 {{ installedVersions(record).length }} 个</div>
+            <div class="sub">扩展模块 {{ record.modules ? record.modules.split(',').join(' · ') : '未安装' }}</div>
             <div class="sub">agent {{ record.agent_version || '未上报' }}</div>
             <a-button v-if="session.can('operator') && session.writable && record.online && agentUpgradeCandidates(record).length" size="small" type="link" style="padding: 0" @click="openUpgrade(record)">升级 agent</a-button>
           </template>

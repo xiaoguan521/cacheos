@@ -220,7 +220,7 @@ func (s *Service) allocateScaleInstances(u *store.Unit, insts []*store.Instance,
 			usedByShard[plan.Shard] = map[uint]bool{}
 			zonesByShard[plan.Shard] = map[string]bool{}
 		}
-		l, err := s.pickScaleHost(loads, usedByShard[plan.Shard], zonesByShard[plan.Shard], u.MemoryMB, diskNeed)
+		l, err := s.pickScaleHostFor(loads, usedByShard[plan.Shard], zonesByShard[plan.Shard], u.MemoryMB, diskNeed, UnitModules(u))
 		if err != nil {
 			return nil, fmt.Errorf("place shard %d %s: %w", plan.Shard, plan.Desired, err)
 		}
@@ -273,6 +273,11 @@ func (s *Service) scaleHostLoads(memMB uint32, diskNeed uint64) (map[uint]*hostL
 }
 
 func (s *Service) pickScaleHost(loads map[uint]*hostLoad, excluded map[uint]bool, usedZones map[string]bool, memMB uint32, diskNeed uint64) (*hostLoad, error) {
+	return s.pickScaleHostFor(loads, excluded, usedZones, memMB, diskNeed, nil)
+}
+
+// pickScaleHostFor 同 pickScaleHost，另外只选已安装 need 中全部模块的主机。
+func (s *Service) pickScaleHostFor(loads map[uint]*hostLoad, excluded map[uint]bool, usedZones map[string]bool, memMB uint32, diskNeed uint64, need []string) (*hostLoad, error) {
 	var candidates []*hostLoad
 	for _, l := range loads {
 		if excluded[l.h.ID] {
@@ -284,9 +289,15 @@ func (s *Service) pickScaleHost(loads map[uint]*hostLoad, excluded map[uint]bool
 		if diskNeed > 0 && l.h.DiskFreeBytes < diskNeed {
 			continue
 		}
+		if hostMissingModule(l.h, need) != "" {
+			continue
+		}
 		candidates = append(candidates, l)
 	}
 	if len(candidates) == 0 {
+		if len(need) > 0 {
+			return nil, fmt.Errorf("%w: no online host satisfies anti-affinity, capacity and the installed modules %v", ErrNoHosts, need)
+		}
 		return nil, fmt.Errorf("%w: no online host satisfies anti-affinity and capacity", ErrNoHosts)
 	}
 	sort.Slice(candidates, func(i, j int) bool {

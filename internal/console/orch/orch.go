@@ -390,7 +390,7 @@ type hostLoad struct {
 
 // place 为一个分片的 n 个数据实例选择主机：只选在线主机，同一分片不放同一台主机，尽量分散到不同 zone，
 // 优先选已分配内存少的主机；内存超过物理内存 80% 或持久化目录空间不足的主机不选。
-func (s *Service) place(n int, memMB uint32, diskNeed uint64, explicit []uint) ([]*hostLoad, error) {
+func (s *Service) place(n int, memMB uint32, diskNeed uint64, explicit []uint, need []string) ([]*hostLoad, error) {
 	hq := s.q().Host
 	hosts, err := hq.WithContext(context.Background()).Where(hq.Status.Eq("online")).Find()
 	if err != nil {
@@ -429,10 +429,13 @@ func (s *Service) place(n int, memMB uint32, diskNeed uint64, explicit []uint) (
 	fits := func(l *hostLoad) bool {
 		memoryOK := l.h.MemTotalBytes == 0 || (l.allocMB+uint64(memMB))<<20 <= l.h.MemTotalBytes*8/10
 		diskOK := diskNeed == 0 || l.h.DiskFreeBytes >= diskNeed
-		return memoryOK && diskOK
+		return memoryOK && diskOK && hostMissingModule(l.h, need) == ""
 	}
 	reason := func(l *hostLoad) string {
 		memoryOK := l.h.MemTotalBytes == 0 || (l.allocMB+uint64(memMB))<<20 <= l.h.MemTotalBytes*8/10
+		if m := hostMissingModule(l.h, need); m != "" {
+			return "has no module " + m + " installed (install the sycache-modules package)"
+		}
 		if !memoryOK {
 			return "lacks memory"
 		}
@@ -500,7 +503,7 @@ func contains(ls []*hostLoad, l *hostLoad) bool {
 // three-shard cluster can run on three hosts with each host carrying a
 // different shard's replica, while a master and its own replica never share a
 // host. This matches the commercial plan's failure-domain rule.
-func (s *Service) placeCluster(shards, replicas int, memMB uint32, diskNeed uint64, explicit []uint) ([]*hostLoad, error) {
+func (s *Service) placeCluster(shards, replicas int, memMB uint32, diskNeed uint64, explicit []uint, need []string) ([]*hostLoad, error) {
 	hq := s.q().Host
 	hosts, err := hq.WithContext(context.Background()).Where(hq.Status.Eq("online")).Find()
 	if err != nil {
@@ -537,7 +540,8 @@ func (s *Service) placeCluster(shards, replicas int, memMB uint32, diskNeed uint
 		}
 	}
 	fits := func(l *hostLoad) bool {
-		return (l.h.MemTotalBytes == 0 || (l.allocMB+uint64(memMB))<<20 <= l.h.MemTotalBytes*8/10) && (diskNeed == 0 || l.h.DiskFreeBytes >= diskNeed)
+		return (l.h.MemTotalBytes == 0 || (l.allocMB+uint64(memMB))<<20 <= l.h.MemTotalBytes*8/10) && (diskNeed == 0 || l.h.DiskFreeBytes >= diskNeed) &&
+			hostMissingModule(l.h, need) == ""
 	}
 	sort.Slice(cands, func(i, j int) bool {
 		if cands[i].allocMB != cands[j].allocMB {
@@ -698,9 +702,9 @@ func (s *Service) CreateUnit(spec UnitSpec, by string) (*store.Unit, *store.Oper
 	}
 	var hosts []*hostLoad
 	if spec.Mode == store.ModeCluster {
-		hosts, err = s.placeCluster(int(spec.Shards), int(spec.Replicas), spec.MemoryMB, diskNeed, spec.HostIDs)
+		hosts, err = s.placeCluster(int(spec.Shards), int(spec.Replicas), spec.MemoryMB, diskNeed, spec.HostIDs, modules)
 	} else {
-		hosts, err = s.place(n, spec.MemoryMB, diskNeed, spec.HostIDs)
+		hosts, err = s.place(n, spec.MemoryMB, diskNeed, spec.HostIDs, modules)
 	}
 	if err != nil {
 		return nil, nil, err

@@ -7,17 +7,23 @@ import { useSession } from '../stores/session'
 const session = useSession()
 const units = ref<any[]>([])
 const templates = ref<any[]>([])
+const hosts = ref<any[]>([])
 const loading = ref(false)
 const modalOpen = ref(false)
 const busy = ref<number | null>(null)
 const form = reactive({ name: '', mode: 'standalone', description: '', memory_mb: 512, shards: 3, replicas: 1, tls: false, modules: [] as string[], sentinel_name: '', quorum: 2, template_id: 0 })
 
 // 扩展数据类型模块（ADR 0002）：只能在创建时选择；search 目前不支持集群。
+// 在线主机里装了该模块（可选模块包 sycache-modules）的台数；没有主机装就不能选，创建会因没有可放置的主机而失败。
+const moduleHostCount = (name: string) => hosts.value.filter((h: any) => h.online && (h.modules || '').split(',').includes(name)).length
 const moduleOptions = computed(() => [
   { value: 'json', label: 'JSON 文档（json）' },
   { value: 'search', label: '搜索与向量（search）', disabled: form.mode === 'cluster' },
   { value: 'bloom', label: '布隆过滤器（bloom）' },
-])
+].map((o) => {
+  const n = moduleHostCount(o.value)
+  return { ...o, label: `${o.label}${n ? `（${n} 台主机已安装）` : '（没有主机安装模块包）'}`, disabled: o.disabled || n === 0 }
+}))
 watch(() => form.mode, (m) => {
   if (m === 'cluster') form.modules = form.modules.filter((x) => x !== 'search')
 })
@@ -28,9 +34,10 @@ const statusColor: Record<string, string> = { running: 'green', creating: 'gold'
 async function load() {
   loading.value = true
   try {
-    const [u, t] = await Promise.all([api.get('/units'), api.get('/param-templates')])
+    const [u, t, h] = await Promise.all([api.get('/units'), api.get('/param-templates'), api.get('/hosts')])
     units.value = u
     templates.value = t
+    hosts.value = h
   } catch (e) {
     message.error(errMsg(e))
   } finally {
@@ -143,7 +150,7 @@ onMounted(load)
         <a-form-item v-if="form.mode === 'cluster'" label="分片数"><a-input-number v-model:value="form.shards" :min="3" :max="1024" style="width: 100%" /></a-form-item>
         <a-form-item v-if="form.mode === 'cluster'" label="每个分片的从节点数"><a-input-number v-model:value="form.replicas" :min="1" :max="5" style="width: 100%" /></a-form-item>
         <a-form-item label="数据面 TLS"><a-switch v-model:checked="form.tls" /></a-form-item>
-        <a-form-item label="扩展数据类型" extra="只能在创建时选择，创建后不能增减；搜索与向量暂不支持集群。">
+        <a-form-item label="扩展数据类型" extra="只能在创建时选择，创建后不能增减；搜索与向量暂不支持集群。模块来自可选包 sycache-modules（glibc ≥ 2.38 的主机），只会放到已安装它的主机上。">
           <a-checkbox-group v-model:value="form.modules" :options="moduleOptions" />
         </a-form-item>
         <a-form-item label="参数模板"><a-select v-model:value="form.template_id" :options="templates.map((t: any) => ({ value: t.id, label: `${t.name}${t.builtin ? '（内置）' : ''}` }))" /></a-form-item>
