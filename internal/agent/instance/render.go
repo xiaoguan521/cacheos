@@ -120,7 +120,7 @@ func ACLFile(st *State, masterauth string, users []*agentv1.AclUser) string {
 		fmt.Fprintf(&b, "user %s on #%s %s\n", UserReader, sha(st.ReadPassword), strings.Join(ReaderRules, " "))
 	}
 	if st.WebCLIPassword != "" {
-		fmt.Fprintf(&b, "user %s on #%s %s\n", UserWebCLI, sha(st.WebCLIPassword), strings.Join(WebCLIRules, " "))
+		fmt.Fprintf(&b, "user %s on #%s %s\n", UserWebCLI, sha(st.WebCLIPassword), strings.Join(WebCLIRulesFor(st.Modules), " "))
 	}
 	if masterauth != "" {
 		fmt.Fprintf(&b, "user %s on #%s %s\n", UserRepl, sha(masterauth), strings.Join(ReplRules, " "))
@@ -169,6 +169,7 @@ func (l Layout) ServerConf(st *State, c *agentv1.CreateInstance) string {
 		fmt.Fprintf(&b, "tls-cert-file %s/tls.crt\ntls-key-file %s/tls.key\ntls-ca-cert-file %s/ca.crt\n", d, d, d)
 		fmt.Fprintf(&b, "tls-replication %s\ntls-cluster %s\ntls-auth-clients %s\n", yn(t.GetTlsReplication()), yn(t.GetTlsCluster()), map[bool]string{true: "yes", false: "optional"}[t.GetAuthClients()])
 	}
+	b.WriteString(l.ModuleConfLines(st.Modules))
 	b.WriteString(paramLines(st.Params))
 	return b.String()
 }

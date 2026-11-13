@@ -86,6 +86,7 @@ type State struct {
 	AdminPassword  string            `json:"admin_password"`
 	ReadPassword   string            `json:"read_password,omitempty"`
 	WebCLIPassword string            `json:"webcli_password,omitempty"` // Web 命令行专用账号口令（只存本机）
+	Modules        []string          `json:"modules,omitempty"`         // 新建时选择的扩展模块（ADR 0002），之后不可变
 	CreatedAt      time.Time         `json:"created_at"`
 }
 

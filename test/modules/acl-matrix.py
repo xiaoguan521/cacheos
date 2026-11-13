@@ -99,6 +99,11 @@ def main():
     server, so, out_path = sys.argv[1:4]
     server, so = os.path.abspath(server), os.path.abspath(so)  # 实例的工作目录是临时目录，相对路径会失效
     web, agent, reader = (extract_rules(v) for v in ("WebCLIRules", "AgentRules", "ReaderRules"))
+    # 与 internal/agent/instance/modules.go 的 WebCLIRulesFor 同一规则：拒绝清单里属于已加载模块的命令追加 "-命令"。
+    prefix = {"json": "JSON.", "search": "FT.", "bloom": "BF."}[re.search(r"valkey-(\w+)\.so$", so).group(1)]
+    denied = open(os.path.join(ROOT, "internal", "webcli", "webcli.go"), encoding="utf-8").read()
+    block = re.search(r"var DeniedCommands = \[\]string\{(.*?)\n\}", denied, re.S).group(1)
+    web += ["-" + c.lower() for c in re.findall(r'"([^"]+)"', block) if c.startswith(prefix)]
     tmp = tempfile.mkdtemp()
     port = 7400
     acl = (
