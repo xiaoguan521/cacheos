@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -77,6 +79,51 @@ func TestDemoKeyParses(t *testing.T) {
 	for kid := range demoKeys {
 		if _, ok := Keys()[kid]; !ok {
 			t.Fatalf("demo key %s does not parse", kid)
+		}
+	}
+}
+
+func signedFixture(t *testing.T, name, arch string, data []byte) ([]byte, map[string]ed25519.PublicKey) {
+	t.Helper()
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	s, err := Sign(priv, "etos-ci-pkg-test", name, "1.2.3", arch, "standard", data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(s)
+	return b, map[string]ed25519.PublicKey{"etos-ci-pkg-test": pub}
+}
+
+func TestCheckPackage(t *testing.T) {
+	data := []byte("package bytes")
+	sigJSON, keys := signedFixture(t, "sycache-agent", "amd64", data)
+	if s, err := Check(data, sigJSON, "sycache-agent", "amd64", keys); err != nil || s.Version != "1.2.3" {
+		t.Fatal(s, err)
+	}
+	if _, err := Check(data, sigJSON, "sycache", "amd64", keys); err == nil {
+		t.Error("wrong name accepted")
+	}
+	if _, err := Check(data, sigJSON, "sycache-agent", "arm64", keys); err == nil {
+		t.Error("wrong arch accepted")
+	}
+	if _, err := Check([]byte("other"), sigJSON, "sycache-agent", "amd64", keys); err == nil {
+		t.Error("tampered content accepted")
+	}
+}
+
+func TestCheckPackageSizeCap(t *testing.T) {
+	big := make([]byte, MaxPackage+1)
+	sigJSON, keys := signedFixture(t, "sycache", "amd64", big)
+	if _, err := Check(big, sigJSON, "sycache", "amd64", keys); err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("oversize package accepted: %v", err)
+	}
+}
+
+func TestDigestMatches(t *testing.T) {
+	s := &Sig{SHA256: "abcdef"}
+	for claimed, want := range map[string]bool{"": true, "abcdef": true, "ABCDEF": true, "abcdee": false} {
+		if got := s.DigestMatches(claimed); got != want {
+			t.Errorf("DigestMatches(%q) = %v", claimed, got)
 		}
 	}
 }

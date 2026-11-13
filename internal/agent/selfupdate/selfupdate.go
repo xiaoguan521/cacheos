@@ -11,10 +11,10 @@ import (
 	"compress/gzip"
 	"crypto/ed25519"
 	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -36,14 +36,8 @@ func dir(state, ver string) string { return filepath.Join(state, "agent", ver) }
 
 // extract 校验签名并取出 bin/sycache-agent。
 func extract(data, sigJSON []byte, arch string, keys map[string]ed25519.PublicKey) (*pkgsig.Sig, []byte, error) {
-	sig, err := pkgsig.Parse(sigJSON)
+	sig, err := pkgsig.Check(data, sigJSON, "sycache-agent", arch, keys)
 	if err != nil {
-		return nil, nil, err
-	}
-	if sig.Name != "sycache-agent" || sig.Arch != arch {
-		return nil, nil, fmt.Errorf("%w: signature is for %s %s", ErrRejected, sig.Name, sig.Arch)
-	}
-	if err := pkgsig.Verify(sig, data, keys); err != nil {
 		return nil, nil, err
 	}
 	zr, err := gzip.NewReader(bytes.NewReader(data))
@@ -122,35 +116,45 @@ func parts(v string) [4]int {
 }
 
 // Staged 返回已安装且校验通过、比 running 新的版本的二进制路径；没有则返回空串。
-func Staged(state, running, arch string, keys map[string]ed25519.PublicKey) string {
+// 已有候选版本却校验失败（被改动或损坏）时，在 log 中记警告，避免静默忽略；log 可为 nil。
+func Staged(state, running, arch string, keys map[string]ed25519.PublicKey, log *slog.Logger) string {
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
 	ver, err := os.Readlink(filepath.Join(state, "agent", "current"))
 	if err != nil || !pkgsig.VersionRe.MatchString(ver) || (pkgsig.VersionRe.MatchString(running) && !newer(ver, running)) {
 		return ""
 	}
 	d := dir(state, ver)
+	reject := func(why string, err error) string {
+		log.Warn("installed agent version ignored; not executing it", "version", ver, "reason", why, "err", err)
+		return ""
+	}
 	data, err1 := os.ReadFile(filepath.Join(d, "package.tar.gz"))
 	sigJSON, err2 := os.ReadFile(filepath.Join(d, "package.sig"))
 	bin, err3 := os.ReadFile(filepath.Join(d, "sycache-agent"))
-	if err1 != nil || err2 != nil || err3 != nil {
-		return ""
+	if err := errors.Join(err1, err2, err3); err != nil {
+		return reject("installed files unreadable", err)
 	}
 	sig, want, err := extract(data, sigJSON, arch, keys)
-	if err != nil || sig.Version != ver {
-		return ""
+	if err != nil {
+		return reject("package verification failed", err)
 	}
-	h1, h2 := sha256.Sum256(want), sha256.Sum256(bin)
-	if hex.EncodeToString(h1[:]) != hex.EncodeToString(h2[:]) {
-		return "" // 二进制被改动：不执行
+	if sig.Version != ver {
+		return reject("signed version differs from install directory", nil)
+	}
+	if sha256.Sum256(want) != sha256.Sum256(bin) {
+		return reject("binary differs from the signed package", nil)
 	}
 	return filepath.Join(d, "sycache-agent")
 }
 
 // MaybeExec 在启动时切换到已安装的新版本（只执行一次，避免循环）。返回时表示继续运行当前二进制。
-func MaybeExec(state, running, arch string, keys map[string]ed25519.PublicKey) {
+func MaybeExec(state, running, arch string, keys map[string]ed25519.PublicKey, log *slog.Logger) {
 	if os.Getenv(envGuard) != "" {
 		return
 	}
-	bin := Staged(state, running, arch, keys)
+	bin := Staged(state, running, arch, keys, log)
 	if bin == "" {
 		return
 	}

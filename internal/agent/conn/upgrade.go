@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -22,9 +21,21 @@ import (
 // agent 自升级（规格书 6.2）：下载升级包 → 校验厂商签名与哈希 → 安装到状态目录 → 退出，由 systemd 重启到新版本。
 // 实例进程不受影响。
 
-var upgradeVersionRe = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.]+)?$`)
-
-const maxPackage = 128 << 20
+// checkUpgradeRequest 是两条升级路径下载前的统一检查：版本格式，签名文件与命令的名称 / 版本 / 本机架构一致，
+// 命令给出的 sha256 与已签名元数据一致。下载后仍由 pkgsig.Check 做完整验签。
+func checkUpgradeRequest(name, version, sha256 string, vendorSig []byte) (*pkgsig.Sig, error) {
+	if !pkgsig.VersionRe.MatchString(version) {
+		return nil, errors.New("invalid version")
+	}
+	sig, err := pkgsig.Parse(vendorSig)
+	if err != nil || sig.Name != name || sig.Version != version || sig.Arch != runtime.GOARCH {
+		return nil, errors.New("signature file does not match this upgrade")
+	}
+	if !sig.DigestMatches(sha256) {
+		return nil, errors.New("package sha256 does not match the signed metadata")
+	}
+	return sig, nil
+}
 
 func fetchPackageTo(ctx context.Context, client agentv1.AgentGatewayClient, req *agentv1.FetchPackageRequest, dst io.Writer, maxBytes int64) (int64, error) {
 	timeout := 2 * time.Minute
@@ -71,7 +82,7 @@ func fetchPackageTo(ctx context.Context, client agentv1.AgentGatewayClient, req 
 
 func fetchPackage(ctx context.Context, client agentv1.AgentGatewayClient, req *agentv1.FetchPackageRequest) ([]byte, error) {
 	var buf bytes.Buffer
-	if _, err := fetchPackageTo(ctx, client, req, &buf, maxPackage); err != nil {
+	if _, err := fetchPackageTo(ctx, client, req, &buf, pkgsig.MaxPackage); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
@@ -83,13 +94,8 @@ func (a *Agent) handleAgentUpgrade(ctx context.Context, client agentv1.AgentGate
 	fail := func(msg string) {
 		reply(&agentv1.CommandResult{Status: agentv1.CommandResult_FAILED, ErrorCode: "INVALID", Message: msg})
 	}
-	if !upgradeVersionRe.MatchString(u.Version) {
-		fail("invalid version")
-		return
-	}
-	sig, err := pkgsig.Parse(u.VendorSignature)
-	if err != nil || sig.Name != "sycache-agent" || sig.Version != u.Version || sig.Arch != runtime.GOARCH {
-		fail("signature file does not match this upgrade")
+	if _, err := checkUpgradeRequest("sycache-agent", u.Version, u.Sha256, u.VendorSignature); err != nil {
+		fail(err.Error())
 		return
 	}
 	data, err := fetchPackage(ctx, client, &agentv1.FetchPackageRequest{Kind: "agent", Name: "sycache-agent", Version: u.Version, Arch: runtime.GOARCH})
@@ -116,13 +122,12 @@ func (a *Agent) handleEngineUpgrade(ctx context.Context, client agentv1.AgentGat
 	fail := func(msg string) {
 		reply(&agentv1.CommandResult{Status: agentv1.CommandResult_FAILED, ErrorCode: "INVALID", Message: msg})
 	}
-	if !upgradeVersionRe.MatchString(u.Version) || (u.Arch != "" && u.Arch != runtime.GOARCH) {
+	if u.Arch != "" && u.Arch != runtime.GOARCH {
 		fail("invalid version or architecture")
 		return
 	}
-	sig, err := pkgsig.Parse(u.VendorSignature)
-	if err != nil || sig.Name != "sycache" || sig.Version != u.Version || sig.Arch != runtime.GOARCH {
-		fail("signature file does not match this engine upgrade")
+	if _, err := checkUpgradeRequest("sycache", u.Version, u.Sha256, u.VendorSignature); err != nil {
+		fail(err.Error())
 		return
 	}
 	data, err := fetchPackage(ctx, client, &agentv1.FetchPackageRequest{Kind: "engine", Name: "sycache", Version: u.Version, Arch: runtime.GOARCH})
@@ -130,12 +135,8 @@ func (a *Agent) handleEngineUpgrade(ctx context.Context, client agentv1.AgentGat
 		fail("fetch package: " + err.Error())
 		return
 	}
-	if err := pkgsig.Verify(sig, data, pkgsig.Keys()); err != nil {
+	if _, err := engineupdate.Verify(data, u.VendorSignature, runtime.GOARCH, pkgsig.Keys()); err != nil {
 		fail("signature check failed: " + err.Error())
-		return
-	}
-	if u.Sha256 != "" && !strings.EqualFold(u.Sha256, sig.SHA256) {
-		fail("package sha256 does not match the signed metadata")
 		return
 	}
 	// 本机实例在用扩展模块时，新版本必须自带这些模块，否则实例重启后会因缺少模块文件起不来。
@@ -166,15 +167,13 @@ func (a *Agent) handleEngineUpgrade(ctx context.Context, client agentv1.AgentGat
 }
 
 func (a *Agent) stageEnginePackage(version string, data, sig []byte) (string, string, error) {
-	if !upgradeVersionRe.MatchString(version) {
+	if !pkgsig.VersionRe.MatchString(version) {
 		return "", "", errors.New("invalid version")
 	}
-	dir := filepath.Join(a.C.StateDir, "upgrade")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	pkgPath, sigPath := engineupdate.StagedPaths(a.C.StateDir, version)
+	if err := os.MkdirAll(filepath.Dir(pkgPath), 0o700); err != nil {
 		return "", "", err
 	}
-	pkgPath := filepath.Join(dir, version+".tar.gz")
-	sigPath := filepath.Join(dir, version+".sig")
 	if err := writeUpgradeFile(pkgPath, data); err != nil {
 		return "", "", err
 	}

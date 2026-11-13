@@ -22,7 +22,6 @@ import (
 )
 
 const (
-	MaxPackage   int64 = 128 << 20
 	maxExpanded  int64 = 512 << 20
 	maxEntries         = 10000
 	enginePrefix       = "home/atwasoft/sycache"
@@ -30,22 +29,20 @@ const (
 
 var ErrRejected = errors.New("engine package rejected")
 
-// Verify 校验数据面包的名称、架构、签名和包内容摘要。
+// Verify 校验数据面包的大小、名称、架构、签名和包内容摘要。
 func Verify(data, sigJSON []byte, arch string, keys map[string]ed25519.PublicKey) (*pkgsig.Sig, error) {
-	if int64(len(data)) > MaxPackage {
-		return nil, fmt.Errorf("%w: package too large", ErrRejected)
-	}
-	sig, err := pkgsig.Parse(sigJSON)
+	sig, err := pkgsig.Check(data, sigJSON, "sycache", arch, keys)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrRejected, err)
 	}
-	if sig.Name != "sycache" || sig.Arch != arch {
-		return nil, fmt.Errorf("%w: signature is for %s %s", ErrRejected, sig.Name, sig.Arch)
-	}
-	if err := pkgsig.Verify(sig, data, keys); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrRejected, err)
-	}
 	return sig, nil
+}
+
+// StagedPaths 是 agent 暂存、wrapper 读取待安装数据面包与签名的固定位置（状态目录 upgrade/ 下）。
+// 版本号由调用方先按 pkgsig.VersionRe 校验。
+func StagedPaths(stateDir, version string) (pkgPath, sigPath string) {
+	dir := filepath.Join(stateDir, "upgrade")
+	return filepath.Join(dir, version+".tar.gz"), filepath.Join(dir, version+".sig")
 }
 
 // Install 验签并把数据面包原子安装为 root/versions/<version>。

@@ -31,8 +31,7 @@ const ExitUsage = 64
 var ErrUsage = errors.New("usage: sycache-wrapper start|stop|restart <port> | switch-version <version>")
 
 var (
-	portRe    = regexp.MustCompile(`^[0-9]{4,5}$`)
-	versionRe = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.]+)?$`)
+	portRe = regexp.MustCompile(`^[0-9]{4,5}$`)
 )
 
 // SafeEnv 是执行 systemctl 时使用的全部环境变量。
@@ -71,7 +70,7 @@ func (p Paths) Build(argv []string) (Command, error) {
 		}
 		return Command{Path: p.Systemctl, Args: []string{argv[0], unit}, Env: SafeEnv}, nil
 	case "switch-version":
-		if !versionRe.MatchString(argv[1]) || (p.checkVersion(argv[1]) != nil && !p.pendingVersion(argv[1])) {
+		if !pkgsig.VersionRe.MatchString(argv[1]) || (p.checkVersion(argv[1]) != nil && !p.pendingVersion(argv[1])) {
 			return Command{}, ErrUsage
 		}
 		return Command{Switch: argv[1]}, nil
@@ -109,7 +108,7 @@ func regular(path string) bool {
 
 // checkVersion 校验版本号与版本目录：解析软链后必须仍在 Root 之内。
 func (p Paths) checkVersion(v string) error {
-	if !versionRe.MatchString(v) {
+	if !pkgsig.VersionRe.MatchString(v) {
 		return ErrUsage
 	}
 	root, err := filepath.EvalSymlinks(p.Root)
@@ -169,12 +168,10 @@ func (p Paths) pendingVersion(v string) bool {
 }
 
 func (p Paths) pendingPaths(v string) (pkgPath, sigPath string, ok bool) {
-	if p.AgentStateDir == "" || !versionRe.MatchString(v) {
+	if p.AgentStateDir == "" || !pkgsig.VersionRe.MatchString(v) {
 		return "", "", false
 	}
-	base := filepath.Join(p.AgentStateDir, "upgrade")
-	pkgPath = filepath.Join(base, v+".tar.gz")
-	sigPath = filepath.Join(base, v+".sig")
+	pkgPath, sigPath = engineupdate.StagedPaths(p.AgentStateDir, v)
 	for _, name := range []string{pkgPath, sigPath} {
 		fi, err := os.Lstat(name)
 		if err != nil || !fi.Mode().IsRegular() {
