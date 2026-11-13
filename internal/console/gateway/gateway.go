@@ -316,7 +316,7 @@ func (s *Server) onMessage(ctx context.Context, hostID uint, sess *session, m *a
 		tuning, _ := protojson.Marshal(h.GetTuning())
 		_, _ = hs.WithContext(ctx).Where(hs.ID.Eq(hostID)).UpdateSimple(hs.Status.Value("online"), hs.AgentVersion.Value(agentVer), hs.Arch.Value(arch),
 			hs.Hostname.Value(h.Hostname), hs.OSRelease.Value(h.OsRelease), hs.Kernel.Value(h.Kernel), hs.CPUCores.Value(h.CpuCores),
-			hs.MemTotalBytes.Value(h.MemTotalBytes), hs.EngineCurrent.Value(h.EngineCurrent), hs.EngineVersions.Value(strings.Join(h.EngineVersions, ",")),
+			hs.MemTotalBytes.Value(h.MemTotalBytes), hs.EngineCurrent.Value(h.EngineCurrent), hs.EngineVersions.Value(strings.Join(h.EngineVersions, ",")), hs.Modules.Value(strings.Join(h.Modules, ",")),
 			hs.Tuning.Value(string(tuning)), hs.LastSeenAt.Value(now), hs.RemoteAddr.Value(remoteAddr(ctx)))
 		s.ingest(ctx, hostID, h.Instances, now)
 		s.Log.Info("host online", "host", hostID, "instances", len(h.Instances), "engine", h.EngineCurrent)
@@ -329,7 +329,7 @@ func (s *Server) onMessage(ctx context.Context, hostID uint, sess *session, m *a
 	case *agentv1.AgentMessage_Heartbeat:
 		hb := b.Heartbeat
 		_, _ = hs.WithContext(ctx).Where(hs.ID.Eq(hostID)).UpdateSimple(hs.Status.Value("online"), hs.CPUPercent.Value(hb.CpuPercent),
-			hs.MemUsedBytes.Value(hb.MemUsedBytes), hs.DiskFreeBytes.Value(hb.DataDiskFreeBytes), hs.LastSeenAt.Value(now))
+			hs.MemUsedBytes.Value(hb.MemUsedBytes), hs.DiskFreeBytes.Value(hb.DataDiskFreeBytes), hs.Modules.Value(strings.Join(hb.Modules, ",")), hs.LastSeenAt.Value(now))
 		s.ingest(ctx, hostID, hb.Instances, now)
 	case *agentv1.AgentMessage_Result:
 		sess.mu.Lock()

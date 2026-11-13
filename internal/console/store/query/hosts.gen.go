@@ -47,6 +47,7 @@ func newHost(db *gorm.DB, opts ...gen.DOOption) host {
 	_host.DiskFreeBytes = field.NewUint64(tableName, "disk_free_bytes")
 	_host.EngineCurrent = field.NewString(tableName, "engine_current")
 	_host.EngineVersions = field.NewString(tableName, "engine_versions")
+	_host.Modules = field.NewString(tableName, "modules")
 	_host.Tuning = field.NewString(tableName, "tuning")
 	_host.LastSeenAt = field.NewTime(tableName, "last_seen_at")
 	_host.CreatedAt = field.NewTime(tableName, "created_at")
@@ -80,6 +81,7 @@ type host struct {
 	DiskFreeBytes  field.Uint64
 	EngineCurrent  field.String
 	EngineVersions field.String
+	Modules        field.String
 	Tuning         field.String
 	LastSeenAt     field.Time
 	CreatedAt      field.Time
@@ -119,6 +121,7 @@ func (h *host) updateTableName(table string) *host {
 	h.DiskFreeBytes = field.NewUint64(table, "disk_free_bytes")
 	h.EngineCurrent = field.NewString(table, "engine_current")
 	h.EngineVersions = field.NewString(table, "engine_versions")
+	h.Modules = field.NewString(table, "modules")
 	h.Tuning = field.NewString(table, "tuning")
 	h.LastSeenAt = field.NewTime(table, "last_seen_at")
 	h.CreatedAt = field.NewTime(table, "created_at")
@@ -146,7 +149,7 @@ func (h *host) GetFieldByName(fieldName string) (field.OrderExpr, bool) {
 }
 
 func (h *host) fillFieldMap() {
-	h.fieldMap = make(map[string]field.Expr, 23)
+	h.fieldMap = make(map[string]field.Expr, 24)
 	h.fieldMap["id"] = h.ID
 	h.fieldMap["name"] = h.Name
 	h.fieldMap["hostname"] = h.Hostname
@@ -167,6 +170,7 @@ func (h *host) fillFieldMap() {
 	h.fieldMap["disk_free_bytes"] = h.DiskFreeBytes
 	h.fieldMap["engine_current"] = h.EngineCurrent
 	h.fieldMap["engine_versions"] = h.EngineVersions
+	h.fieldMap["modules"] = h.Modules
 	h.fieldMap["tuning"] = h.Tuning
 	h.fieldMap["last_seen_at"] = h.LastSeenAt
 	h.fieldMap["created_at"] = h.CreatedAt

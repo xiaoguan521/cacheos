@@ -58,8 +58,9 @@ type Host struct {
 	CPUPercent     float64    `gorm:"column:cpu_percent" json:"cpu_percent"`
 	DiskFreeBytes  uint64     `json:"disk_free_bytes"`
 	EngineCurrent  string     `gorm:"size:32" json:"engine_current"`
-	EngineVersions string     `json:"engine_versions"` // 逗号分隔
-	Tuning         string     `json:"-"`               // HostTuning JSON
+	EngineVersions string     `json:"engine_versions"`        // 逗号分隔
+	Modules        string     `gorm:"size:64" json:"modules"` // 已安装的扩展模块（可选模块包），逗号分隔，agent 在 Hello / Heartbeat 里上报
+	Tuning         string     `json:"-"`                      // HostTuning JSON
 	LastSeenAt     *time.Time `json:"last_seen_at"`
 	CreatedAt      time.Time  `json:"created_at"`
 }

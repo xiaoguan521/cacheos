@@ -805,6 +805,7 @@ type Hello struct {
 	EngineBuildinfo    string                 `protobuf:"bytes,10,opt,name=engine_buildinfo,json=engineBuildinfo,proto3" json:"engine_buildinfo,omitempty"` // 当前版本的 BUILDINFO 原文
 	Tuning             *HostTuning            `protobuf:"bytes,11,opt,name=tuning,proto3" json:"tuning,omitempty"`
 	Instances          []*InstanceStatus      `protobuf:"bytes,12,rep,name=instances,proto3" json:"instances,omitempty"`
+	Modules            []string               `protobuf:"bytes,13,rep,name=modules,proto3" json:"modules,omitempty"` // current 版本里已安装的扩展模块（modules/<名>.so），ADR 0002
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -923,6 +924,13 @@ func (x *Hello) GetInstances() []*InstanceStatus {
 	return nil
 }
 
+func (x *Hello) GetModules() []string {
+	if x != nil {
+		return x.Modules
+	}
+	return nil
+}
+
 // 主机内核参数体检（规格书 7 节 M3）
 type HostTuning struct {
 	state               protoimpl.MessageState `protogen:"open.v1"`
@@ -999,6 +1007,7 @@ type Heartbeat struct {
 	MemTotalBytes     uint64                 `protobuf:"varint,3,opt,name=mem_total_bytes,json=memTotalBytes,proto3" json:"mem_total_bytes,omitempty"`
 	DataDiskFreeBytes uint64                 `protobuf:"varint,4,opt,name=data_disk_free_bytes,json=dataDiskFreeBytes,proto3" json:"data_disk_free_bytes,omitempty"` // /home/atwasoft/sycache/instances 所在分区
 	Instances         []*InstanceStatus      `protobuf:"bytes,5,rep,name=instances,proto3" json:"instances,omitempty"`
+	Modules           []string               `protobuf:"bytes,6,rep,name=modules,proto3" json:"modules,omitempty"` // 同 Hello.modules；可选模块包装上或卸载后无需重启 agent 即可更新
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -1064,6 +1073,13 @@ func (x *Heartbeat) GetDataDiskFreeBytes() uint64 {
 func (x *Heartbeat) GetInstances() []*InstanceStatus {
 	if x != nil {
 		return x.Instances
+	}
+	return nil
+}
+
+func (x *Heartbeat) GetModules() []string {
+	if x != nil {
+		return x.Modules
 	}
 	return nil
 }
@@ -4046,7 +4062,7 @@ const file_agent_v1_agent_proto_rawDesc = "" +
 	" \x01(\v2\x17.cacheos.agent.v1.HelloH\x00R\x05hello\x12;\n" +
 	"\theartbeat\x18\v \x01(\v2\x1b.cacheos.agent.v1.HeartbeatH\x00R\theartbeat\x129\n" +
 	"\x06result\x18\f \x01(\v2\x1f.cacheos.agent.v1.CommandResultH\x00R\x06resultB\x06\n" +
-	"\x04body\"\xe6\x03\n" +
+	"\x04body\"\x80\x04\n" +
 	"\x05Hello\x12#\n" +
 	"\ragent_version\x18\x01 \x01(\tR\fagentVersion\x12\x1a\n" +
 	"\bhostname\x18\x02 \x01(\tR\bhostname\x12/\n" +
@@ -4061,20 +4077,22 @@ const file_agent_v1_agent_proto_rawDesc = "" +
 	"\x10engine_buildinfo\x18\n" +
 	" \x01(\tR\x0fengineBuildinfo\x124\n" +
 	"\x06tuning\x18\v \x01(\v2\x1c.cacheos.agent.v1.HostTuningR\x06tuning\x12>\n" +
-	"\tinstances\x18\f \x03(\v2 .cacheos.agent.v1.InstanceStatusR\tinstances\"\xad\x01\n" +
+	"\tinstances\x18\f \x03(\v2 .cacheos.agent.v1.InstanceStatusR\tinstances\x12\x18\n" +
+	"\amodules\x18\r \x03(\tR\amodules\"\xad\x01\n" +
 	"\n" +
 	"HostTuning\x121\n" +
 	"\x14transparent_hugepage\x18\x01 \x01(\tR\x13transparentHugepage\x12+\n" +
 	"\x11overcommit_memory\x18\x02 \x01(\x03R\x10overcommitMemory\x12\x1c\n" +
 	"\tsomaxconn\x18\x03 \x01(\x03R\tsomaxconn\x12!\n" +
-	"\fnofile_limit\x18\x04 \x01(\x04R\vnofileLimit\"\xeb\x01\n" +
+	"\fnofile_limit\x18\x04 \x01(\x04R\vnofileLimit\"\x85\x02\n" +
 	"\tHeartbeat\x12\x1f\n" +
 	"\vcpu_percent\x18\x01 \x01(\x01R\n" +
 	"cpuPercent\x12$\n" +
 	"\x0emem_used_bytes\x18\x02 \x01(\x04R\fmemUsedBytes\x12&\n" +
 	"\x0fmem_total_bytes\x18\x03 \x01(\x04R\rmemTotalBytes\x12/\n" +
 	"\x14data_disk_free_bytes\x18\x04 \x01(\x04R\x11dataDiskFreeBytes\x12>\n" +
-	"\tinstances\x18\x05 \x03(\v2 .cacheos.agent.v1.InstanceStatusR\tinstances\"\xc9\r\n" +
+	"\tinstances\x18\x05 \x03(\v2 .cacheos.agent.v1.InstanceStatusR\tinstances\x12\x18\n" +
+	"\amodules\x18\x06 \x03(\tR\amodules\"\xc9\r\n" +
 	"\x0eInstanceStatus\x12\x12\n" +
 	"\x04port\x18\x01 \x01(\rR\x04port\x12*\n" +
 	"\x04kind\x18\x02 \x01(\x0e2\x16.cacheos.agent.v1.KindR\x04kind\x12-\n" +
