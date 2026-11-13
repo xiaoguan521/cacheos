@@ -215,7 +215,7 @@ jobs:
           grep -E "Depends|Package|Version" pkgout/deb-info.txt; cat pkgout/rpm-requires.txt
           grep -q "modules/.*${module}" pkgout/deb-files.txt
           # 包里只能有本包自己的目录，不得与 sycache 主包重叠
-          if grep -E "sycache/(bin|conf|instances)/|systemd|logrotate" pkgout/deb-files.txt pkgout/rpm-files.txt; then echo "ERROR: 与主包文件重叠"; exit 1; fi
+          if grep -E "sycache/(bin|conf|instances)/|usr/lib/systemd|etc/logrotate" pkgout/deb-files.txt pkgout/rpm-files.txt; then echo "ERROR: 与主包文件重叠"; exit 1; fi
           grep -q "Depends:.*sycache (>=" pkgout/deb-info.txt
           grep -q "^sycache >=" pkgout/rpm-requires.txt
           grep -q "modules/${module}.so" pkgout/rpm-files.txt
