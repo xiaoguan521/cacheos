@@ -130,7 +130,14 @@ def search_cases():
     from redis.commands.search.query import Query
 
     def ids(res):
+        # RESP2：redis-py 解析成 Result；RESP3：redis-py 不做解析，原样返回服务端回复。
+        # valkey-search 的回复始终是数组 [总数, key, [字段...], ...]，Redis Stack 在 RESP3 下是映射，所以这里按数组取 key。
+        if isinstance(res, list):
+            return [k.decode() if isinstance(k, bytes) else k for k in res[1::2]]
         return [d.id.decode() if isinstance(d.id, bytes) else d.id for d in res.docs]
+
+    def total(res):
+        return res[0] if isinstance(res, list) else res.total
 
     for proto in (2, 3):
         r = redis.Redis(host=H, port=T["standalone"], protocol=proto)  # 向量是二进制，不解码
@@ -153,12 +160,15 @@ def search_cases():
         def knn():
             for _i in range(40):  # 回填是异步的
                 res = ft.search(q, params)
-                if res.total >= 2:
+                if total(res) >= 2:
                     break
                 time.sleep(0.5)
             eq(ids(res), [pre + "1", pre + "2"], "KNN order")
         case(f"{p} KNN nearest order")(knn)
         case(f"{p} hybrid TAG filter + KNN")(lambda: eq(ids(ft.search(hq, params)), [pre + "1", pre + "3"], "hybrid"))
+        if proto == 3:
+            known(f"{p} FT.SEARCH reply shape", "reply is an array, Redis Stack returns a map with `results` under RESP3")(
+                lambda: eq(isinstance(ft.search(q, params), dict), True, "RESP3 map reply"))
         case(f"{p} FT.INFO")(lambda: eq(bool(ft.info()), True, "info"))
         # redis-py 文档里的惯用写法 sort_by("score") 会发 SORTBY score；valkey-search 不认 KNN 的别名字段，报 “Index field `score` does not exist”。
         # KNN 的结果本来就按距离排好序，去掉 sort_by 即可。
