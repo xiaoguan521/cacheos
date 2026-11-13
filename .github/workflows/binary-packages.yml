@@ -268,6 +268,7 @@ jobs:
           ctx="$RUNNER_TEMP/image-context"
           mkdir -p "$ctx"
           cp "$tarball" "$ctx/"
+          cp dataplane/docker/sycache.conf "$ctx/"
           docker build -f dataplane/docker/Dockerfile \
             --build-arg "TARBALL=$(basename "$tarball")" \
             -t "ghcr.io/$repo/sycache:sha-${GITHUB_SHA}-${{ matrix.arch }}" \

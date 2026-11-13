@@ -17,13 +17,17 @@ COPY ${TARBALL} /tmp/sycache.tar.gz
 RUN tar -C / -xzf /tmp/sycache.tar.gz && rm /tmp/sycache.tar.gz \
  && for b in sycache-server sycache-sentinel sycache-cli sycache-benchmark sycache-check-rdb sycache-check-aof; do \
       ln -s /home/atwasoft/sycache/bin/$b /usr/local/bin/$b; done \
- && install -d -o sycache -g sycache -m 0750 /data
+ && install -d -o sycache -g sycache -m 0750 /data \
+ && install -d -o sycache -g sycache -m 0750 /var/log/sycache \
+ && install -d -m 0755 /etc/sycache
+COPY sycache.conf /etc/sycache/sycache.conf
 USER sycache
 WORKDIR /data
 VOLUME /data
 EXPOSE 6379
 HEALTHCHECK --interval=15s --timeout=3s --start-period=30s --retries=3 \
   CMD ["sh", "-c", "sycache-cli -p 6379 ping 2>/dev/null | grep -qE 'PONG|NOAUTH' || exit 1"]
-# 前台运行，不要加 --daemonize yes。口令用 --requirepass 或挂载配置文件。
+# 前台运行，不要加 --daemonize yes。默认读取 /etc/sycache/sycache.conf（含默认口令，部署时务必替换 requirepass）；
+# 也可用 docker run ... --requirepass 覆盖（此时不再读取该配置文件）。
 ENTRYPOINT ["sycache-server"]
-CMD ["--port", "6379", "--bind", "0.0.0.0", "--dir", "/data", "--appendonly", "yes", "--protected-mode", "yes"]
+CMD ["/etc/sycache/sycache.conf"]
