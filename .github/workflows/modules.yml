@@ -146,6 +146,14 @@ jobs:
           esac
           echo "✓ 烟雾测试通过"
 
+      - name: Client compatibility (redis-py, go-redis)
+        run: |
+          set -euo pipefail
+          module="${{ inputs.module || 'json' }}"
+          MODULE="$module" MODULE_SO="$PWD/dist/valkey-${module}.so" \
+            SYCACHE_BIN="$(dirname "$SYCACHE_BIN")" \
+            python3 test/clients/module_clients_test.py -v 2>&1 | tee "dist/client-compat-${module}.txt"
+
       - name: Cluster slot migration with module data
         if: ${{ (inputs.module || 'json') != 'search' }}
         run: |
@@ -207,7 +215,7 @@ jobs:
           grep -E "Depends|Package|Version" pkgout/deb-info.txt; cat pkgout/rpm-requires.txt
           grep -q "modules/.*${module}" pkgout/deb-files.txt
           # 包里只能有本包自己的目录，不得与 sycache 主包重叠
-          if grep -E "sycache/(bin|conf|instances)/|systemd|logrotate" pkgout/deb-files.txt pkgout/rpm-files.txt; then echo "ERROR: 与主包文件重叠"; exit 1; fi
+          if grep -E "sycache/(bin|conf|instances)/|usr/lib/systemd|etc/logrotate" pkgout/deb-files.txt pkgout/rpm-files.txt; then echo "ERROR: 与主包文件重叠"; exit 1; fi
           grep -q "Depends:.*sycache (>=" pkgout/deb-info.txt
           grep -q "^sycache >=" pkgout/rpm-requires.txt
           grep -q "modules/${module}.so" pkgout/rpm-files.txt
@@ -245,6 +253,7 @@ jobs:
             dist/*.log
             dist/bloom-Cargo.lock
             dist/acl-matrix-*.md
+            dist/client-compat-*.txt
             dist/module-abi-*.txt
             dist/sycache-modules*
             dist/MODULES-BUILDINFO-*

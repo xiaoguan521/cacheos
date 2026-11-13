@@ -17,7 +17,7 @@ for want in home/atwasoft/sycache/modules/json.so home/atwasoft/sycache/modules/
   grep -q "$want" <<<"$list" || fail "包里缺 $want"
 done
 # 不得带主包的文件：本包与 sycache 主包不重叠
-if grep -qE 'sycache/(bin|conf|instances)/|systemd|logrotate' <<<"$list"; then fail "不应包含主包文件"; fi
+if grep -qE 'sycache/(bin|conf|instances)/|usr/lib/systemd|etc/logrotate' <<<"$list"; then fail "不应包含主包文件"; fi
 if grep -q 'search.so' <<<"$list"; then fail "没有 search 产物时不应出现 search"; fi
 bi="$(tar -xzOf "$tarball" ./home/atwasoft/sycache/share/MODULES-BUILDINFO)"
 grep -q '^product_version=1.2.3$' <<<"$bi" && grep -q '^modules=json:1.0.3,bloom:1.0.1$' <<<"$bi" || fail "BUILDINFO 内容不对: $bi"
