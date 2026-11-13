@@ -374,7 +374,12 @@ func (s *Server) policy() secpolicy.Policy {
 // rank：viewer / auditor 只读；developer 可预检参数变更；releaser 可执行参数变更；operator 管理主机与部署单元；admin 管理账号与授权。
 var rank = map[string]int{store.RoleViewer: 1, store.RoleAuditor: 1, store.RoleDeveloper: 2, store.RoleReleaser: 3, store.RoleOperator: 4, store.RoleAdmin: 5}
 
+// role 要求调用者角色不低于 min。min 不在 rank 表里（拼写错误）属于编程错误：
+// 在注册路由时 panic，而不是让 rank 为 0 的缺省值放行所有人。
 func role(min string) gin.HandlerFunc {
+	if _, ok := rank[min]; !ok {
+		panic("api: unknown role in route registration: " + min)
+	}
 	return func(c *gin.Context) {
 		if rank[c.GetString("role")] < rank[min] {
 			fail(c, http.StatusForbidden, "FORBIDDEN", "requires role "+min)
