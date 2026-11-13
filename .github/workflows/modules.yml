@@ -110,6 +110,19 @@ jobs:
           path: dist/valkey-*.so
           key: module-${{ inputs.module || 'json' }}-${{ hashFiles('dataplane/modules/MODULES', 'dataplane/build-modules.sh', 'dataplane/UPSTREAM') }}
 
+      - name: Check module shared-library dependencies
+        run: |
+          set -euo pipefail
+          for so in dist/valkey-*.so; do
+            echo "== $so =="
+            readelf -d "$so" | grep NEEDED || true
+            ldd "$so" || true
+            if readelf -d "$so" | grep NEEDED | grep -Eqi 'libsystemd|libgpl|libreadline'; then
+              echo "ERROR: $so 链接了 LGPL/GPL 系统库，需先评审" >&2
+              exit 1
+            fi
+          done
+
       - name: Run smoke tests
         env:
           SYCACHE_BIN: ${{ env.SYCACHE_BIN }}
