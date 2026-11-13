@@ -128,7 +128,7 @@ func ACLFile(st *State, masterauth string, users []*agentv1.AclUser) string {
 		fmt.Fprintf(&b, "user %s on #%s %s\n", UserSentinel, sha(masterauth), strings.Join(DataSentinelRules, " "))
 	}
 	for _, u := range users {
-		fmt.Fprintf(&b, "user %s %s\n", u.GetName(), strings.Join(UserArgs(u)[1:], " "))
+		fmt.Fprintf(&b, "user %s %s\n", u.GetName(), strings.Join(UserArgsFor(u, st.Modules)[1:], " "))
 	}
 	return b.String()
 }

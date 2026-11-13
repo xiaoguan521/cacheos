@@ -61,7 +61,12 @@ func (l Layout) ModuleConfLines(mods []string) string {
 // WebCLIRulesFor 返回 Web 命令行账号在已加载模块下的规则：静态规则 + 拒绝清单中属于这些模块的命令。
 // 模块没加载时这些命令不存在，ACL SETUSER 会因未知命令失败，所以只能按已加载模块追加。
 func WebCLIRulesFor(mods []string) []string {
-	rules := append([]string(nil), WebCLIRules...)
+	return append(append([]string(nil), WebCLIRules...), moduleDenyRules(mods)...)
+}
+
+// moduleDenyRules 是已加载模块中属于 Web 命令行拒绝清单的命令，写成 ACL 的 "-命令"。
+func moduleDenyRules(mods []string) []string {
+	var out []string
 	for _, name := range moduleOrder {
 		loaded := false
 		for _, m := range mods {
@@ -72,9 +77,15 @@ func WebCLIRulesFor(mods []string) []string {
 		}
 		for _, c := range webcli.DeniedCommands {
 			if strings.HasPrefix(c, modulePrefix[name]) {
-				rules = append(rules, "-"+strings.ToLower(c))
+				out = append(out, "-"+strings.ToLower(c))
 			}
 		}
 	}
-	return rules
+	return out
+}
+
+// UserArgsFor 与 UserArgs 相同，但在用户规则之后追加已加载模块的拒绝规则，
+// 这样业务账号选了 +@all 也不能执行模块的调试 / 内部 / 整体载入命令。
+func UserArgsFor(u *agentv1.AclUser, mods []string) []string {
+	return append(UserArgs(u), moduleDenyRules(mods)...)
 }

@@ -253,3 +253,4 @@ releases:
   5. 控制台：创建实例时多选模块（search 与集群互斥并提示）；实例详情展示已启用模块与版本；创建与模块选择写审计。
   实施拆分：本批为 agent 侧（实例状态、配置与 ACL 渲染、校验）；协议字段 `modules`、控制台 API 与界面、wrapper 校验、安装包分发为后续独立 PR。
 - 2026-11-13：协议与 agent 创建流程接入模块选择：`CreateInstance.modules`（字段 15，agent.proto）。agent 在写任何文件、启动任何进程之前校验（白名单、哨兵、search+集群），并确认 `<Root>/modules/<名称>.so` 已安装，缺失则拒绝创建；通过后记入实例状态并渲染 loadmodule 与 webcli ACL。pb.go 由 protoc 36.2 + protoc-gen-go v1.36.12 重新生成（头部 protoc 版本行保持 `(unknown)`，与既有生成文件一致）。剩余：控制台 API 与界面、wrapper 校验、安装包分发。
+- 2026-11-13：控制台接入模块选择：部署单元新增 `modules` 列（迁移 202611130001，逗号分隔、规范顺序 json,search,bloom），创建单元时由 `orch.NormalizeUnitModules` 校验（与 agent 同一套规则），只下发给数据实例，哨兵进程不带；扩缩容新增节点沿用单元的模块；创建审计记录模块；前端创建表单增加“扩展数据类型”多选（search 在集群形态下禁用），详情页展示。另补一处：业务账号即使选了 `+@all`，也会在其规则之后追加已加载模块的拒绝规则（JSON.DEBUG、BF.LOAD 等，与 Web 命令行同一份清单），避免绕过。尚未做：控制台预检“目标主机是否已安装所选模块”（目前由 agent 创建时拒绝）、wrapper 校验、安装包分发。

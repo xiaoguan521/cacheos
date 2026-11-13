@@ -385,6 +385,7 @@ onUnmounted(() => clearInterval(timer))
       <div><span>健康度</span><strong>{{ unit.health }}</strong></div>
       <div><span>端点</span><strong class="code">{{ unit.endpoint || '未就绪' }}</strong></div>
       <div><span>数据面版本</span><strong class="code">{{ unit.engine_version || '—' }}</strong></div>
+      <div><span>扩展数据类型</span><strong>{{ unit.modules ? unit.modules.split(',').join(' · ') : '无' }}</strong></div>
       <div><span>规格</span><strong>{{ unit.memory_mb }} MiB · {{ unit.instances?.length || 0 }} 个实例</strong></div>
       <div><span>当前用量</span><strong>{{ bytes(unit.usage?.used_memory || 0) }} · {{ unit.usage?.ops_per_sec || 0 }} ops/s</strong></div>
     </div>

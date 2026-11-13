@@ -109,3 +109,31 @@ func TestACLFileWebCLIModuleRules(t *testing.T) {
 		t.Error("bf.load rule must not appear without the module")
 	}
 }
+
+// 业务账号即使选了 +@all，也不能执行已加载模块里的调试 / 内部 / 整体载入命令：拒绝规则追加在用户规则之后。
+func TestUserArgsForDeniesModuleCommands(t *testing.T) {
+	u := &agentv1.AclUser{Name: "app", Enabled: true, Rules: []string{"~*", "+@all"}}
+	args := strings.Join(UserArgsFor(u, []string{"json", "bloom"}), " ")
+	for _, want := range []string{"-json.debug", "-bf.load"} {
+		if !strings.Contains(args, want) {
+			t.Errorf("args lack %s: %s", want, args)
+		}
+	}
+	if strings.Index(args, "-json.debug") < strings.Index(args, "+@all") {
+		t.Error("deny rules must come after the user's own rules")
+	}
+	if strings.Contains(args, "-ft.") {
+		t.Error("search is not loaded, no ft.* rules allowed")
+	}
+	if got := strings.Join(UserArgsFor(u, nil), " "); got != strings.Join(UserArgs(u), " ") {
+		t.Errorf("no modules must equal UserArgs: %s", got)
+	}
+}
+
+func TestACLFileBusinessUserModuleRules(t *testing.T) {
+	st := &State{AdminPassword: "a", Modules: []string{"json"}}
+	u := &agentv1.AclUser{Name: "app", Enabled: true, PasswordSha256: []string{strings.Repeat("a", 64)}, Rules: []string{"~*", "+@all"}}
+	if acl := ACLFile(st, "", []*agentv1.AclUser{u}); !strings.Contains(acl, "user app ") || !strings.Contains(acl, "-json.debug") {
+		t.Errorf("business user lacks module deny rules:\n%s", acl)
+	}
+}

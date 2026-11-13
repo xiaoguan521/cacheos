@@ -620,7 +620,7 @@ func (s *Server) createUnit(c *gin.Context) {
 		failErr(c, err)
 		return
 	}
-	s.audit(c, "unit.create", "unit", fmt.Sprint(u.ID), gin.H{"name": u.Name, "mode": u.Mode, "memory_mb": u.MemoryMB, "replicas": u.Replicas, "operation": op.ID})
+	s.audit(c, "unit.create", "unit", fmt.Sprint(u.ID), gin.H{"name": u.Name, "mode": u.Mode, "memory_mb": u.MemoryMB, "replicas": u.Replicas, "modules": u.Modules, "operation": op.ID})
 	c.JSON(http.StatusAccepted, gin.H{"unit": u, "operation": op})
 }
 

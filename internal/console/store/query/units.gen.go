@@ -36,6 +36,7 @@ func newUnit(db *gorm.DB, opts ...gen.DOOption) unit {
 	_unit.Replicas = field.NewUint32(tableName, "replicas")
 	_unit.TemplateID = field.NewUint(tableName, "template_id")
 	_unit.TLS = field.NewBool(tableName, "tls")
+	_unit.Modules = field.NewString(tableName, "modules")
 	_unit.RevisionID = field.NewString(tableName, "revision_id")
 	_unit.EngineVer = field.NewString(tableName, "engine_ver")
 	_unit.Status = field.NewString(tableName, "status")
@@ -64,6 +65,7 @@ type unit struct {
 	Replicas     field.Uint32
 	TemplateID   field.Uint
 	TLS          field.Bool
+	Modules      field.String
 	RevisionID   field.String
 	EngineVer    field.String
 	Status       field.String
@@ -98,6 +100,7 @@ func (u *unit) updateTableName(table string) *unit {
 	u.Replicas = field.NewUint32(table, "replicas")
 	u.TemplateID = field.NewUint(table, "template_id")
 	u.TLS = field.NewBool(table, "tls")
+	u.Modules = field.NewString(table, "modules")
 	u.RevisionID = field.NewString(table, "revision_id")
 	u.EngineVer = field.NewString(table, "engine_ver")
 	u.Status = field.NewString(table, "status")
@@ -131,7 +134,7 @@ func (u *unit) GetFieldByName(fieldName string) (field.OrderExpr, bool) {
 }
 
 func (u *unit) fillFieldMap() {
-	u.fieldMap = make(map[string]field.Expr, 18)
+	u.fieldMap = make(map[string]field.Expr, 19)
 	u.fieldMap["id"] = u.ID
 	u.fieldMap["name"] = u.Name
 	u.fieldMap["mode"] = u.Mode
@@ -141,6 +144,7 @@ func (u *unit) fillFieldMap() {
 	u.fieldMap["replicas"] = u.Replicas
 	u.fieldMap["template_id"] = u.TemplateID
 	u.fieldMap["tls"] = u.TLS
+	u.fieldMap["modules"] = u.Modules
 	u.fieldMap["revision_id"] = u.RevisionID
 	u.fieldMap["engine_ver"] = u.EngineVer
 	u.fieldMap["status"] = u.Status

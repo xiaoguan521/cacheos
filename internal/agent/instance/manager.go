@@ -699,7 +699,7 @@ func (m *Manager) SyncACL(ctx context.Context, req *agentv1.SyncAcl) (map[string
 	want := map[string]bool{}
 	for _, u := range req.GetUsers() {
 		want[u.GetName()] = true
-		if _, err := c.Do(ctx, append([]string{"ACL", "SETUSER", u.GetName()}, UserArgs(u)...)...); err != nil {
+		if _, err := c.Do(ctx, append([]string{"ACL", "SETUSER", u.GetName()}, UserArgsFor(u, st.Modules)...)...); err != nil {
 			return nil, errf("INVALID", "user %s: %v", u.GetName(), err)
 		}
 	}

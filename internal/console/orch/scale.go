@@ -513,7 +513,7 @@ func (s *Service) scaleCreateRequest(u *store.Unit, in *store.Instance, params m
 		bind = h.Hostname
 	}
 	kind := agentv1.Kind_KIND_SERVER
-	req := &agentv1.CreateInstance{Port: in.Port, Kind: kind, Params: copyParams, RevisionId: u.RevisionID, Masterauth: auth, AclUsers: users, ClusterEnabled: u.Mode == store.ModeCluster, BindAddress: bind}
+	req := &agentv1.CreateInstance{Port: in.Port, Kind: kind, Params: copyParams, RevisionId: u.RevisionID, Masterauth: auth, AclUsers: users, ClusterEnabled: u.Mode == store.ModeCluster, BindAddress: bind, Modules: requestModules(u, kind)}
 	if u.TLS {
 		if s.CA == nil {
 			return nil, errors.New("data-plane TLS is enabled but the console CA is unavailable")
