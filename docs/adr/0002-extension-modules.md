@@ -242,3 +242,4 @@ releases:
 - 2026-11-13：CI 的 readelf 检查确认 libsearch.so 动态链接 libsystemd.so.0（LGPL-2.1+）；sycache-server 发布构建（USE_SYSTEMD=yes）本就依赖它。项目负责人认定“动态链接 LGPL 系统库”允许，条件：仅限动态链接、发布包附许可文本、其余 GPL/LGPL 库仍须另行评审。CLAUDE.md 已同步，CI 检查对 libsystemd 放行。
 - 仍待补齐：各依赖许可的逐项来源链接。
 - 2026-11-13：项目负责人认定 ISC 许可与 MIT 同等宽松，允许出现在模块的第三方依赖中（valkey-bloom 的 `bloomfilter` 3.0.2、构建期的 `libloading` 0.8.9 为 ISC）。bloom 的 Rust 依赖许可检查由 dataplane/modules/cargo-license-check.py 在构建时执行，白名单为 MIT / Apache-2.0 / BSD-2-Clause / BSD-3-Clause / ICU / CC0-1.0 / ISC。
+- 2026-11-13：模块命令 ACL / Web 命令行评估（CI 产物 `acl-matrix-<module>.md`，脚本 test/modules/acl-matrix.py）。结论：agent 与 reader 内置账号只列显式命令，三个模块的全部命令均被拒绝；Web 命令行账号为“允许全部减去危险类别”，模块的 admin 类命令已被 ACL 拒绝，但 `JSON.DEBUG`、`BF.LOAD`（写类、可整体载入数据）未带 admin 标志而被放行。处理：`JSON.DEBUG`、`BF.LOAD`、`FT._DEBUG`、`FT._LIST`、`FT.INTERNAL_UPDATE` 加入 `internal/webcli` 拒绝清单并有用例（agent 侧第二层校验）。限制：模块命令在模块未加载时不存在，静态 ACL 规则不能点名它们（SETUSER 会报未知命令），因此 ACL 侧无法为这两条追加 `-` 规则；待“按实例启用模块”的控制台设计落地后，按已加载模块动态渲染 ACL。
