@@ -146,6 +146,13 @@ jobs:
           esac
           echo "✓ 烟雾测试通过"
 
+      - name: Cluster slot migration with module data
+        if: ${{ (inputs.module || 'json') != 'search' }}
+        run: |
+          set -euo pipefail
+          module="${{ inputs.module || 'json' }}"
+          python3 -I test/modules/cluster-smoke.py "$module" "$SYCACHE_BIN" "dist/valkey-${module}.so"
+
       - name: ACL matrix for module commands
         run: |
           set -euo pipefail
