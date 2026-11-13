@@ -157,7 +157,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -I dataplane/modules/collect-licenses.py "${{ inputs.module || 'json' }}" dist
-          find dist/licenses -type f | head -50
+          echo "许可文本文件数: $(find dist/licenses -type f | wc -l)"
 
       - name: ACL matrix for module commands
         run: |
