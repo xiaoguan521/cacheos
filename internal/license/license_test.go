@@ -157,3 +157,21 @@ func TestOtherProductRejected(t *testing.T) {
 		}
 	}
 }
+
+// agent 侧校验与控制台的有效期规则一致：同一时刻两边对“能否新增”的结论相同（含各个边界）。
+func TestAgentCheckAgreesWithEvaluateOverValidityWindow(t *testing.T) {
+	keys, priv, p, env := fixture(t)
+	raw := mustSign(t, p, priv)
+	grace := time.Duration(p.GraceDays) * day
+	for _, now := range []time.Time{
+		p.NotBefore.Add(-time.Second), p.NotBefore, p.ExpiresAt.Add(-ExpiringWindow), p.ExpiresAt.Add(-time.Second),
+		p.ExpiresAt, p.ExpiresAt.Add(grace).Add(-time.Second), p.ExpiresAt.Add(grace), p.ExpiresAt.Add(grace + time.Second),
+	} {
+		env.Now = now
+		want := Evaluate(raw, keys, env).Writable()
+		got, why := AgentCheck(raw, keys, now)
+		if got != want {
+			t.Errorf("now=%s: AgentCheck=%v (%s), Evaluate writable=%v", now, got, why, want)
+		}
+	}
+}

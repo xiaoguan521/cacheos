@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -27,6 +28,7 @@ type Service struct {
 	Store   *store.Store
 	DataDir string
 	Keys    license.KeyRing
+	Log     *slog.Logger // 为空时用 slog.Default()
 
 	mu             sync.Mutex
 	installationID string
@@ -134,39 +136,78 @@ func fingerprintMatch(want []string) bool {
 	return n >= 3
 }
 
-func (s *Service) raw() string {
-	l := query.Use(s.Store.DB).LicenseStore
-	rows, err := l.WithContext(context.Background()).Order(l.ID.Desc()).Limit(1).Find()
-	if err != nil || len(rows) == 0 {
-		return ""
+func (s *Service) logger() *slog.Logger {
+	if s.Log != nil {
+		return s.Log
 	}
-	return rows[0].Raw
+	return slog.Default()
 }
 
-// Raw 返回当前 License 原文（推送给 agent 用）。
-func (s *Service) Raw() string { return s.raw() }
+// raw 返回最近导入的 License 原文；库中没有时返回 ""，读库失败返回错误（不能当作“未授权”）。
+func (s *Service) raw() (string, error) {
+	l := query.Use(s.Store.DB).LicenseStore
+	rows, err := l.WithContext(context.Background()).Order(l.ID.Desc()).Limit(1).Find()
+	if err != nil {
+		return "", err
+	}
+	if len(rows) == 0 {
+		return "", nil
+	}
+	return rows[0].Raw, nil
+}
 
-func (s *Service) env(now time.Time) license.Env {
+// Raw 返回当前 License 原文（推送给 agent 用）；读库失败时返回空并记日志。
+func (s *Service) Raw() string {
+	raw, err := s.raw()
+	if err != nil {
+		s.logger().Error("license: read stored license failed", "err", err)
+	}
+	return raw
+}
+
+// env 收集评估所需的本机事实；任何一项读不出来都返回错误，调用方据此拒绝新增操作。
+func (s *Service) env(now time.Time) (license.Env, error) {
 	maxSeen := time.Time{}
-	if v, err := s.Store.GetKV("max_seen_time"); err == nil {
-		maxSeen, _ = time.Parse(time.RFC3339, v)
+	switch v, err := s.Store.GetKV("max_seen_time"); {
+	case errors.Is(err, store.ErrNotFound):
+	case err != nil:
+		return license.Env{}, fmt.Errorf("clock check unavailable: read max_seen_time: %w", err)
+	default:
+		t, perr := time.Parse(time.RFC3339, v)
+		if perr != nil {
+			return license.Env{}, fmt.Errorf("clock check unavailable: max_seen_time unreadable: %w", perr)
+		}
+		maxSeen = t
+	}
+	crl, err := s.crl()
+	if err != nil {
+		return license.Env{}, err
 	}
 	bd, _ := time.Parse("2006-01-02", version.BuildDate)
 	if bd.Year() < 2000 {
 		bd = time.Time{} // 开发构建不做维保校验
 	}
-	return license.Env{Now: now, InstallationID: s.installationID, MaxSeenTime: maxSeen, BuildDate: bd, CRL: s.crl()}
+	return license.Env{Now: now, InstallationID: s.installationID, MaxSeenTime: maxSeen, BuildDate: bd, CRL: crl}, nil
 }
 
 const crlKV = "license_crl"
 
 // crl 返回当前生效的吊销列表：内置与已导入中序号较大的一份（CRL 是累积的）。
-func (s *Service) crl() *license.CRL {
+// 已导入的列表读不出或验签失败时返回错误：吊销信息不可知，不能当作“没有吊销”。
+func (s *Service) crl() (*license.CRL, error) {
 	var imported *license.CRL
-	if raw, err := s.Store.GetKV(crlKV); err == nil && raw != "" {
-		imported, _ = license.VerifyCRL(raw, s.Keys)
+	switch raw, err := s.Store.GetKV(crlKV); {
+	case errors.Is(err, store.ErrNotFound):
+	case err != nil:
+		return nil, fmt.Errorf("revocation list unavailable: %w", err)
+	case raw != "":
+		c, verr := license.VerifyCRL(raw, s.Keys)
+		if verr != nil {
+			return nil, fmt.Errorf("revocation list unreadable (license_crl): %w", verr)
+		}
+		imported = c
 	}
-	return license.NewerCRL(license.BuiltinCRL(s.Keys), imported)
+	return license.NewerCRL(license.BuiltinCRL(s.Keys), imported), nil
 }
 
 // CRLInfo 描述当前生效的吊销列表（授权页展示）。
@@ -178,7 +219,11 @@ type CRLInfo struct {
 
 // CRLInfo 返回当前吊销列表的摘要；没有吊销列表时返回 nil。
 func (s *Service) CRLInfo() *CRLInfo {
-	c := s.crl()
+	c, err := s.crl()
+	if err != nil {
+		s.logger().Error("license: revocation list unusable", "key", crlKV, "err", err)
+		return nil
+	}
 	if c == nil {
 		return nil
 	}
@@ -201,7 +246,10 @@ func (s *Service) importCRL(raw string) (*license.CRL, error) {
 	if err != nil {
 		return nil, err
 	}
-	if cur := s.crl(); cur != nil && c.Serial <= cur.Serial {
+	// 已存的列表损坏时不拿它比序号，允许用新的有效列表覆盖修复
+	if cur, cerr := s.crl(); cerr != nil {
+		s.logger().Error("license: stored revocation list unusable, replacing", "key", crlKV, "err", cerr)
+	} else if cur != nil && c.Serial <= cur.Serial {
 		return nil, fmt.Errorf("%w：当前序号 %d，导入的序号 %d", ErrCRLNotNewer, cur.Serial, c.Serial)
 	}
 	if err := s.Store.SetKV(crlKV, raw); err != nil {
@@ -210,8 +258,17 @@ func (s *Service) importCRL(raw string) (*license.CRL, error) {
 	return c, nil
 }
 
+// refuse 是读不到授权事实时的结果：拒绝新增操作并写日志；运行中的实例不受影响（规格书 10 节）。
+func (s *Service) refuse(err error) license.Snapshot {
+	s.logger().Error("license: facts unreadable, new operations refused", "err", err)
+	return license.Snapshot{State: license.StateInvalid, Reason: err.Error()}
+}
+
 func (s *Service) evaluate(raw string, now time.Time) license.Snapshot {
-	env := s.env(now)
+	env, err := s.env(now)
+	if err != nil {
+		return s.refuse(err)
+	}
 	if p, err := license.Verify(raw, s.Keys); err == nil {
 		env.FingerprintMatch = fingerprintMatch(p.Binding.FPHashes)
 	}
@@ -222,23 +279,40 @@ func (s *Service) evaluate(raw string, now time.Time) license.Snapshot {
 	return snap
 }
 
+// current 读取已存 License 并评估；调用方须持有 s.mu。
+func (s *Service) current(now time.Time) license.Snapshot {
+	raw, err := s.raw()
+	if err != nil {
+		return s.refuse(fmt.Errorf("license store unreadable: %w", err))
+	}
+	return s.evaluate(raw, now)
+}
+
 // Snapshot 每次都重新验签计算当前状态（规格书 8.6）。
 func (s *Service) Snapshot() license.Snapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.evaluate(s.raw(), time.Now())
+	return s.current(time.Now())
 }
 
 // Tick 记录已见最大时间，供时钟回拨检测；由定时任务每小时调用。
 func (s *Service) Tick(now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if v, err := s.Store.GetKV("max_seen_time"); err == nil {
-		if t, err := time.Parse(time.RFC3339, v); err == nil && !now.After(t) {
+	switch v, err := s.Store.GetKV("max_seen_time"); {
+	case errors.Is(err, store.ErrNotFound):
+	case err != nil:
+		s.logger().Error("license: read max_seen_time failed", "err", err)
+	default:
+		if t, perr := time.Parse(time.RFC3339, v); perr != nil {
+			s.logger().Error("license: max_seen_time unreadable, overwriting", "err", perr)
+		} else if !now.After(t) {
 			return
 		}
 	}
-	_ = s.Store.SetKV("max_seen_time", now.UTC().Format(time.RFC3339))
+	if err := s.Store.SetKV("max_seen_time", now.UTC().Format(time.RFC3339)); err != nil {
+		s.logger().Error("license: write max_seen_time failed", "err", err)
+	}
 }
 
 // Import 校验并保存新的 License；INVALID 的 License 不会被保存。
@@ -253,7 +327,7 @@ func (s *Service) Import(bundle, user string) (license.Snapshot, error) {
 		}
 	}
 	if raw == "" {
-		return s.evaluate(s.raw(), time.Now()), nil // 只导入了吊销列表
+		return s.current(time.Now()), nil // 只导入了吊销列表
 	}
 	snap := s.evaluate(raw, time.Now())
 	if snap.State == license.StateInvalid || snap.State == license.StateUnlicensed {

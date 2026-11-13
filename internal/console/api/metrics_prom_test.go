@@ -46,6 +46,15 @@ func parseProm(t *testing.T, body string) (samples []parsedSample, types map[str
 		}
 		open := strings.IndexByte(line, '{')
 		closeIdx := strings.LastIndexByte(line, '}')
+		if open < 0 && closeIdx < 0 { // 无标签样本：name value
+			f := strings.Fields(line)
+			v, err := strconv.ParseFloat(f[len(f)-1], 64)
+			if len(f) != 2 || err != nil {
+				t.Fatalf("bad sample line: %q", line)
+			}
+			samples = append(samples, parsedSample{Name: f[0], Labels: map[string]string{}, Value: v})
+			continue
+		}
 		if open < 0 || closeIdx < open {
 			t.Fatalf("bad sample line: %q", line)
 		}

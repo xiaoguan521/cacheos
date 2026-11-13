@@ -4,17 +4,22 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
+	"database/sql/driver"
 	"encoding/hex"
 	"errors"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	agentv1 "github.com/xiaoguan521/cacheos/api/gen/agent/v1"
 	"github.com/xiaoguan521/cacheos/internal/console/alerts"
@@ -50,8 +55,9 @@ type Server struct {
 	sendCmd func(context.Context, uint, *agentv1.ServerMessage, time.Duration) (*agentv1.CommandResult, error)
 
 	jwtKey        []byte
-	fails         sync.Map // ip -> *loginFail
-	migrationRuns sync.Map // migration id -> struct{}; prevents duplicate recovery in one process
+	fails         sync.Map     // ip -> *loginFail
+	auditFailures atomic.Int64 // 审计写入失败次数（指标 cacheos_audit_write_failures_total）
+	migrationRuns sync.Map     // migration id -> struct{}; prevents duplicate recovery in one process
 	routes        func() gin.RoutesInfo
 }
 
@@ -62,6 +68,9 @@ type loginFail struct {
 }
 
 const cookieName = "cacheos_session"
+
+// logKey 是 gin 上下文中放日志记录器的键，failErr 用它记录被隐藏的真实错误。
+const logKey = "cacheos.logger"
 
 type auditE = audit.Entry
 
@@ -82,7 +91,7 @@ func (s *Server) Handler() (http.Handler, error) {
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	r.Use(gin.Recovery(), s.securityHeaders)
+	r.Use(gin.Recovery(), s.withLogger, s.securityHeaders)
 	r.GET("/healthz", s.healthz)
 	r.Use(s.standbyGuard)
 
@@ -262,6 +271,35 @@ func fail(c *gin.Context, status int, code, msg string) {
 	c.AbortWithStatusJSON(status, apiError{Code: code, Message: msg})
 }
 
+func logFrom(c *gin.Context) *slog.Logger {
+	if l, ok := c.Get(logKey); ok {
+		if lg, ok := l.(*slog.Logger); ok {
+			return lg
+		}
+	}
+	return slog.Default()
+}
+
+// isServerSide 判断未归类的错误是否属于服务端故障（而不是调用方输入有问题）：
+// 数据库驱动错误（唯一约束等完整性冲突除外）、连接/事务状态、网络、文件系统、超时与取消。
+func isServerSide(err error) bool {
+	var pg *pgconn.PgError
+	switch {
+	case errors.As(err, &pg):
+		return !strings.HasPrefix(pg.Code, "23") // 23xxx 为完整性约束冲突，属于输入问题
+	case errors.Is(err, sql.ErrConnDone), errors.Is(err, sql.ErrTxDone), errors.Is(err, driver.ErrBadConn),
+		errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		return true
+	}
+	var sq interface{ Code() int } // SQLite 驱动错误；低 8 位为 19 是约束冲突
+	if errors.As(err, &sq) {
+		return sq.Code()&0xff != 19
+	}
+	var ne net.Error
+	var pe *fs.PathError
+	return errors.As(err, &ne) || errors.As(err, &pe)
+}
+
 func failErr(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
@@ -282,6 +320,10 @@ func failErr(c *gin.Context, err error) {
 		fail(c, http.StatusPaymentRequired, "LICENSE_LIMIT", err.Error())
 	case errors.Is(err, gateway.ErrOffline):
 		fail(c, http.StatusServiceUnavailable, "HOST_OFFLINE", err.Error())
+	case isServerSide(err):
+		// 数据库、网络、文件、超时等服务端故障：真实错误只进日志，不回显给调用方
+		logFrom(c).Error("request failed", "method", c.Request.Method, "path", c.FullPath(), "err", err)
+		fail(c, http.StatusInternalServerError, "INTERNAL", "服务内部错误，请稍后重试或联系管理员")
 	default:
 		fail(c, http.StatusBadRequest, "BAD_REQUEST", err.Error())
 	}
@@ -367,7 +409,10 @@ func isLocal(u *store.User) bool { return u.Source == "" || u.Source == "local" 
 
 // policy 返回当前账号安全策略。
 func (s *Server) policy() secpolicy.Policy {
-	v, _ := s.Store.GetKV("security_policy")
+	v, err := s.Store.GetKV("security_policy")
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		s.logger().Error("read security_policy failed, using defaults", "err", err)
+	}
 	return secpolicy.Parse(v)
 }
 
@@ -405,5 +450,26 @@ func (s *Server) feature(f license.Feature) gin.HandlerFunc {
 }
 
 func (s *Server) audit(c *gin.Context, action, objType, objID string, detail any) {
-	_ = s.Audit.Write(audit.Entry{Username: c.GetString("user"), IP: c.ClientIP(), Action: action, ObjectType: objType, ObjectID: objID, Detail: detail})
+	s.auditEntry(action, audit.Entry{Username: c.GetString("user"), IP: c.ClientIP(), Action: action, ObjectType: objType, ObjectID: objID, Detail: detail})
+}
+
+// auditEntry 写一条审计。写失败不让用户请求失败，但记错误日志（只含动作名，不含参数值）并计数。
+func (s *Server) auditEntry(action string, e audit.Entry) {
+	if err := s.Audit.Write(e); err != nil {
+		s.auditFailures.Add(1)
+		s.logger().Error("audit write failed", "action", action, "err", err)
+	}
+}
+
+func (s *Server) logger() *slog.Logger {
+	if s.Log != nil {
+		return s.Log
+	}
+	return slog.Default()
+}
+
+// withLogger 把记录器放进请求上下文，供 failErr 记录不对外暴露的真实错误。
+func (s *Server) withLogger(c *gin.Context) {
+	c.Set(logKey, s.logger())
+	c.Next()
 }

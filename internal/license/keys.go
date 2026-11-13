@@ -60,9 +60,9 @@ func AgentCheck(raw string, keys KeyRing, now time.Time) (writable bool, reason 
 		return false, err.Error()
 	}
 	if now.Before(p.NotBefore) {
-		return false, "license not yet valid"
+		return false, reasonNotYetValid
 	}
-	if now.After(p.ExpiresAt.Add(time.Duration(p.GraceDays) * 24 * time.Hour)) {
+	if windowState(p, now) == StateExpired {
 		return false, "license expired"
 	}
 	return true, ""
