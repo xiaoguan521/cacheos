@@ -33,7 +33,7 @@ func TestValidateModules(t *testing.T) {
 	}{
 		{"unknown", []string{"graph"}, srv, false},
 		{"path injection", []string{"../../etc/x"}, srv, false},
-		{"upstream file name", []string{"valkey-json"}, srv, false},
+		{"file name with suffix", []string{"json.so"}, srv, false},
 		{"empty name", []string{""}, srv, false},
 		{"duplicate", []string{"json", "json"}, srv, false},
 		{"search in cluster", []string{"search"}, srv, true},
