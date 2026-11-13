@@ -87,8 +87,9 @@ def json_cases():
 
 def raw_field(info, name):
     """BF.INFO 的原始回复：RESP2 是 [键, 值, ...] 列表，RESP3 是映射；redis-py 在 RESP3 下不做转换。"""
-    if hasattr(info, name.lower()):
-        return getattr(info, name.lower())
+    attr = {"Capacity": "capacity", "Number of items inserted": "insertedNum"}.get(name)
+    if attr and hasattr(info, attr):  # RESP2：redis-py 已转成 BFInfo
+        return getattr(info, attr)
     if isinstance(info, dict):
         return info.get(name)
     flat = list(info)

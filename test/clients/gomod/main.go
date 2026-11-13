@@ -180,20 +180,22 @@ func bloomCases(t topology) {
 			if err != nil {
 				return err
 			}
-			capInfo, err := c.BFInfoCapacity(ctx, k).Result()
-			if err != nil {
-				return err
-			}
 			return first(eq("add new", a1, true), eq("add existing", a2, false), eq("exists", ex, true), eq("not exists", no, false),
-				eq("madd", ma, []bool{true, true}), eq("mexists", me, []bool{true, true, false}), eq("card", card, int64(3)),
-				eq("info capacity", capInfo.Capacity, int64(1000)))
+				eq("madd", ma, []bool{true, true}), eq("mexists", me, []bool{true, true, false}), eq("card", card, int64(3)))
 		})
-		// valkey-bloom 的 BF.INFO 多返回 "Error rate" 等键，go-redis 的完整解析（BFInfo）对未知键报错；
-		// 单字段形式（BFInfoCapacity）不受影响。
+		// valkey-bloom 的 BF.INFO 与 RedisBloom 的回复形态不同：完整形式多返回 "Error rate" 等键，
+		// 单字段形式（如 CAPACITY）只回复一个整数而不是 [名称, 值]；go-redis 对两种形态都解析失败。
+		// 读取过滤器信息请用 redis-py 或直接发 BF.INFO；BF.EXISTS / ADD / MADD / MEXISTS / CARD 不受影响。
 		known(fmt.Sprintf("bloom RESP%d full BF.INFO parse", proto), "go-redis rejects the extra \"Error rate\" key", func() error {
 			c := redis.NewClient(&redis.Options{Addr: addr(t.Standalone), Protocol: proto})
 			defer c.Close()
 			_, err := c.BFInfo(ctx, fmt.Sprintf("go:bf:%d", proto)).Result()
+			return err
+		})
+		known(fmt.Sprintf("bloom RESP%d single-field BF.INFO parse", proto), "go-redis expects [name, value], server returns a bare integer", func() error {
+			c := redis.NewClient(&redis.Options{Addr: addr(t.Standalone), Protocol: proto})
+			defer c.Close()
+			_, err := c.BFInfoCapacity(ctx, fmt.Sprintf("go:bf:%d", proto)).Result()
 			return err
 		})
 	}

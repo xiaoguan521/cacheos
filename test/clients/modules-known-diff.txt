@@ -4,4 +4,6 @@
 #
 # 模块    客户端      差异
 json      redis-py    RESP3 下 JSON.NUMINCRBY 回复 JSON 文本（如 "[3]"）而不是数组；redis-py 在 RESP3 下不做解码，需调用方自行 json.loads。
-bloom     go-redis    BF.INFO（无字段名的完整形式）多返回 "Error rate" 等键，go-redis 的 BFInfo 解析对未知键报错；用 BF.INFO <key> CAPACITY 等单字段形式不受影响。
+bloom     go-redis    BF.INFO 的完整形式多返回 "Error rate" 等键，go-redis 的 BFInfo 解析对未知键报错；
+                      单字段形式（BF.INFO <key> CAPACITY）只回复一个整数而不是 [名称, 值]，go-redis 的 BFInfoCapacity 同样解析失败。
+                      go-redis 因此无法通过其 BF.INFO 封装读取过滤器信息；BF.ADD / EXISTS / MADD / MEXISTS / CARD / RESERVE 不受影响。redis-py 不受影响。
