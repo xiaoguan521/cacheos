@@ -72,7 +72,7 @@ def read():
             out.append("(nil)")
         else:
             data = f.read(n + 2)[:n]
-            out.append(data.decode("latin1") if all(32 <= c < 127 for c in data) else "<bin>")
+            out.append(data.decode("latin1") if all(32 <= c < 127 or c in (9, 10, 13) for c in data) else "<bin>")
     elif t == b"*":
         for _ in range(max(int(rest), 0)):
             read()
@@ -167,12 +167,14 @@ start_instance "$PORT_REPLICA" replica
 res=$(vcmd "$PORT_REPLICA" REPLICAOF 127.0.0.1 "$PORT_MASTER")
 [[ "$res" == "OK" ]] || fail "REPLICAOF 失败: $res"
 linked=0
-for i in $(seq 1 60); do
+for i in $(seq 1 120); do
   if vcmd "$PORT_REPLICA" INFO replication | grep -q 'master_link_status:up'; then linked=1; break; fi
   sleep 0.5
 done
 if [[ $linked -ne 1 ]]; then
-  echo "--- 从实例 INFO replication ---"; vcmd "$PORT_REPLICA" INFO replication || true
+  echo "--- 从实例 INFO replication / persistence ---"
+  vcmd "$PORT_REPLICA" INFO replication | tr -d '\r' || true
+  vcmd "$PORT_REPLICA" INFO persistence | tr -d '\r' | grep -E '^(loading|async_loading|rdb_)' || true
   fail "从实例未能与主实例建立链接"
 fi
 echo "  ✓ 复制链接已建立"
