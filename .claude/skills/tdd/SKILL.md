@@ -43,3 +43,4 @@ When the shape of that interface is itself in question (how deep the module is, 
 - 后端、agent、协议：用 `go test` 写在对应包里；改数据面再过 `make ci`。模块与许可脚本过 `make modules-check`。
 - 前端：没有单元测试框架。界面行为先在 `web/e2e/ui-acceptance.cjs` 加会失败的检查；纯逻辑（如 `web/src/utils`）若要单测，须先和负责人确认引入测试工具，不得擅自添加依赖。
 - 先在对话里列出接缝并得到确认，再写测试；见 `docs/workflow.md`。
+- 上文提到的 `code-review` 指 Claude Code 自带的评审技能；本仓库的评审步骤见 `docs/workflow.md` 第 5 步（`codebase-design`）。

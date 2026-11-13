@@ -14,3 +14,6 @@ test/clients/dotnet/bin/
 test/clients/dotnet/obj/
 __pycache__/
 *.pyc
+
+# 开发流程的一次性文档（规格、任务），见 docs/workflow.md
+.scratch/

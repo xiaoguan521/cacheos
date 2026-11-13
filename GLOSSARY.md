@@ -5,7 +5,7 @@
 ## 产品组成
 
 **数据面**：
-真正存放数据、对外提供 Redis 协议的 sycache 进程，由 Valkey 发布标签源码加改名 patch 构建。
+真正存放数据、对外提供 Redis 协议的 sycache 进程，由锁定版本的上游开源缓存项目发布源码加改名 patch 构建（上游归属见 docs/NOTICE）。
 _Avoid_：引擎（只在“引擎版本”一词中沿用）、Redis 服务
 
 **控制台**：

@@ -43,7 +43,7 @@
 | 范围 | 命令 |
 |---|---|
 | Go（控制台、agent、webcli 等） | `go test ./... && go vet ./...` |
-| 数据面门禁 | `make ci`（patch、品牌、构建、版本、黄金验收、互通、客户端矩阵） |
+| 数据面门禁 | 手动触发 GitHub Actions（对应 `make ci` 的各项）；patch、品牌、版本检查可本地先跑，不要求本地构建 |
 | 模块清单与许可脚本 | `make modules-check` |
 | 前端静态检查与类型 | `pnpm -C web run lint`、`pnpm -C web run build` |
 | 前端行为 | `web/e2e/ui-acceptance.cjs`（Playwright 端到端冒烟） |

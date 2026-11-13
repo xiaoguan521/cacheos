@@ -65,6 +65,6 @@
 
 ## 交付要求
 - 先写失败用例再写实现；每个 PR 附可运行的测试命令。
-- 数据面改动：本地 `make ci` 全部通过（patch、品牌、构建、版本一致性、黄金验收、互通、客户端矩阵）。
-- GitHub Actions 默认手动触发或在 v* 标签时运行；仅允许 PR 按路径自动触发轻量门禁（dataplane.yml、p2-p6-acceptance.yml）。发布构建、容器安装冒烟、上游 Tcl 测试集、铜锁变体只手动或 v* 标签触发，不随 PR 或日常提交触发；能在本地验证的一律在本地验证。
+- 数据面改动：`make ci` 涵盖的各项（patch、品牌、构建、版本一致性、黄金验收、互通、客户端矩阵）必须通过；按项目负责人的决定，构建与验证以手动触发的 GitHub Actions 结果为准，不要求在本地构建数据面或模块；patch、品牌、版本一致性这类轻量检查仍可本地先跑。
+- GitHub Actions 默认手动触发或在 v* 标签时运行；仅允许 PR 按路径自动触发轻量门禁（dataplane.yml、p2-p6-acceptance.yml）。发布构建、容器安装冒烟、上游 Tcl 测试集、铜锁变体只手动或 v* 标签触发，不随 PR 或日常提交触发；轻量检查先在本地跑，需要构建的验证手动触发 Actions。
 - 上游 Tcl 测试集（CI 任务 upstream-suite）新增失败必须解释，并登记到 test/upstream/known-diff.txt。
