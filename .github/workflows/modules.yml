@@ -14,18 +14,30 @@ on:
           - search
           - bloom
         default: json
+      arch:
+        description: "构建架构（x86_64、aarch64；aarch64 用原生 ARM 运行器）"
+        type: choice
+        options:
+          - x86_64
+          - aarch64
+        default: x86_64
+      release_tag:
+        description: "填写已发布的标签（如 v0.2.0）时，不构建，只用该 Release 的安装包在干净发行版容器里实装验证"
+        type: string
+        default: ""
 
 permissions:
   contents: read
 
 concurrency:
-  group: modules-${{ github.ref }}-${{ inputs.module || 'json' }}
+  group: modules-${{ github.ref }}-${{ inputs.module || 'json' }}-${{ inputs.arch || 'x86_64' }}-${{ inputs.release_tag || 'build' }}
   cancel-in-progress: true
 
 jobs:
   build-and-test:
-    name: Build ${{ inputs.module || 'json' }} module and run smoke tests
-    runs-on: ubuntu-24.04
+    name: Build ${{ inputs.module || 'json' }} module and run smoke tests (${{ inputs.arch || 'x86_64' }})
+    if: ${{ (inputs.release_tag || '') == '' }}
+    runs-on: ${{ (inputs.arch || 'x86_64') == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -98,7 +110,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: dist/valkey-*.so
-          key: module-${{ inputs.module || 'json' }}-${{ hashFiles('dataplane/modules/MODULES', 'dataplane/build-modules.sh', 'dataplane/UPSTREAM', 'dataplane/modules/bloom/Cargo.lock', 'dataplane/modules/cargo-license-check.py', 'dataplane/modules/apply-patches.sh', 'dataplane/modules/patches/**') }}
+          key: module-${{ inputs.arch || 'x86_64' }}-${{ inputs.module || 'json' }}-${{ hashFiles('dataplane/modules/MODULES', 'dataplane/build-modules.sh', 'dataplane/UPSTREAM', 'dataplane/modules/bloom/Cargo.lock', 'dataplane/modules/cargo-license-check.py', 'dataplane/modules/apply-patches.sh', 'dataplane/modules/patches/**') }}
 
       - name: Build module (${{ inputs.module || 'json' }})
         if: steps.modcache.outputs.cache-hit != 'true'
@@ -114,7 +126,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: dist/valkey-*.so
-          key: module-${{ inputs.module || 'json' }}-${{ hashFiles('dataplane/modules/MODULES', 'dataplane/build-modules.sh', 'dataplane/UPSTREAM', 'dataplane/modules/bloom/Cargo.lock', 'dataplane/modules/cargo-license-check.py', 'dataplane/modules/apply-patches.sh', 'dataplane/modules/patches/**') }}
+          key: module-${{ inputs.arch || 'x86_64' }}-${{ inputs.module || 'json' }}-${{ hashFiles('dataplane/modules/MODULES', 'dataplane/build-modules.sh', 'dataplane/UPSTREAM', 'dataplane/modules/bloom/Cargo.lock', 'dataplane/modules/cargo-license-check.py', 'dataplane/modules/apply-patches.sh', 'dataplane/modules/patches/**') }}
 
       - name: Check module shared-library dependencies
         run: |
@@ -268,7 +280,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: modules-${{ inputs.module || 'json' }}-x86_64
+          name: modules-${{ inputs.module || 'json' }}-${{ inputs.arch || 'x86_64' }}
           path: |
             dist/valkey-*.so
             dist/*.log
@@ -294,3 +306,38 @@ jobs:
             /tmp/tmp.*/server.log
           retention-days: 7
 # 工作流文件已准备
+
+  verify-release:
+    # 用已发布 Release 的真实安装包，在干净的发行版容器里安装并验证（不构建）。
+    name: verify ${{ inputs.release_tag }} on ${{ matrix.image }} (${{ matrix.mode }})
+    if: ${{ (inputs.release_tag || '') != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: "ubuntu:24.04", mode: deb }
+          - { image: "debian:13", mode: deb }
+          - { image: "fedora:40", mode: rpm }
+          - { image: "ubuntu:24.04", mode: tar }
+          - { image: "ubuntu:22.04", mode: reject-deb }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          gh release download "${{ inputs.release_tag }}" -R "$GITHUB_REPOSITORY" -D assets \
+            -p 'sycache*.deb' -p 'sycache*.rpm' -p 'sycache-*.tar.gz' -p 'SHA256SUMS'
+          (cd assets && sha256sum -c SHA256SUMS --ignore-missing)
+          ls -l assets
+
+      - name: Install and verify in ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD/assets:/assets:ro" -v "$PWD/test/modules:/t:ro" \
+            "${{ matrix.image }}" bash /t/verify-release-install.sh "${{ matrix.mode }}" /assets

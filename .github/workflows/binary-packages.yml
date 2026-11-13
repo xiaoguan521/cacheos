@@ -194,11 +194,17 @@ jobs:
 
   modules-packages:
     # 扩展数据类型模块的独立可选包（ADR 0002，方案 B）：在 ubuntu 24.04 工具链上构建，
-    # 需要 glibc ≥ 2.38，因此不进 glibc 2.17 兼容的 sycache 主包；只发布 x86_64（aarch64 的模块构建尚未验证）。
-    name: optional modules package (x86_64)
+    # 需要 glibc ≥ 2.38，因此不进 glibc 2.17 兼容的 sycache 主包；x86_64 与 aarch64 各在原生运行器上构建。
+    name: optional modules package (${{ matrix.arch }})
     permissions:
       contents: read
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04 }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 150
     steps:
       - name: Checkout
@@ -223,7 +229,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: dist/valkey-*.so
-          key: modules-all-${{ hashFiles('dataplane/modules/MODULES', 'dataplane/build-modules.sh', 'dataplane/UPSTREAM', 'dataplane/modules/bloom/Cargo.lock', 'dataplane/modules/cargo-license-check.py', 'dataplane/modules/apply-patches.sh', 'dataplane/modules/patches/**') }}
+          key: modules-all-${{ matrix.arch }}-${{ hashFiles('dataplane/modules/MODULES', 'dataplane/build-modules.sh', 'dataplane/UPSTREAM', 'dataplane/modules/bloom/Cargo.lock', 'dataplane/modules/cargo-license-check.py', 'dataplane/modules/apply-patches.sh', 'dataplane/modules/patches/**') }}
 
       - name: Build modules
         if: steps.modcache.outputs.cache-hit != 'true'
@@ -236,7 +242,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: dist/valkey-*.so
-          key: modules-all-${{ hashFiles('dataplane/modules/MODULES', 'dataplane/build-modules.sh', 'dataplane/UPSTREAM', 'dataplane/modules/bloom/Cargo.lock', 'dataplane/modules/cargo-license-check.py', 'dataplane/modules/apply-patches.sh', 'dataplane/modules/patches/**') }}
+          key: modules-all-${{ matrix.arch }}-${{ hashFiles('dataplane/modules/MODULES', 'dataplane/build-modules.sh', 'dataplane/UPSTREAM', 'dataplane/modules/bloom/Cargo.lock', 'dataplane/modules/cargo-license-check.py', 'dataplane/modules/apply-patches.sh', 'dataplane/modules/patches/**') }}
 
       - name: Collect licenses and SBOMs
         run: |
@@ -255,7 +261,7 @@ jobs:
       - name: Publish package artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: cacheos-sycache-modules-x86_64
+          name: cacheos-sycache-modules-${{ matrix.arch }}
           if-no-files-found: error
           retention-days: 90
           path: |

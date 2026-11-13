@@ -18,10 +18,10 @@
 | `sycache_<版本>-1_arm64.deb` | Debian/Ubuntu 系列 ARM64 安装包 |
 | `sycache-<版本>-1.x86_64.rpm` | RHEL、openEuler 等 x86_64 RPM 安装包 |
 | `sycache-<版本>-1.aarch64.rpm` | RHEL、openEuler 等 aarch64 RPM 安装包 |
-| `sycache-modules_<版本>-1_amd64.deb` | 可选：扩展数据类型模块包（JSON、搜索 / 向量、布隆过滤器），Debian/Ubuntu x86_64 |
-| `sycache-modules-<版本>-1.x86_64.rpm` | 可选：扩展数据类型模块包，RPM 系 x86_64 |
-| `sycache-modules-<版本>-x86_64.tar.gz` | 可选：扩展数据类型模块包归档 |
-| `MODULES-BUILDINFO-x86_64` | 模块包的构建来源（模块版本、所需 glibc / libstdc++） |
+| `sycache-modules_<版本>-1_<amd64/arm64>.deb` | 可选：扩展数据类型模块包（JSON、搜索 / 向量、布隆过滤器），Debian/Ubuntu |
+| `sycache-modules-<版本>-1.<x86_64/aarch64>.rpm` | 可选：扩展数据类型模块包，RPM 系 |
+| `sycache-modules-<版本>-<x86_64/aarch64>.tar.gz` | 可选：扩展数据类型模块包归档 |
+| `MODULES-BUILDINFO-<架构>` | 模块包的构建来源（模块版本、所需 glibc / libstdc++） |
 | `sycache-debuginfo-<版本>-<架构>.tar.gz` | 调试符号，故障分析使用，不用于安装 |
 | `sycache-<版本>-<架构>.spdx.json` | 对应架构的 SPDX SBOM |
 | `BUILDINFO-<架构>` | 对应架构的构建来源与补丁信息 |
@@ -97,7 +97,7 @@ sudo tar -C / -xzf "sycache-${VERSION}-x86_64.tar.gz"
 
 JSON、搜索 / 向量、布隆过滤器三个模块（ADR 0002）作为独立可选包发布，不在 `sycache` 主包里。它们在 Ubuntu 24.04
 工具链上构建，**需要 glibc ≥ 2.38 与 libstdc++ ≥ GCC 13.1**（例如 Ubuntu 24.04 及更新、Debian 13 及更新），
-CentOS 7、麒麟 V10、统信 UOS、openEuler 等较老的发行版上不能安装；目前只发布 x86_64。
+CentOS 7、麒麟 V10、统信 UOS、openEuler 等较老的发行版上不能安装；x86_64 与 aarch64 都有（各在原生运行器上构建）。已发布的版本可用 `modules` 工作流的 `release_tag` 输入，在 Ubuntu 24.04、Debian 13、Fedora 40 的干净容器里实装验证，并确认 Ubuntu 22.04 会因依赖拒绝安装。
 
 ```bash
 sudo apt install "./sycache-modules_${VERSION}-1_amd64.deb"   # 依赖同版本以上的 sycache
