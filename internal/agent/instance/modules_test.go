@@ -1,6 +1,11 @@
 package instance
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -49,7 +54,7 @@ func TestValidateModules(t *testing.T) {
 func TestModuleConfLines(t *testing.T) {
 	l := Layout{Root: "/r"}
 	got := l.ModuleConfLines([]string{"bloom", "json"}) // 顺序归一：json → search → bloom
-	want := "loadmodule /r/modules/json.so\nloadmodule /r/modules/bloom.so\n"
+	want := "loadmodule /r/current/modules/json.so\nloadmodule /r/current/modules/bloom.so\n"
 	if got != want {
 		t.Errorf("got %q want %q", got, want)
 	}
@@ -62,7 +67,7 @@ func TestServerConfRendersModules(t *testing.T) {
 	l := Layout{Root: "/r", RunDir: "/run", LogDir: "/log"}
 	st := &State{Port: 6400, Modules: []string{"json"}}
 	conf := l.ServerConf(st, &agentv1.CreateInstance{})
-	if !strings.Contains(conf, "loadmodule /r/modules/json.so\n") {
+	if !strings.Contains(conf, "loadmodule /r/current/modules/json.so\n") {
 		t.Errorf("conf lacks loadmodule:\n%s", conf)
 	}
 	if !strings.Contains(conf, "enable-module-command no") {
@@ -135,5 +140,51 @@ func TestACLFileBusinessUserModuleRules(t *testing.T) {
 	u := &agentv1.AclUser{Name: "app", Enabled: true, PasswordSha256: []string{strings.Repeat("a", 64)}, Rules: []string{"~*", "+@all"}}
 	if acl := ACLFile(st, "", []*agentv1.AclUser{u}); !strings.Contains(acl, "user app ") || !strings.Contains(acl, "-json.debug") {
 		t.Errorf("business user lacks module deny rules:\n%s", acl)
+	}
+}
+
+func TestModulePathIsVersioned(t *testing.T) {
+	l := Layout{Root: "/r"}
+	if got := l.ModulePath("json"); got != "/r/current/modules/json.so" {
+		t.Errorf("ModulePath = %s; modules must follow the current version", got)
+	}
+}
+
+func TestRequiredAndMissingModules(t *testing.T) {
+	m := newWebCLITestManager(t, 7001, &State{Port: 7001, Modules: []string{"json", "bloom"}})
+	writeState := func(port uint32, st *State) {
+		b, _ := json.Marshal(st)
+		if err := os.WriteFile(filepath.Join(m.L.StateDir, strconv.Itoa(int(port))+".json"), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeState(7002, &State{Port: 7002, Modules: []string{"json", "search"}})
+	writeState(7003, &State{Port: 7003}) // 没有模块
+	if got := m.RequiredModules(); !reflect.DeepEqual(got, []string{"json", "search", "bloom"}) {
+		t.Errorf("RequiredModules = %v", got)
+	}
+	have := func(n string) bool { return n == "json" || n == "bloom" }
+	if got := MissingModules([]string{"json", "search", "bloom"}, have); !reflect.DeepEqual(got, []string{"search"}) {
+		t.Errorf("MissingModules = %v", got)
+	}
+	if MissingModules(nil, have) != nil {
+		t.Error("nothing required, nothing missing")
+	}
+}
+
+func TestInstalledModule(t *testing.T) {
+	root := t.TempDir()
+	d := filepath.Join(root, "versions", "9.1.4", "modules")
+	if err := os.MkdirAll(d, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(d, "json.so"), []byte("x"), 0o755)
+	_ = os.Symlink("/etc/passwd", filepath.Join(d, "bloom.so")) // 软链不算已安装
+	l := Layout{Root: root}
+	if !l.InstalledModule("9.1.4", "json") {
+		t.Error("json.so is installed")
+	}
+	if l.InstalledModule("9.1.4", "bloom") || l.InstalledModule("9.1.4", "search") || l.InstalledModule("9.1.5", "json") {
+		t.Error("symlink or missing file must not count")
 	}
 }

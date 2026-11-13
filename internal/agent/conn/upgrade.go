@@ -13,6 +13,8 @@ import (
 	"time"
 
 	agentv1 "github.com/xiaoguan521/cacheos/api/gen/agent/v1"
+	"github.com/xiaoguan521/cacheos/internal/agent/engineupdate"
+	"github.com/xiaoguan521/cacheos/internal/agent/instance"
 	"github.com/xiaoguan521/cacheos/internal/agent/selfupdate"
 	"github.com/xiaoguan521/cacheos/internal/pkgsig"
 )
@@ -135,6 +137,18 @@ func (a *Agent) handleEngineUpgrade(ctx context.Context, client agentv1.AgentGat
 	if u.Sha256 != "" && !strings.EqualFold(u.Sha256, sig.SHA256) {
 		fail("package sha256 does not match the signed metadata")
 		return
+	}
+	// 本机实例在用扩展模块时，新版本必须自带这些模块，否则实例重启后会因缺少模块文件起不来。
+	if required := a.M.RequiredModules(); len(required) > 0 {
+		have, err := engineupdate.PackageModules(data)
+		if err != nil {
+			fail("inspect package modules: " + err.Error())
+			return
+		}
+		if missing := instance.MissingModules(required, func(n string) bool { return have[n] }); len(missing) > 0 {
+			fail("this engine package lacks modules in use on this host: " + strings.Join(missing, ", "))
+			return
+		}
 	}
 	pkgPath, sigPath, err := a.stageEnginePackage(u.Version, data, u.VendorSignature)
 	if err != nil {

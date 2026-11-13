@@ -2,6 +2,7 @@ package instance
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -40,9 +41,50 @@ func ValidateModules(mods []string, kind agentv1.Kind, cluster bool) error {
 	return nil
 }
 
-// ModulePath 返回模块文件路径；name 必须已通过 ValidateModules。
+// ModulePath 返回实例加载的模块文件路径：<Root>/current/modules/<名称>.so。
+// 模块随产品版本一起安装在版本目录里（<Root>/versions/<版本>/modules/），current 软链切换后，
+// 实例下次重启就加载新版本对应的模块；name 必须已通过 ValidateModules。
 func (l Layout) ModulePath(name string) string {
-	return filepath.Join(l.Root, "modules", name+".so")
+	return filepath.Join(l.Root, "current", "modules", name+".so")
+}
+
+// InstalledModule 报告某个版本目录里是否有该模块的普通文件（软链不算）。
+func (l Layout) InstalledModule(version, name string) bool {
+	if _, ok := modulePrefix[name]; !ok || strings.ContainsAny(version, "/\\") || version == "" || version == ".." {
+		return false
+	}
+	fi, err := os.Lstat(filepath.Join(l.Root, "versions", version, "modules", name+".so"))
+	return err == nil && fi.Mode().IsRegular()
+}
+
+// RequiredModules 返回本机全部实例用到的模块（并集，规范顺序）。
+func (m *Manager) RequiredModules() []string {
+	used := map[string]bool{}
+	for _, port := range m.Ports() {
+		if st, err := m.Load(port); err == nil {
+			for _, name := range st.Modules {
+				used[name] = true
+			}
+		}
+	}
+	var out []string
+	for _, name := range moduleOrder {
+		if used[name] {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// MissingModules 返回 required 中 have 报告缺失的模块；切换版本前用它确认新版本带齐了本机在用的模块。
+func MissingModules(required []string, have func(string) bool) []string {
+	var out []string
+	for _, name := range required {
+		if !have(name) {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // ModuleConfLines 渲染 loadmodule 配置行，顺序固定为 json → search → bloom。

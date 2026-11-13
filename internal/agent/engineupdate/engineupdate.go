@@ -261,3 +261,33 @@ func validateInstalledTree(root, version string) error {
 	}
 	return nil
 }
+
+// PackageModules 列出升级包携带的扩展模块：只认 <引擎前缀>/modules/<名称>.so 的普通文件。
+// 切换版本前用它确认新版本带齐了本机实例在用的模块；不解包、不落盘。
+func PackageModules(data []byte) (map[string]bool, error) {
+	zr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid gzip: %v", ErrRejected, err)
+	}
+	defer zr.Close()
+	tr := tar.NewReader(zr)
+	out := map[string]bool{}
+	for n := 0; ; n++ {
+		h, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return out, nil
+		}
+		if err != nil || n > maxEntries {
+			return nil, fmt.Errorf("%w: invalid tar", ErrRejected)
+		}
+		clean, err := safeTarPath(h.Name)
+		if err != nil || h.Typeflag != tar.TypeReg && h.Typeflag != tar.TypeRegA {
+			continue
+		}
+		rel, ok := strings.CutPrefix(clean, enginePrefix+"/modules/")
+		if !ok || strings.Contains(rel, "/") || !strings.HasSuffix(rel, ".so") {
+			continue
+		}
+		out[strings.TrimSuffix(rel, ".so")] = true
+	}
+}

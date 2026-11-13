@@ -108,6 +108,17 @@ def main():
         rels.append({"spdxElementId": engine["SPDXID"], "relationshipType": "CONTAINS",
                      "relatedSpdxElement": p["SPDXID"]})
 
+    # 随包安装的扩展模块（BUILDINFO 的 modules=名称:版本,…）；各模块的依赖在 share/modules/<名>.spdx.json
+    for item in filter(None, bi.get("modules", "").split(",")):
+        name, _, ver = item.partition(":")
+        p = pkg(f"SPDXRef-Package-valkey-{name}", f"valkey-{name}", ver or None, "BSD-3-Clause",
+                f"pkg:github/valkey-io/valkey-{name}", f"https://github.com/valkey-io/valkey-{name}",
+                supplier="Organization: Valkey contributors (Linux Foundation)",
+                comment=f"optional extension module installed at modules/{name}.so; dependencies in share/modules/{name}.spdx.json")
+        packages.append(p)
+        rels.append({"spdxElementId": product["SPDXID"], "relationshipType": "CONTAINS",
+                     "relatedSpdxElement": p["SPDXID"]})
+
     m = re.match(r"openssl-([0-9.]+)-static", bi.get("tls", ""))
     if m:
         p = pkg("SPDXRef-Package-openssl", "openssl", m.group(1), "Apache-2.0", "pkg:github/openssl/openssl",

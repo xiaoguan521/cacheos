@@ -108,3 +108,47 @@ func TestInstallRejectsTraversalAndBuildInfoMismatch(t *testing.T) {
 		t.Fatal("BUILDINFO mismatch accepted")
 	}
 }
+
+// 升级前要知道新包带了哪些模块：只认 modules/<名称>.so 的普通文件，其余一律忽略。
+func TestPackageModules(t *testing.T) {
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(zw)
+	for _, e := range []struct {
+		name string
+		typ  byte
+	}{
+		{"./home/atwasoft/sycache/modules/json.so", tar.TypeReg},
+		{"./home/atwasoft/sycache/modules/bloom.so", tar.TypeReg},
+		{"./home/atwasoft/sycache/modules/search.so", tar.TypeSymlink}, // 软链不算
+		{"./home/atwasoft/sycache/modules/evil.so.txt", tar.TypeReg},
+		{"./home/atwasoft/sycache/modules/sub/other.so", tar.TypeReg},
+		{"./home/atwasoft/sycache/bin/sycache-server", tar.TypeReg},
+		{"./usr/lib/modules/search.so", tar.TypeReg}, // 不在版本目录前缀内
+	} {
+		h := &tar.Header{Name: e.name, Mode: 0o755, Typeflag: e.typ}
+		if e.typ == tar.TypeSymlink {
+			h.Linkname = "json.so"
+		} else {
+			h.Size = 1
+		}
+		if err := tw.WriteHeader(h); err != nil {
+			t.Fatal(err)
+		}
+		if e.typ == tar.TypeReg {
+			_, _ = tw.Write([]byte("x"))
+		}
+	}
+	_ = tw.Close()
+	_ = zw.Close()
+	got, err := PackageModules(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || !got["json"] || !got["bloom"] {
+		t.Errorf("modules = %v, want json and bloom only", got)
+	}
+	if _, err := PackageModules([]byte("not gzip")); err == nil {
+		t.Error("invalid archive accepted")
+	}
+}
