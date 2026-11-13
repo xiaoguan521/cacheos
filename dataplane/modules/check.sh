@@ -148,6 +148,7 @@ check_versions_yaml || all_pass=1
 check_version_consistency || all_pass=1
 check_no_todos || all_pass=1
 check_all_modules_defined || all_pass=1
+python3 -I "$HERE/../../test/modules/collect-licenses-test.py" || all_pass=1
 
 echo "========================================="
 if [[ $all_pass -eq 0 ]]; then
