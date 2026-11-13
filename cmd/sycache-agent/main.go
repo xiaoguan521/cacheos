@@ -8,11 +8,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -82,19 +84,17 @@ func main() {
 }
 
 func serverFromState(dir string) string {
-	b, err := os.ReadFile(dir + "/node.json")
+	b, err := os.ReadFile(filepath.Join(dir, "node.json"))
 	if err != nil {
 		return ""
 	}
-	const key = `"server": "`
-	s := string(b)
-	if i := strings.Index(s, key); i >= 0 {
-		s = s[i+len(key):]
-		if j := strings.IndexByte(s, '"'); j >= 0 {
-			return s[:j]
-		}
+	var st struct {
+		Server string `json:"server"`
 	}
-	return ""
+	if json.Unmarshal(b, &st) != nil {
+		return ""
+	}
+	return st.Server
 }
 
 func envOr(k, def string) string {
