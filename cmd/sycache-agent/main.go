@@ -68,7 +68,7 @@ func main() {
 		}
 	case "run":
 		// agent 自升级：已安装且签名、哈希校验通过的新版本优先（只 exec 一次）
-		selfupdate.MaybeExec(*stateDir, version.Version, runtime.GOARCH, pkgsig.Keys())
+		selfupdate.MaybeExec(*stateDir, version.Version, runtime.GOARCH, pkgsig.Keys(), log)
 		if cfg.Server == "" {
 			cfg.Server = serverFromState(*stateDir)
 		}

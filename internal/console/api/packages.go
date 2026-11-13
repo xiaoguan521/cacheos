@@ -19,7 +19,7 @@ import (
 // Agent 的升级下载上限也是 128 MiB；控制台导入沿用同一上限，避免把异常上传
 // 直接读入数据库前占满控制台内存。签名文件是小 JSON，单独设置较小的上限。
 const (
-	maxEnginePackage    int64 = 128 << 20
+	maxEnginePackage          = pkgsig.MaxPackage
 	maxEngineSignature  int64 = 128 << 10
 	maxEngineRequest    int64 = maxEnginePackage + maxEngineSignature + 2<<20
 	maxEnginePackageRow       = 200

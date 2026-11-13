@@ -22,6 +22,7 @@ import (
 	"github.com/xiaoguan521/cacheos/internal/console/store"
 	"github.com/xiaoguan521/cacheos/internal/license"
 	"github.com/xiaoguan521/cacheos/internal/paramcat"
+	"github.com/xiaoguan521/cacheos/internal/pkgsig"
 	"github.com/xiaoguan521/cacheos/internal/webcli"
 )
 
@@ -208,7 +209,6 @@ func (s *Server) revokeHost(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-var versionRe = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.]+)?$`)
 var backupCronRe = regexp.MustCompile(`^(?:[01][0-9]|2[0-3]):[0-5][0-9]$`)
 
 // switchVersion 切换主机的数据面版本（current 软链）；实例在下次（滚动）重启时使用新版本（规格书 6.4）。
@@ -220,7 +220,7 @@ func (s *Server) switchVersion(c *gin.Context) {
 	var req struct {
 		Version string `json:"version"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil || !versionRe.MatchString(req.Version) {
+	if err := c.ShouldBindJSON(&req); err != nil || !pkgsig.VersionRe.MatchString(req.Version) {
 		fail(c, http.StatusBadRequest, "BAD_VERSION", "invalid version")
 		return
 	}
@@ -315,7 +315,7 @@ func (s *Server) upgradeAgent(c *gin.Context) {
 	var req struct {
 		Version string `json:"version"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil || !versionRe.MatchString(req.Version) {
+	if err := c.ShouldBindJSON(&req); err != nil || !pkgsig.VersionRe.MatchString(req.Version) {
 		fail(c, http.StatusBadRequest, "BAD_VERSION", "invalid version")
 		return
 	}
@@ -328,7 +328,7 @@ func (s *Server) upgradeAgent(c *gin.Context) {
 		fail(c, http.StatusConflict, "HOST_OFFLINE", "主机离线，无法下发 agent 升级")
 		return
 	}
-	if !versionRe.MatchString(h.AgentVersion) {
+	if !pkgsig.VersionRe.MatchString(h.AgentVersion) {
 		fail(c, http.StatusConflict, "AGENT_VERSION_UNKNOWN", "主机未上报可识别的 agent 版本")
 		return
 	}

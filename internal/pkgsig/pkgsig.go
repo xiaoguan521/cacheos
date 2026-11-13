@@ -17,12 +17,16 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 )
 
 // Format 是签名文件格式标识。
 const Format = "etos-pkg-sig-1"
 
 const domain = "ETOS-PKG-v1\n"
+
+// MaxPackage 是升级包大小上限（引擎包与 agent 包相同）：控制台导入、agent 下载、wrapper 读取共用这一个值。
+const MaxPackage int64 = 128 << 20
 
 var (
 	VersionRe = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.]+)?$`)
@@ -91,6 +95,30 @@ func Parse(b []byte) (*Sig, error) {
 		return nil, fmt.Errorf("%w: %v", ErrSignature, err)
 	}
 	return &s, s.validFields()
+}
+
+// Check 是 agent 与 wrapper 使用升级包前的统一入口：大小上限 → 解析签名文件 → 名称与架构匹配 → 验签与内容摘要。
+// 版本由调用方按各自场景比对（sig.Version）。
+func Check(data, sigJSON []byte, name, arch string, keys map[string]ed25519.PublicKey) (*Sig, error) {
+	if int64(len(data)) > MaxPackage {
+		return nil, fmt.Errorf("%w: package too large", ErrSignature)
+	}
+	sig, err := Parse(sigJSON)
+	if err != nil {
+		return nil, err
+	}
+	if sig.Name != name || sig.Arch != arch {
+		return nil, fmt.Errorf("%w: signature is for %s %s", ErrSignature, sig.Name, sig.Arch)
+	}
+	if err := Verify(sig, data, keys); err != nil {
+		return nil, err
+	}
+	return sig, nil
+}
+
+// DigestMatches 报告控制台随命令给出的 sha256 是否与已签名元数据一致；未给出（空）视为一致。
+func (s *Sig) DigestMatches(claimed string) bool {
+	return claimed == "" || strings.EqualFold(claimed, s.SHA256)
 }
 
 // Verify 用给定公钥集合校验签名与包内容（kid 不在集合内即失败）。

@@ -152,3 +152,10 @@ func TestPackageModules(t *testing.T) {
 		t.Error("invalid archive accepted")
 	}
 }
+
+func TestStagedPaths(t *testing.T) {
+	pkg, sig := StagedPaths("/var/lib/sycache-agent", "1.2.3")
+	if pkg != "/var/lib/sycache-agent/upgrade/1.2.3.tar.gz" || sig != "/var/lib/sycache-agent/upgrade/1.2.3.sig" {
+		t.Fatal(pkg, sig)
+	}
+}
