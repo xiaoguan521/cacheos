@@ -98,23 +98,29 @@ func Evaluate(raw string, keys KeyRing, env Env) Snapshot {
 		return inv("system clock moved backwards")
 	}
 	if env.Now.Before(p.NotBefore) {
-		return inv("license not yet valid")
+		return inv(reasonNotYetValid)
 	}
 	if !env.BuildDate.IsZero() && !p.MaintenanceUntil.IsZero() && env.BuildDate.After(p.MaintenanceUntil) {
 		return inv(ErrMaintenanceExpired.Error())
 	}
 
-	s := Snapshot{Payload: p, ExpiresAt: p.ExpiresAt}
+	return Snapshot{State: windowState(p, env.Now), Payload: p, ExpiresAt: p.ExpiresAt}
+}
+
+const reasonNotYetValid = "license not yet valid"
+
+// windowState 是有效期规则的唯一实现：按到期时间划分 VALID / EXPIRING / GRACE / EXPIRED。
+// Evaluate 与 agent 侧的 AgentCheck 共用它；调用方负责先排除 NotBefore 之前的时间。
+func windowState(p *Payload, now time.Time) State {
 	grace := time.Duration(p.GraceDays) * 24 * time.Hour
 	switch {
-	case env.Now.Before(p.ExpiresAt.Add(-ExpiringWindow)):
-		s.State = StateValid
-	case env.Now.Before(p.ExpiresAt):
-		s.State = StateExpiring
-	case env.Now.Before(p.ExpiresAt.Add(grace)):
-		s.State = StateGrace
+	case now.Before(p.ExpiresAt.Add(-ExpiringWindow)):
+		return StateValid
+	case now.Before(p.ExpiresAt):
+		return StateExpiring
+	case now.Before(p.ExpiresAt.Add(grace)):
+		return StateGrace
 	default:
-		s.State = StateExpired
+		return StateExpired
 	}
-	return s
 }

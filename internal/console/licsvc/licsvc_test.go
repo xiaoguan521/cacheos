@@ -1,8 +1,10 @@
 package licsvc
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -104,5 +106,85 @@ func TestBundleImport(t *testing.T) {
 	// 再次导入同一份吊销列表（序号相同）不算错误
 	if _, err := s.Import(lic(t, s, priv, "LIC-D")+"\n"+crl(t, priv, 3, "LIC-OLD", "LIC-X"), "admin"); err != nil {
 		t.Fatalf("same CRL again: %v", err)
+	}
+}
+
+// 读不到授权事实时拒绝新增操作（不是“未授权”，也不是放行），并留下日志；已运行的实例不受影响。
+func logged(s *Service) *bytes.Buffer {
+	var buf bytes.Buffer
+	s.Log = slog.New(slog.NewTextHandler(&buf, nil))
+	return &buf
+}
+
+func TestCorruptImportedCRLRefusesNewOperations(t *testing.T) {
+	s, priv := setup(t)
+	buf := logged(s)
+	if snap, err := s.Import(lic(t, s, priv, "LIC-A"), "admin"); err != nil || snap.State != license.StateValid {
+		t.Fatalf("import: %v %v", snap.State, err)
+	}
+	if err := s.Store.SetKV("license_crl", "not-a-crl"); err != nil {
+		t.Fatal(err)
+	}
+	snap := s.Snapshot()
+	if snap.Writable() || snap.State != license.StateInvalid || !strings.Contains(snap.Reason, "revocation") {
+		t.Fatalf("corrupt CRL: %s %q writable=%v", snap.State, snap.Reason, snap.Writable())
+	}
+	if !strings.Contains(buf.String(), "level=ERROR") || !strings.Contains(buf.String(), "license_crl") {
+		t.Fatalf("not logged: %s", buf)
+	}
+	// 重新导入有效的吊销列表后恢复
+	if _, err := s.ImportCRL(crl(t, priv, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if snap := s.Snapshot(); snap.State != license.StateValid {
+		t.Fatalf("after re-import: %s %s", snap.State, snap.Reason)
+	}
+}
+
+func TestUnreadableMaxSeenTimeRefusesNewOperations(t *testing.T) {
+	s, priv := setup(t)
+	buf := logged(s)
+	if _, err := s.Import(lic(t, s, priv, "LIC-A"), "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Store.SetKV("max_seen_time", "garbage"); err != nil {
+		t.Fatal(err)
+	}
+	snap := s.Snapshot()
+	if snap.Writable() || snap.State != license.StateInvalid || !strings.Contains(snap.Reason, "clock") {
+		t.Fatalf("bad max_seen_time: %s %q", snap.State, snap.Reason)
+	}
+	if !strings.Contains(buf.String(), "max_seen_time") {
+		t.Fatalf("not logged: %s", buf)
+	}
+	// Tick 用当前时间覆盖损坏的值后恢复
+	s.Tick(time.Now())
+	if snap := s.Snapshot(); snap.State != license.StateValid {
+		t.Fatalf("after tick: %s %s", snap.State, snap.Reason)
+	}
+}
+
+func TestUnreadableLicenseStoreIsNotUnlicensed(t *testing.T) {
+	s, priv := setup(t)
+	buf := logged(s)
+	if _, err := s.Import(lic(t, s, priv, "LIC-A"), "admin"); err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := s.Store.DB.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = sqlDB.Close()
+	snap := s.Snapshot()
+	if snap.Writable() || snap.State == license.StateUnlicensed || snap.State != license.StateInvalid {
+		t.Fatalf("db down: %s %q", snap.State, snap.Reason)
+	}
+	if !strings.Contains(buf.String(), "level=ERROR") {
+		t.Fatalf("not logged: %s", buf)
+	}
+	buf.Reset()
+	s.Tick(time.Now()) // 写入失败要留日志
+	if !strings.Contains(buf.String(), "max_seen_time") {
+		t.Fatalf("tick failure not logged: %s", buf)
 	}
 }

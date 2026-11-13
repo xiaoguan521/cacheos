@@ -221,6 +221,10 @@ func (s *Server) prometheusMetrics(c *gin.Context) {
 	for _, in := range instPtrs {
 		insts = append(insts, *in)
 	}
-	body := renderProm(buildPromFamilies(hosts, s.GW.Online, unitNames, insts))
+	fams := buildPromFamilies(hosts, s.GW.Online, unitNames, insts)
+	fams = append(fams, promFamily{Name: "cacheos_audit_write_failures_total", Type: "counter",
+		Help:    "Audit log writes that failed since this console process started.",
+		Samples: []promSample{{Value: float64(s.auditFailures.Load())}}})
+	body := renderProm(fams)
 	c.Data(http.StatusOK, promContentType, body)
 }

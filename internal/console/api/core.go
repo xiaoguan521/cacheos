@@ -202,7 +202,7 @@ func (s *Server) login(c *gin.Context) {
 	u, err := uq.WithContext(ctx).Where(uq.Username.Eq(req.Username)).First()
 	if err == nil && u.LockedUntil != nil && time.Now().Before(*u.LockedUntil) {
 		c.Set("user", req.Username)
-		_ = s.Audit.Write(auditEntry(c, "auth.login", "user", req.Username, "locked"))
+		s.auditEntry("auth.login", auditEntry(c, "auth.login", "user", req.Username, "locked"))
 		fail(c, http.StatusTooManyRequests, "ACCOUNT_LOCKED", fmt.Sprintf("账号已锁定，请于 %s 后再试或联系管理员解锁", u.LockedUntil.Format("15:04")))
 		return
 	}
@@ -217,7 +217,7 @@ func (s *Server) login(c *gin.Context) {
 	}
 	if err == nil && ok && u.Disabled {
 		c.Set("user", u.Username)
-		_ = s.Audit.Write(auditEntry(c, "auth.login", "user", u.Username, "disabled"))
+		s.auditEntry("auth.login", auditEntry(c, "auth.login", "user", u.Username, "disabled"))
 		fail(c, http.StatusForbidden, "ACCOUNT_DISABLED", "账号已停用")
 		return
 	}
@@ -233,16 +233,18 @@ func (s *Server) login(c *gin.Context) {
 			if n >= pol.LockThreshold {
 				set = []field.AssignExpr{uq.FailedLogins.Value(0), uq.LockedUntil.Value(time.Now().Add(time.Duration(pol.LockMinutes) * time.Minute))}
 			}
-			_, _ = uq.WithContext(ctx).Where(uq.ID.Eq(u.ID)).UpdateSimple(set...)
+			if _, err := uq.WithContext(ctx).Where(uq.ID.Eq(u.ID)).UpdateSimple(set...); err != nil {
+				s.logger().Error("login: persist failed-login counter failed", "user_id", u.ID, "err", err)
+			}
 		}
 		c.Set("user", req.Username)
-		_ = s.Audit.Write(auditEntry(c, "auth.login", "user", req.Username, "failure"))
+		s.auditEntry("auth.login", auditEntry(c, "auth.login", "user", req.Username, "failure"))
 		fail(c, http.StatusUnauthorized, "BAD_CREDENTIALS", "用户名或密码错误")
 		return
 	}
 	if secret, enabled := s.loadTOTP(u.ID); enabled && !totp.Validate(req.OTP, secret) {
 		c.Set("user", req.Username)
-		_ = s.Audit.Write(auditEntry(c, "auth.login", "user", req.Username, "totp_failure"))
+		s.auditEntry("auth.login", auditEntry(c, "auth.login", "user", req.Username, "totp_failure"))
 		code := "TOTP_REQUIRED"
 		if req.OTP != "" {
 			code = "TOTP_INVALID"
@@ -253,7 +255,9 @@ func (s *Server) login(c *gin.Context) {
 	lf.mu.Lock()
 	lf.n = 0
 	lf.mu.Unlock()
-	_, _ = uq.WithContext(ctx).Where(uq.ID.Eq(u.ID)).UpdateSimple(uq.LastLoginAt.Value(time.Now()), uq.FailedLogins.Value(0), uq.LockedUntil.Null())
+	if _, err := uq.WithContext(ctx).Where(uq.ID.Eq(u.ID)).UpdateSimple(uq.LastLoginAt.Value(time.Now()), uq.FailedLogins.Value(0), uq.LockedUntil.Null()); err != nil {
+		s.logger().Error("login: reset failed-login counter failed", "user_id", u.ID, "err", err)
+	}
 	c.Set("user", u.Username)
 	s.audit(c, "auth.login", "user", u.Username, map[string]string{"source": u.Source})
 	if err := s.issue(c, u); err != nil {
