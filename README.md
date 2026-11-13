@@ -8,8 +8,9 @@
 - 编码规则：[`CLAUDE.md`](CLAUDE.md)（所有编码 Agent 与开发者必读）
 - 快速开始：[`docs/quickstart.md`](docs/quickstart.md)（从安装控制台到连接第一个实例）
 - 部署手册（独立 / 控制台 / Docker、发版与镜像、验证与排障）：[`docs/deployment.md`](docs/deployment.md)
-- 发布包与下载安装说明：[`docs/release-assets.md`](docs/release-assets.md)
+- 发布包与下载安装说明（含可选的扩展数据类型模块包 `sycache-modules`）：[`docs/release-assets.md`](docs/release-assets.md)
 - 改名边界：[`docs/adr/0001-rename-boundaries.md`](docs/adr/0001-rename-boundaries.md)
+- 扩展数据类型模块（JSON、搜索 / 向量、布隆过滤器）：[`docs/adr/0002-extension-modules.md`](docs/adr/0002-extension-modules.md)
 
 ## 组件
 
@@ -29,7 +30,8 @@ dataplane/versions.yaml     产品版本 → 上游版本 + 已合入补丁
 dataplane/rename/           改名规则（生成 patch 的唯一来源）
 dataplane/patches/          0001 改名 patch（生成物）；1xxx-cve-* 安全补丁
 dataplane/build-sycache.sh  构建安装包
-dataplane/packaging/        systemd 单元、sysctl、logrotate、默认配置生成
+dataplane/packaging/        systemd 单元、sysctl、logrotate、默认配置生成；build-modules-package.sh 生成可选模块包
+dataplane/modules/          扩展数据类型模块（ADR 0002）的版本清单、patch、许可收集
 deploy/                     agent 与控制台的 systemd / sudoers 安装文件
 scripts/                    patch 生成与校验、改名扫描、黄金验收、品牌门禁
 test/compat/                行为等价与上游互通测试（仅用 Python 标准库）
@@ -47,11 +49,13 @@ make patch-check UPSTREAM_SRC=/tmp/valkey   # patch 与规则一致
 make sycache     UPSTREAM_SRC=/tmp/valkey   # 构建 dist/sycache-<版本>-<架构>.tar.gz
 make golden                                 # 改名黄金验收
 make compat                                 # 行为等价测试；加 VALKEY_BIN=<上游 src 目录> 跑混合版本互通
-make ci          UPSTREAM_SRC=/tmp/valkey   # 提交前的完整校验（含版本一致性、上游互通、客户端矩阵）
+# make ci（含版本一致性、上游互通、客户端矩阵）对应的数据面门禁，按项目约定在 GitHub Actions 手动触发；
+# 本地不需要构建数据面，patch-check / brand / versions 这类轻量检查可先本地跑。
 make compat-build                           # glibc 2.17 容器中兼容构建，产出 tar.gz / RPM / DEB（需要 docker）
 
 # GitHub Actions：标签 v* 或 Actions → binary-packages 手动触发，
-# 为 x86_64 / aarch64 生成可交付的 tar.gz、RPM、DEB、调试符号包、SBOM、BUILDINFO 与 SHA256SUMS；
+# 为 x86_64 / aarch64 生成可交付的 tar.gz、RPM、DEB、调试符号包、SBOM、BUILDINFO 与 SHA256SUMS，
+# 以及可选的扩展模块包 sycache-modules（x86_64 / aarch64，只面向 glibc ≥ 2.38 的发行版）；
 # 标签构建还会创建 GitHub Release 并上传这些资产，同时将兼容构建环境（ghcr.io/xiaoguan521/cacheos/build-env:el7）
 # 与运行时镜像（ghcr.io/xiaoguan521/cacheos/sycache、sycache-console）发布到 GHCR。详见 docs/release-assets.md。
 # 发布后可复用构建环境，跳过本机 Dockerfile 构建：

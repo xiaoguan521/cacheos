@@ -26,7 +26,7 @@
 - 行为等价与互通 `test/compat`：单机、主从、集群、哨兵切换、双向 TLS 与 TLS 复制、与上游 Valkey 混合复制、RDB 双向互读
 - 客户端矩阵 `test/clients`：redis-py 6.4（RESP2/3）、go-redis 9.7（RESP3/2）、Jedis / Lettuce / Redisson / Spring Data Redis、node-redis / ioredis、StackExchange.Redis，覆盖单机、集群、哨兵、TLS
 
-本地一条命令完成全部校验：`make ci UPSTREAM_SRC=<上游源码>`。GitHub Actions 只在手动触发或推送 v* 标签时运行。
+`make ci` 列出数据面的全部校验项；按项目约定，构建与验证以手动触发的 GitHub Actions 结果为准，不要求本地构建数据面。patch、品牌、版本一致性这类轻量检查可本地先跑。GitHub Actions 只在手动触发或推送 v* 标签时运行（PR 仅按路径自动触发轻量门禁）。
 
 ### P1 验证结果（2026-10-31 历史 CI + 2026-11-06 同架构复核）
 
@@ -74,4 +74,4 @@
 ### 第二阶段（功能完善）
 
 - [x] 扩展数据类型（第二阶段）：按改名流程纳入上游社区 BSD 许可的 JSON、布隆过滤器、搜索/向量模块；需先完成依赖许可审查、ADR 与 CLAUDE.md 规则扩展，再进入构建与打包
-  - 许可审查与 ADR 0002 已完成并采纳：JSON、布隆过滤器、搜索三个模块均纳入（search 固定 1.2.1，bloom 须先过 9.1 兼容与依赖许可门禁），规则已写入 CLAUDE.md；详见 [ADR 0002](docs/adr/0002-extension-modules.md)
+  - 许可审查与 ADR 0002 已完成并采纳：JSON、布隆过滤器、搜索三个模块均纳入（search 固定 1.2.1，bloom 须先过 9.1 兼容与依赖许可门禁），规则已写入 CLAUDE.md；详见 [ADR 0002](../adr/0002-extension-modules.md)；v0.2.0 起以独立可选包 `sycache-modules`（x86_64 / aarch64，仅 glibc ≥ 2.38 的发行版）随 Release 发布
