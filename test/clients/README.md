@@ -12,3 +12,8 @@
 | StackExchange.Redis | 2.8.31 | 单机、集群、哨兵、双向 TLS | 自动化，`DOTNET_CLIENTS=1 make clients` |
 
 新增客户端：在 `clients.lock` 登记 tag 与提交哈希，在对应语言目录写用例，覆盖项与上表一致。
+
+## 对已发布版本验证
+
+Actions → `release-clients` → Run workflow，在 `release_tags` 填要验证的标签（默认 `v0.1.0,v0.2.1`）。
+它不编译，只下载 Release 里的 tar 包（并校验 SHA256SUMS），解开后跑与 `make clients` 相同的矩阵：x86_64 跑 Python、Go、Java、Node、.NET，aarch64 跑 Python、Go、Node。
