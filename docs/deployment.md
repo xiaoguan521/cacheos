@@ -875,6 +875,7 @@ sudo systemctl restart sycache@6379
 1. 备份 `/var/lib/sycache-console` 与 `/etc/cacheos`。
 2. 替换 `/usr/bin/sycache-console`（再次执行 `install-console.sh` 即可，幂等），`systemctl restart sycache-console`。
 3. agent 在已安装且签名通过的新版本存在时会自升级；手工升级再执行一次 `install-agent.sh`，然后 `systemctl restart sycache-agent`。重启 agent **不会**停止缓存实例。
+   控制台的「升级 agent」只替换 agent 二进制，**不会**更新 wrapper 与 systemd 单元（它们由 DEB/RPM 或 `install-agent.sh` 安装）。涉及 wrapper 或单元的修复（如 0.2.2 的引擎版本目录权限与 agent 自动重启），必须在各缓存主机上用新版安装包或再执行一次 `install-agent.sh`。
 
 ### 10.4 卸载
 
