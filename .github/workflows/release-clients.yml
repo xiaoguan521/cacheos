@@ -1,0 +1,83 @@
+name: release-clients
+
+# 用已发布 Release 里的安装包跑客户端兼容矩阵（Python、Go、Java、Node、.NET），只手动触发。
+# 不编译：下载 Release 的 tar 包，解开后按 make clients 的方式连单机、集群、哨兵与 TLS 拓扑。
+# 测试代码取自触发时所选分支；被测的二进制取自 release_tags 指定的标签（逗号分隔）。
+on:
+  workflow_dispatch:
+    inputs:
+      release_tags:
+        description: "要验证的已发布标签，逗号分隔（如 v0.1.0,v0.2.1）"
+        type: string
+        default: "v0.1.0,v0.2.1"
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      tags: ${{ steps.p.outputs.tags }}
+    steps:
+      - id: p
+        env:
+          TAGS: ${{ inputs.release_tags }}
+        run: |
+          set -euo pipefail
+          json="$(python3 - <<'PY'
+          import json, os, re
+          tags = [t.strip() for t in os.environ["TAGS"].split(",") if t.strip()]
+          assert tags, "release_tags is empty"
+          for t in tags:
+              assert re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.]+)?", t), f"bad tag {t}"
+          print(json.dumps(tags))
+          PY
+          )"
+          echo "tags=$json" >> "$GITHUB_OUTPUT"
+
+  clients:
+    name: clients ${{ matrix.tag }} (${{ matrix.arch }})
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        tag: ${{ fromJSON(needs.plan.outputs.tags) }}
+        arch: [x86_64, aarch64]
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04, java: "1", node: "1", dotnet: "1" }
+          - { arch: aarch64, runner: ubuntu-24.04-arm, java: "0", node: "1", dotnet: "0" }
+    env:
+      JAVA_CLIENTS: ${{ matrix.java }}
+      NODE_CLIENTS: ${{ matrix.node }}
+      DOTNET_CLIENTS: ${{ matrix.dotnet }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: test/clients/node/package-lock.json
+      - uses: actions/setup-dotnet@v4
+        if: matrix.dotnet == '1'
+        with:
+          dotnet-version: 8.0.x
+      - name: Download and unpack the released package
+        run: |
+          set -euo pipefail
+          ver="${TAG#v}"
+          mkdir -p dist/pkg rel
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir rel \
+            --pattern "sycache-${ver}-${{ matrix.arch }}.tar.gz" --pattern SHA256SUMS
+          (cd rel && grep " sycache-${ver}-${{ matrix.arch }}.tar.gz\$" SHA256SUMS | sha256sum -c -)
+          tar -C dist/pkg -xzf "rel/sycache-${ver}-${{ matrix.arch }}.tar.gz"
+          bin=dist/pkg/home/atwasoft/sycache/bin
+          test -x "$bin/sycache-server"
+          echo "::notice title=binary ${TAG} ${{ matrix.arch }}::$("$bin/sycache-server" --version)"
+        env:
+          TAG: ${{ matrix.tag }}
+      - name: Client matrix against the released binary
+        run: scripts/ci-run.sh "clients ${{ matrix.tag }} ${{ matrix.arch }}" make clients DIST=dist
