@@ -16,4 +16,4 @@
 ## 对已发布版本验证
 
 Actions → `release-clients` → Run workflow，在 `release_tags` 填要验证的标签（默认 `v0.1.0,v0.2.1`）。
-它不编译，只下载 Release 里的 tar 包（并校验 SHA256SUMS），解开后跑与 `make clients` 相同的矩阵：x86_64 跑 Python、Go、Java、Node、.NET，aarch64 跑 Python、Go、Node。
+它不编译，只下载 Release 里的 tar 包（并校验 SHA256SUMS），解开后跑与 `make clients` 相同的矩阵：x86_64 与 aarch64 都跑 Python、Go、Java、Node、.NET。
