@@ -27,7 +27,7 @@ jobs:
       matrix:
         include:
           - { arch: x86_64, runner: ubuntu-24.04, java: "1", node: "1", dotnet: "1" }
-          - { arch: aarch64, runner: ubuntu-24.04-arm, java: "0", node: "1", dotnet: "0" }
+          - { arch: aarch64, runner: ubuntu-24.04-arm, java: "1", node: "1", dotnet: "1" }
     env:
       JAVA_CLIENTS: ${{ matrix.java }}
       NODE_CLIENTS: ${{ matrix.node }}
