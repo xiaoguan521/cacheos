@@ -92,6 +92,10 @@ func Install(root string, data, sigJSON []byte, arch string, keys map[string]ed2
 	if err := os.Chmod(sigPath, 0o644); err != nil {
 		return "", fmt.Errorf("%w: chmod package signature: %v", ErrRejected, err)
 	}
+	// MkdirTemp 建的目录是 0700；实例以 sycache 用户运行，必须能遍历版本根目录才能执行其中的二进制。
+	if err := os.Chmod(tmp, 0o755); err != nil {
+		return "", fmt.Errorf("%w: chmod version directory: %v", ErrRejected, err)
+	}
 	if err := os.Rename(tmp, dst); err != nil {
 		return "", fmt.Errorf("%w: publish version: %v", ErrRejected, err)
 	}

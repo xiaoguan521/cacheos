@@ -76,6 +76,23 @@ func TestInstallVerifiesAndAtomicallyPublishesVersion(t *testing.T) {
 	}
 }
 
+// 实例以非 root 用户 sycache 运行，要能进入 versions/<版本>/bin 执行 sycache-server，
+// 所以发布后的版本根目录必须可被其他用户遍历（实测：MkdirTemp 的 0700 会让实例重启报 203/EXEC）。
+func TestInstalledVersionDirectoryIsTraversableByInstanceUser(t *testing.T) {
+	data, sigJSON, keys := releasePackage(t, "1.2.3")
+	root := t.TempDir()
+	if _, err := Install(root, data, sigJSON, "amd64", keys); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(filepath.Join(root, "versions/1.2.3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fi.Mode().Perm() & 0o055; got != 0o055 {
+		t.Fatalf("version directory mode %o is not readable and traversable by other users", fi.Mode().Perm())
+	}
+}
+
 func TestInstallRejectsTraversalAndBuildInfoMismatch(t *testing.T) {
 	var buf bytes.Buffer
 	zw := gzip.NewWriter(&buf)

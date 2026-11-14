@@ -55,7 +55,7 @@ func TestAgentPackagingIsPresentAndHardened(t *testing.T) {
 	}
 
 	service := readPackaging(t, "dataplane/packaging/sycache-agent.service")
-	for _, want := range []string{"User=sycache-agent", "Group=sycache", "ExecStart=/usr/bin/sycache-agent run", "Restart=on-failure", "ProtectSystem=strict", "UMask=0007", "RuntimeDirectory=sycache", "ReadWritePaths=/var/lib/sycache-agent /home/atwasoft/sycache /run/sycache"} {
+	for _, want := range []string{"User=sycache-agent", "Group=sycache", "ExecStart=/usr/bin/sycache-agent run", "ProtectSystem=strict", "UMask=0007", "RuntimeDirectory=sycache", "ReadWritePaths=/var/lib/sycache-agent /home/atwasoft/sycache /run/sycache"} {
 		if !strings.Contains(service, want) {
 			t.Errorf("agent service missing %q", want)
 		}
@@ -121,6 +121,20 @@ func TestAgentPackagingIsPresentAndHardened(t *testing.T) {
 
 // 安装根位于 /home 之下：ProtectHome=yes 会让单元看不到整个 /home，引擎二进制与实例目录都不可达，
 // ProtectHome=tmpfs 同样会把安装根遮住。只允许 read-only，写入范围仍由 ReadWritePaths 限定。
+// agent 自升级后以退出码 0 退出，由 systemd 拉起新版本（规格书 6.2）；on-failure 不会重启退出码 0，
+// 实测升级后 agent 一直停着，所以必须是 always。
+func TestAgentUnitsRestartAfterCleanExit(t *testing.T) {
+	for _, path := range []string{"dataplane/packaging/sycache-agent.service", "deploy/sycache-agent.service"} {
+		body := readPackaging(t, path)
+		if !strings.Contains(body, "\nRestart=always\n") {
+			t.Errorf("%s must set Restart=always so a self-upgrade exit(0) restarts the agent", path)
+		}
+		if strings.Contains(body, "Restart=on-failure") {
+			t.Errorf("%s still uses Restart=on-failure", path)
+		}
+	}
+}
+
 func TestUnitsCanReachInstallRootUnderHome(t *testing.T) {
 	root := Default().Root
 	if root != "/home/atwasoft/sycache" {
